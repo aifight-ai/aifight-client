@@ -48,7 +48,7 @@ jobs:
         with:
           node-version: "22"
       - name: Install workspace deps (root)
-        run: npm ci
+        run: npm install
       - name: Build CLI engine (desktop bundles it)
         run: npm run build:cli
       - name: Package desktop installer
@@ -87,7 +87,7 @@ jobs:
         with:
           node-version: "22"
       - name: Install workspace deps (root)
-        run: npm ci
+        run: npm install
       - name: Build CLI
         run: npm run build:cli
       - name: Pack tarball
