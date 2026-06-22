@@ -7,15 +7,18 @@ name: Release
 # Everything is attached to a DRAFT GitHub Release so you can review + edit notes,
 # then click Publish. Nothing goes public automatically.
 #
-# Trigger `workflow_dispatch` from the Actions tab to dry-run the builds without
-# creating a release.
+# Run `workflow_dispatch` from the Actions tab to dry-run the builds (no release).
+#
+# Architecture: the runtime (CLI engine) is built ONCE on Linux — where its
+# bash/rsync build script runs cleanly — and its dist/ is shared to the per-OS
+# desktop jobs as an artifact. So the desktop jobs never run the bash build on
+# Windows; they just consume the prebuilt engine and package the installer.
 #
 # Repo secrets used for signed macOS builds (Settings → Secrets and variables →
-# Actions). They are scoped to the macOS runner only:
+# Actions), scoped to the macOS runner only:
 #   CSC_LINK, CSC_KEY_PASSWORD                              Developer ID cert (.p12 base64 + password)
 #   APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID    notarization
-# Windows builds are currently unsigned (users get a SmartScreen "More info →
-# Run anyway" prompt). Linux needs no signing.
+# Windows builds are currently unsigned (SmartScreen "More info → Run anyway").
 
 on:
   push:
@@ -35,8 +38,50 @@ permissions:
   contents: read
 
 jobs:
+  runtime:
+    name: Build runtime (CLI engine + tarball)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - name: Install workspace deps (root)
+        run: npm install
+      - name: Build runtime (BUILD_ONLY skips env-dependent tests + scratch install)
+        env:
+          BUILD_ONLY: "1"
+        run: npm run build:cli
+      - name: Locate CLI tarball
+        id: pack
+        working-directory: runtime
+        run: |
+          set -e
+          tarball=$(ls aifight-aifight-*.tgz | head -1)
+          if [ -z "$tarball" ]; then
+            echo "ERROR: build produced no aifight-aifight-*.tgz" >&2
+            exit 1
+          fi
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "tarball: $tarball"
+      - name: Upload runtime dist (consumed by the desktop jobs)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: runtime-dist
+          path: runtime/dist
+          if-no-files-found: error
+          retention-days: 3
+      - name: Upload CLI tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cli-tarball
+          path: runtime/${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 14
+
   desktop:
     name: Desktop (${{ matrix.os }})
+    needs: runtime
     strategy:
       fail-fast: false
       matrix:
@@ -49,16 +94,19 @@ jobs:
           node-version: "22"
       - name: Install workspace deps (root)
         run: npm install
-      - name: Build CLI engine (desktop bundles it)
-        run: npm run build:cli
+      - name: Restore prebuilt runtime engine
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: runtime-dist
+          path: runtime/dist
       - name: Package desktop installer
         working-directory: desktop
         # Signing secrets are passed ONLY on macOS — CSC_LINK is an Apple
         # Developer ID cert and must not reach the Windows/Linux signers.
-        # CSC_IDENTITY_AUTO_DISCOVERY=false keeps electron-builder from probing
-        # the keychain; an explicit CSC_LINK still signs.
+        # On macOS, auto-discovery stays on so the imported CSC_LINK signs;
+        # on Windows/Linux it is off (no cert → unsigned, no keychain probing).
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ matrix.os == 'macos-latest' && 'true' || 'false' }}
           CSC_LINK: ${{ matrix.os == 'macos-latest' && secrets.CSC_LINK || '' }}
           CSC_KEY_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.CSC_KEY_PASSWORD || '' }}
           APPLE_ID: ${{ matrix.os == 'macos-latest' && secrets.APPLE_ID || '' }}
@@ -78,42 +126,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  cli:
-    name: CLI tarball
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-      - name: Install workspace deps (root)
-        run: npm install
-      - name: Build CLI
-        run: npm run build:cli
-      - name: Pack tarball
-        id: pack
-        working-directory: runtime
-        run: |
-          set -e
-          npm pack
-          tarball=$(ls aifight-aifight-*.tgz | head -1)
-          if [ -z "$tarball" ]; then
-            echo "ERROR: npm pack produced no aifight-aifight-*.tgz" >&2
-            exit 1
-          fi
-          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
-          echo "packed: $tarball"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: cli-tarball
-          path: runtime/${{ steps.pack.outputs.tarball }}
-          if-no-files-found: error
-          retention-days: 14
-
   release:
     name: Draft GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [desktop, cli]
+    needs: [runtime, desktop]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -126,6 +142,8 @@ jobs:
         run: |
           set -e
           mkdir -p dist
+          # Installers + CLI tarball only — the runtime-dist artifact is build
+          # plumbing (.mjs/.d.ts) and is intentionally not matched here.
           find artifacts -type f \( \
             -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o \
             -name '*.AppImage' -o -name '*.tgz' -o \

@@ -134,7 +134,11 @@ echo "  schema files: $(find dist/schemas -name '*.schema.json' | wc -l | tr -d 
 echo "  schema size:  $(du -sh dist/schemas | awk '{print $1}')"
 
 echo "==[6] vitest"
-npm test --silent
+if [ "${BUILD_ONLY:-0}" = "1" ]; then
+    echo "  BUILD_ONLY=1 — skipping the test suite (env-dependent; runs in the test workflow)."
+else
+    npm test --silent
+fi
 
 echo "==[7] npm pack"
 rm -f *.tgz
@@ -381,6 +385,12 @@ if [ -n "$DECISION_INTERNAL_LEAK" ]; then
     exit 1
 fi
 echo "    ok: $ROOT_DTS has zero internal decision symbol leaks"
+
+if [ "${BUILD_ONLY:-0}" = "1" ]; then
+    echo "==[8] scratch install verification — SKIPPED (BUILD_ONLY=1)"
+    echo "==[done] runtime built (BUILD_ONLY: tests + scratch-install skipped)"
+    exit 0
+fi
 
 echo "==[8] scratch install verification"
 SCRATCH=$(mktemp -d /tmp/aifight-bridge-install-XXXXXX)
