@@ -146,6 +146,12 @@ npm_config_dry_run=false NPM_CONFIG_DRY_RUN=false npm pack --silent
 TGZ=$(ls aifight-*.tgz | head -1)
 echo "  tarball: $TGZ ($(du -h "$TGZ" | awk '{print $1}'))"
 
+if [ "${BUILD_ONLY:-0}" = "1" ]; then
+    echo "  BUILD_ONLY=1 — skipping tarball + bundle verification (steps 7a–8; run in the test workflow)."
+    echo "==[done] runtime built (dist/ + tarball; verification skipped)"
+    exit 0
+fi
+
 # Tarball must declare BOTH native runtime deps (better-sqlite3 +
 # @napi-rs/keyring) so consumers pull them at install time; must NOT
 # contain inlined .node binaries or bundled source for either.
@@ -385,12 +391,6 @@ if [ -n "$DECISION_INTERNAL_LEAK" ]; then
     exit 1
 fi
 echo "    ok: $ROOT_DTS has zero internal decision symbol leaks"
-
-if [ "${BUILD_ONLY:-0}" = "1" ]; then
-    echo "==[8] scratch install verification — SKIPPED (BUILD_ONLY=1)"
-    echo "==[done] runtime built (BUILD_ONLY: tests + scratch-install skipped)"
-    exit 0
-fi
 
 echo "==[8] scratch install verification"
 SCRATCH=$(mktemp -d /tmp/aifight-bridge-install-XXXXXX)
