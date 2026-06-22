@@ -117,7 +117,7 @@ jobs:
           KEYCHAIN="$RUNNER_TEMP/aifight-signing.keychain-db"
           KPASS="$(openssl rand -base64 24)"
           CERT="$RUNNER_TEMP/aifight-cert.p12"
-          echo "$CSC_LINK" | openssl base64 -d > "$CERT"
+          node -e 'require("fs").writeFileSync(process.argv[1], Buffer.from(process.env.CSC_LINK, "base64"))' "$CERT"
           security create-keychain -p "$KPASS" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KPASS" "$KEYCHAIN"
