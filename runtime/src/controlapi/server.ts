@@ -67,7 +67,7 @@ import { ControlServerError } from "./types";
 // internal-only and avoiding the back-reference keeps the module graph
 // one-directional (index.ts may eventually re-export controlapi; the
 // reverse import would create a cycle once that lands).
-const CONTROL_API_VERSION = "0.1.0-beta.2";
+const CONTROL_API_VERSION = "0.1.0-beta.3";
 
 const SERVER_HEADER = `aifight-runtime/${CONTROL_API_VERSION}`;
 const DEFAULT_HOST = "127.0.0.1";

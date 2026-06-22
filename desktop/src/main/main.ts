@@ -4,13 +4,14 @@
 // D2: own the bridge engine (BridgeHost) and read the shared config on launch.
 // D3 will replace the console callbacks below with real IPC channels.
 
-import { app, BrowserWindow, ipcMain, Menu, shell } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, shell, Tray } from "electron";
 import path from "node:path";
 
 import { BridgeHost } from "./bridge-host";
 import { registerBridgeIpc } from "./ipc";
 import { buildAppMenu } from "./menu";
 import { loadWindowState, persistWindowState } from "./window-state";
+import { getFlag, setFlag } from "./ui-flags";
 import { initUpdater, checkForUpdates, quitAndInstall } from "./updater";
 import { IPC } from "../shared/ipc";
 
@@ -27,6 +28,13 @@ if (process.platform === "win32") app.setAppUserModelId("ai.aifight.desktop");
 const WEB_BASE = "https://aifight.ai";
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
+// Set on before-quit so the window's "close" handler can tell a real exit
+// (tray "Quit" / ⌘Q / app menu) from a close-to-tray, and let it through.
+let isQuitting = false;
+app.on("before-quit", () => {
+  isQuitting = true;
+});
 
 /** Push an event to the renderer, if a live window exists. */
 function broadcast(channel: string, payload: unknown): void {
@@ -113,9 +121,73 @@ function createWindow(): void {
 
   void mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
 
+  // Closing the window (red X / Alt+F4) hides it to the tray / menu bar rather
+  // than quitting, so the bridge keeps the agent online in the background. A real
+  // exit (tray "Quit" / ⌘Q / app menu) sets isQuitting via before-quit, which lets
+  // this close proceed. Telegram/Slack-style background behavior.
+  mainWindow.on("close", (event) => {
+    if (!isQuitting && mainWindow !== null) {
+      event.preventDefault();
+      mainWindow.hide();
+      maybeShowBackgroundHint();
+    }
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+}
+
+/** Bring the main window back from the tray / menu bar (recreate if needed). */
+function showMainWindow(): void {
+  if (mainWindow === null || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+/** A tray / menu-bar presence so the app stays reachable while its window is hidden. */
+function createTray(): void {
+  if (tray !== null) return;
+  // macOS: a black-on-transparent "…Template" image the menu bar tints for
+  // light/dark automatically. Windows/Linux: the full-color app mark.
+  const iconRel = process.platform === "darwin" ? "tray/trayTemplate.png" : "tray/tray.png";
+  const image = nativeImage.createFromPath(path.join(__dirname, iconRel));
+  tray = new Tray(image);
+  tray.setToolTip("AIFight");
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: "Open AIFight", click: () => showMainWindow() },
+      { type: "separator" },
+      {
+        label: "Quit AIFight",
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        },
+      },
+    ]),
+  );
+  // Windows/Linux: left-click reopens (right-click shows the menu). macOS pops the
+  // menu on click by default, so no extra click handler is needed there.
+  if (process.platform !== "darwin") {
+    tray.on("click", () => showMainWindow());
+  }
+}
+
+/** One-time nudge so the first window-close doesn't read as a quit. */
+function maybeShowBackgroundHint(): void {
+  if (getFlag("backgroundHintShown")) return;
+  setFlag("backgroundHintShown", true);
+  if (!Notification.isSupported()) return;
+  const body =
+    process.platform === "darwin"
+      ? "AIFight is still running so your agent stays online. Reopen it from the Dock or the menu-bar icon; quit with ⌘Q."
+      : "AIFight is still running in the system tray so your agent stays online. Click the tray icon to reopen it, or right-click to quit.";
+  new Notification({ title: "AIFight is still running", body }).show();
 }
 
 app.whenReady().then(async () => {
@@ -135,6 +207,7 @@ app.whenReady().then(async () => {
   initUpdater((status) => broadcast(IPC.updateStatus, status));
 
   createWindow();
+  createTray();
   // Desktop lifecycle (D11): opening the app === going online. There is no manual
   // online/offline toggle — if this machine is already configured we auto-connect
   // on launch, and (when a daily auto-match cap is set) enter automatic matchmaking
@@ -148,11 +221,14 @@ app.whenReady().then(async () => {
     if (status.phase === "running") await bridgeHost.joinAutoMatch();
   }
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    // Dock click (macOS) or relaunch — bring the window back from the tray.
+    showMainWindow();
   });
 });
 
 app.on("window-all-closed", () => {
-  // Standard macOS behavior: keep the app alive until Cmd+Q.
-  if (process.platform !== "darwin") app.quit();
+  // The app stays alive in the tray / menu bar after its window is closed (so the
+  // agent stays online); quitting is always explicit (tray "Quit" / ⌘Q / app menu)
+  // and routes through before-quit. So never auto-quit here, on any platform — an
+  // empty handler also overrides Electron's default quit-on-all-closed.
 });

@@ -58,4 +58,12 @@ const schemaDest = fileURLToPath(new URL("./dist/main/schemas", import.meta.url)
 rmSync(schemaDest, { recursive: true, force: true });
 cpSync(schemaSrc, schemaDest, { recursive: true });
 
-console.log("[esbuild] main + preload bundled → dist/main (+ schemas/)");
+// Copy the tray icons next to the bundled main process so Tray can load them at
+// runtime via path.join(__dirname, "tray/...") — in dev and from inside app.asar.
+// Only the generated PNGs ship; the source SVG stays in build/ as the master.
+const traySrc = fileURLToPath(new URL("./build/tray", import.meta.url));
+const trayDest = fileURLToPath(new URL("./dist/main/tray", import.meta.url));
+rmSync(trayDest, { recursive: true, force: true });
+cpSync(traySrc, trayDest, { recursive: true, filter: (s) => !s.endsWith(".svg") });
+
+console.log("[esbuild] main + preload bundled → dist/main (+ schemas/ + tray/)");
