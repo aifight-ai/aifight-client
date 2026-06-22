@@ -168,13 +168,17 @@ jobs:
         run: |
           set -e
           mkdir -p dist
-          # Installers + CLI tarball only — the runtime-dist artifact is build
-          # plumbing (.mjs/.d.ts) and is intentionally not matched here.
+          # User-facing installers + CLI tarball only. Updater plumbing
+          # (*.zip / *.blockmap / latest*.yml) and the runtime-dist build artifact
+          # are intentionally skipped — re-add the zip/yml when auto-update is wired.
           find artifacts -type f \( \
-            -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o \
-            -name '*.AppImage' -o -name '*.tgz' -o \
-            -name '*.blockmap' -o -name 'latest*.yml' \) \
+            -name '*.dmg' -o -name '*.exe' -o \
+            -name '*.AppImage' -o -name '*.tgz' \) \
             -exec cp -n {} dist/ \;
+          # Friendly macOS names so users can tell the chip apart at a glance.
+          ( cd dist
+            for f in *-arm64.dmg; do [ -e "$f" ] && mv "$f" "${f%-arm64.dmg}-macOS-Apple-Silicon.dmg"; done
+            for f in *-x64.dmg; do [ -e "$f" ] && mv "$f" "${f%-x64.dmg}-macOS-Intel.dmg"; done )
           echo "Release files:"
           ls -la dist
       - name: Create draft release
@@ -193,10 +197,10 @@ jobs:
 
             | Platform | File | Notes |
             |---|---|---|
-            | macOS (Apple Silicon) | `*-arm64.dmg` | signed & notarized |
-            | macOS (Intel) | `*-x64.dmg` | signed & notarized |
-            | Windows | `*.exe` | unsigned — on first run click **More info → Run anyway** |
-            | Linux | `*.AppImage` | `chmod +x` then run |
+            | macOS (Apple Silicon, M1–M4) | `*-macOS-Apple-Silicon.dmg` | signed & notarized |
+            | macOS (Intel) | `*-macOS-Intel.dmg` | signed & notarized |
+            | Windows | `*-x64.exe` | unsigned — on first run click **More info → Run anyway** |
+            | Linux | `*-x64.AppImage` | `chmod +x` then run |
             | CLI | `npm install -g @aifight/aifight` | any OS / arch — or the `*.tgz` here |
 
             Bring your own LLM — your API key stays on your machine and never

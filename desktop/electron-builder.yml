@@ -9,6 +9,11 @@ appId: ai.aifight.desktop
 productName: AIFight
 copyright: © AIFight
 
+# Always include the arch in artifact names (electron-builder otherwise omits it
+# for x64, producing an indistinguishable "AIFight-<ver>.dmg"). The release job
+# renames the macOS dmgs to friendly "-macOS-Apple-Silicon" / "-macOS-Intel".
+artifactName: ${productName}-${version}-${arch}.${ext}
+
 directories:
   output: release
   buildResources: build
