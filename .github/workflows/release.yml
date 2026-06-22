@@ -85,9 +85,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-latest = Apple Silicon (arm64); macos-13 = Intel (x64). Each runner
+        # macos-latest = Apple Silicon (arm64); macos-15-intel = Intel (x64) — the
+        # current Intel runner label (macos-13 was retired 2025-12). Each runner
         # builds its own native arch, so native modules resolve without cross-compile.
-        os: [macos-latest, macos-13, windows-latest, ubuntu-latest]
+        os: [macos-latest, macos-15-intel, windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
