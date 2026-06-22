@@ -90,7 +90,7 @@ function versionPolicyResp(): Response {
     minimum_supported_version: "0.1.0-alpha.2",
     recommended_version: "0.1.0-alpha.5",
     latest_version: "0.1.0-alpha.5",
-    update_command: "npm install -g @aifight/aifight@alpha",
+    update_command: "npm install -g @aifight/aifight",
   });
 }
 
@@ -585,9 +585,9 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-alpha.9",
-          latest_version: "0.1.0-alpha.9",
-          update_command: "npm install -g @aifight/aifight@alpha",
+          recommended_version: "0.1.0-beta.9",
+          latest_version: "0.1.0-beta.9",
+          update_command: "npm install -g @aifight/aifight",
         });
       }
       return jsonResp({ error: "unexpected" }, 500);
@@ -610,7 +610,7 @@ describe("aifight service", () => {
     expect(r.stdout).toContain("aifight.service restarted");
     expect(r.stdout).not.toMatch(/re-register|re-pair/);
     expect(calls.map((c) => [c.file, ...c.args].join(" "))).toEqual([
-      "npm install -g @aifight/aifight@alpha",
+      "npm install -g @aifight/aifight",
       "systemctl --version",
       "systemctl is-active aifight.service",
       "systemctl --version",
@@ -625,9 +625,9 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-alpha.9",
-          latest_version: "0.1.0-alpha.9",
-          update_command: "npm install -g @aifight/aifight@alpha",
+          recommended_version: "0.1.0-beta.9",
+          latest_version: "0.1.0-beta.9",
+          update_command: "npm install -g @aifight/aifight",
         });
       }
       return jsonResp({ error: "unexpected" }, 500);

@@ -12,7 +12,7 @@ function versionPolicyResp(recommendedVersion = "99.0.0-alpha.1"): Response {
     minimum_supported_version: "0.1.0-alpha.2",
     recommended_version: recommendedVersion,
     latest_version: recommendedVersion,
-    update_command: "npm install -g @aifight/aifight@alpha",
+    update_command: "npm install -g @aifight/aifight",
   }), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
@@ -47,7 +47,7 @@ describe("bridge idle auto update", () => {
 
     expect(result.status).toBe("updated");
     expect(calls.map((c) => [c.file, ...c.args].join(" "))).toEqual([
-      "npm install -g @aifight/aifight@alpha",
+      "npm install -g @aifight/aifight",
     ]);
     expect(restarts).toEqual(["restart"]);
   });

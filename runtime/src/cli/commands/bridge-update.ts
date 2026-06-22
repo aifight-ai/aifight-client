@@ -17,7 +17,7 @@ const USAGE = [
 ].join("\n");
 
 const DEFAULT_BASE_URL = "https://aifight.ai";
-const UPDATE_PACKAGE = "@aifight/aifight@alpha";
+const UPDATE_PACKAGE = "@aifight/aifight";
 
 export async function runBridgeUpdate(
   args: HandlerArgs,

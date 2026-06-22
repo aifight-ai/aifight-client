@@ -24,7 +24,7 @@ export interface CheckBridgeUpdateOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 1500;
-const DEFAULT_UPDATE_COMMAND = "npm install -g @aifight/aifight@alpha";
+const DEFAULT_UPDATE_COMMAND = "npm install -g @aifight/aifight";
 
 export async function checkBridgeUpdate(opts: CheckBridgeUpdateOptions): Promise<BridgeUpdateCheck> {
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch;

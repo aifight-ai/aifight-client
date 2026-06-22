@@ -1,6 +1,6 @@
 {
   "name": "@aifight/aifight",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "AIFight CLI — local outbound bridge that connects AIFight to user-selected Agent runtimes.",
   "homepage": "https://aifight.ai",
   "repository": {
@@ -50,7 +50,8 @@
     "gen:schema": "node scripts/bundle-schema.mjs",
     "readme:check": "node scripts/verify-readme-commands.mjs",
     "pack:check": "node scripts/verify-packlist.mjs",
-    "prepublishOnly": "npm run build && npm run readme:check && npm run pack:check",
+    "version:check": "node scripts/verify-version-sync.mjs",
+    "prepublishOnly": "npm run build && npm run readme:check && npm run pack:check && npm run version:check",
     "test": "npm run gen:schema && vitest run",
     "check-types": "npm run gen:schema && tsc --noEmit -p tsconfig.json"
   },

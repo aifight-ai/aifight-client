@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { run } from "../src/cli/main";
 import { readBridgeConfig, writeBridgeConfig, type BridgeConfig } from "../src/bridge/config";
+import { RUNTIME_VERSION } from "../src/index";
 
 let prevHome: string | undefined;
 let tmpDir: string | null = null;
@@ -62,7 +63,7 @@ describe("bridge CLI commands", () => {
           minimum_supported_version: "0.1.0-alpha.2",
           recommended_version: "0.1.0-alpha.5",
           latest_version: "0.1.0-alpha.5",
-          update_command: "npm install -g @aifight/aifight@alpha",
+          update_command: "npm install -g @aifight/aifight",
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       return new Response(JSON.stringify({
@@ -86,7 +87,7 @@ describe("bridge CLI commands", () => {
     expect(cfg.runtimeLocalUrl).toBe("direct://local");
     expect(status.code).toBe(0);
     expect(status.stdout).toContain("Bridge: configured");
-    expect(status.stdout).toContain("Bridge 0.1.0-alpha.8 is current enough");
+    expect(status.stdout).toContain(`Bridge ${RUNTIME_VERSION} is current enough`);
     expect(status.stdout).not.toContain("sk-super-secret-agent-key");
   });
 
@@ -156,7 +157,7 @@ describe("bridge CLI commands", () => {
           minimum_supported_version: "99.0.0",
           recommended_version: "99.0.0",
           latest_version: "99.0.0",
-          update_command: "npm install -g @aifight/aifight@alpha",
+          update_command: "npm install -g @aifight/aifight",
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       return new Response(JSON.stringify({
@@ -176,7 +177,7 @@ describe("bridge CLI commands", () => {
 
     expect(started.code).toBe(1);
     expect(started.stderr).toContain("below the minimum supported version");
-    expect(started.stderr).toContain("npm install -g @aifight/aifight@alpha");
+    expect(started.stderr).toContain("npm install -g @aifight/aifight");
   });
 
   it("status explains npm update plus service restart without re-pairing", async () => {
@@ -186,9 +187,9 @@ describe("bridge CLI commands", () => {
       if (textUrl.endsWith("/api/bridge/version")) {
         return new Response(JSON.stringify({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-alpha.9",
-          latest_version: "0.1.0-alpha.9",
-          update_command: "npm install -g @aifight/aifight@alpha",
+          recommended_version: "0.1.0-beta.9",
+          latest_version: "0.1.0-beta.9",
+          update_command: "npm install -g @aifight/aifight",
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       return new Response(JSON.stringify({
@@ -208,7 +209,7 @@ describe("bridge CLI commands", () => {
 
     expect(status.code).toBe(0);
     expect(status.stdout).toContain("Update command: aifight update --yes");
-    expect(status.stdout).toContain("Manual npm command: npm install -g @aifight/aifight@alpha");
+    expect(status.stdout).toContain("Manual npm command: npm install -g @aifight/aifight");
     expect(status.stdout).toContain("restarts `aifight.service`");
     expect(status.stdout).not.toMatch(/re-register|re-pair|aifight (setup|serve)/);
   });
@@ -222,7 +223,7 @@ describe("bridge CLI commands", () => {
           minimum_supported_version: "0.1.0-alpha.2",
           recommended_version: "0.1.0-alpha.5",
           latest_version: "0.1.0-alpha.5",
-          update_command: "npm install -g @aifight/aifight@alpha",
+          update_command: "npm install -g @aifight/aifight",
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (textUrl.endsWith("/api/bridge/pair")) {

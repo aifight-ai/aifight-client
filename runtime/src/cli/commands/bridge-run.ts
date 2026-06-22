@@ -78,7 +78,7 @@ export async function runBridgeWithConfig(opts: {
   if (update.status === "unsupported") {
     env.stderr(`${update.message}\n`);
     env.stderr("Run: aifight update --yes\n");
-    env.stderr(`Manual npm command: ${update.policy?.updateCommand ?? "npm install -g @aifight/aifight@alpha"}\n`);
+    env.stderr(`Manual npm command: ${update.policy?.updateCommand ?? "npm install -g @aifight/aifight"}\n`);
     return 1;
   }
   if (update.status === "update_recommended") {

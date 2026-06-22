@@ -88,7 +88,7 @@ export async function runBridgeStatus(
   env.stdout(`Update: ${update.message}\n`);
   if (update.status === "update_recommended" || update.status === "unsupported") {
     env.stdout("Update command: aifight update --yes\n");
-    env.stdout(`Manual npm command: ${update.policy?.updateCommand ?? "npm install -g @aifight/aifight@alpha"}\n`);
+    env.stdout(`Manual npm command: ${update.policy?.updateCommand ?? "npm install -g @aifight/aifight"}\n`);
     env.stdout("The update command keeps local credentials and restarts `aifight.service` when it is installed.\n");
   }
   env.stdout(`Runtime: ${runtimeLabel(redacted.runtimeType)} at ${redacted.runtimeLocalUrl}\n`);

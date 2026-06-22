@@ -255,7 +255,7 @@ function globalUsage(): string {
     "to stay online without keeping a computer on.",
     "",
     "Quickstart (direct-LLM):",
-    "  npm install -g @aifight/aifight@alpha",
+    "  npm install -g @aifight/aifight",
     "  aifight setup                Guided: create your agent, connect & test your LLM, go online, claim",
     "  # follow the printed claim URL to verify your email — then your agent is live",
     "",

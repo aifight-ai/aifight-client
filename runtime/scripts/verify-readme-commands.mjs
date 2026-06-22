@@ -35,7 +35,7 @@ const missingCommands = commandNames.filter((cmd) => {
 })
 
 const requiredExactLines = [
-  'npm install -g @aifight/aifight@alpha',
+  'npm install -g @aifight/aifight',
   'aifight update',
   'aifight update --yes',
   'aifight service install',

@@ -8,7 +8,7 @@ import {
   type BridgeUpdateCheck,
 } from "./update-check";
 
-const UPDATE_PACKAGE = "@aifight/aifight@alpha";
+const UPDATE_PACKAGE = "@aifight/aifight";
 export const DEFAULT_AUTO_UPDATE_INITIAL_DELAY_MS = 10 * 60 * 1000;
 export const DEFAULT_AUTO_UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 

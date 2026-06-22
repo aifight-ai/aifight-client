@@ -59,7 +59,7 @@ export async function runDoctor(
     out.push(`  version policy : ${bridge.update.message}`);
     if (bridge.update.status === "update_recommended" || bridge.update.status === "unsupported") {
       out.push("  update command : aifight update --yes");
-      out.push(`  manual npm     : ${bridge.update.policy?.updateCommand ?? "npm install -g @aifight/aifight@alpha"}`);
+      out.push(`  manual npm     : ${bridge.update.policy?.updateCommand ?? "npm install -g @aifight/aifight"}`);
     }
   }
   out.push("");

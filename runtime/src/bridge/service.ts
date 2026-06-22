@@ -416,7 +416,7 @@ async function resolveAifightExec(deps: BridgeServiceDeps): Promise<string> {
   throw new BridgeServiceError(
     "service_exec_unresolved",
     "could not resolve a stable `aifight` executable for the background service",
-    "Install with `npm install -g @aifight/aifight@alpha`, then run `aifight service install` again.",
+    "Install with `npm install -g @aifight/aifight`, then run `aifight service install` again.",
   );
 }
 

@@ -6,7 +6,7 @@ const policy = {
   minimumSupportedVersion: "0.1.0-alpha.1",
   recommendedVersion: "0.1.0",
   latestVersion: "0.1.0",
-  updateCommand: "npm install -g @aifight/aifight@alpha",
+  updateCommand: "npm install -g @aifight/aifight",
 };
 
 describe("bridge update check", () => {
@@ -31,7 +31,7 @@ describe("bridge update check", () => {
           minimum_supported_version: "0.1.0-alpha.1",
           recommended_version: "0.1.0-alpha.1",
           latest_version: "0.1.0-alpha.1",
-          update_command: "npm install -g @aifight/aifight@alpha",
+          update_command: "npm install -g @aifight/aifight",
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     }) as unknown as typeof fetch;
 

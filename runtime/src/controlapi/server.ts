@@ -60,14 +60,14 @@ import type {
 } from "./types";
 import { ControlServerError } from "./types";
 
-// Hand-sync'd with runtime/src/index.ts:185 RUNTIME_VERSION; the
-// codegen'd constant arrives in M1-17 (per the existing comment in
-// index.ts). The control API does not import RUNTIME_VERSION from
-// the package root because controlapi is internal-only and avoiding
-// the back-reference keeps the module graph one-directional
-// (index.ts may eventually re-export controlapi via M1-18 wiring;
-// the reverse import would create a cycle once that lands).
-const CONTROL_API_VERSION = "0.1.0-alpha.8";
+// Hand-sync'd with RUNTIME_VERSION in runtime/src/index.ts (and with
+// package.json); all three are enforced at publish time by
+// scripts/verify-version-sync.mjs. The control API does not import
+// RUNTIME_VERSION from the package root because controlapi is
+// internal-only and avoiding the back-reference keeps the module graph
+// one-directional (index.ts may eventually re-export controlapi; the
+// reverse import would create a cycle once that lands).
+const CONTROL_API_VERSION = "0.1.0-beta.2";
 
 const SERVER_HEADER = `aifight-runtime/${CONTROL_API_VERSION}`;
 const DEFAULT_HOST = "127.0.0.1";
