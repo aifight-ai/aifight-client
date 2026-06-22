@@ -1,0 +1,249 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/games/coup/event.schema.json",
+  "title": "CoupEvent",
+  "description": "Coup-specific event payload, describing the `data` field of common/event.schema.json when the event occurred in a Coup match. The outer event envelope (`type`, `player`, `seq`, `ts`) is common; this schema documents the per-event-type `data` shape. Discriminator is the outer `type` field. Mirrors games/coup/coup.go emission sites.",
+  "oneOf": [
+    {
+      "type": "object",
+      "description": "action — emitted when a player declares their turn action. Outer `player` is the actor. For income/tax/foreign_aid/exchange, no target. For coup/assassinate/steal, target is present. For tax/assassinate/steal/exchange, claimed_role is present.",
+      "required": ["action"],
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["income", "foreign_aid", "coup", "tax", "assassinate", "steal", "exchange"]
+        },
+        "target": {
+          "type": "string",
+          "description": "Target player ID for coup/assassinate/steal."
+        },
+        "claimed_role": {
+          "type": "string",
+          "enum": ["Duke", "Assassin", "Captain", "Ambassador"],
+          "description": "Role claimed for tax/assassinate/steal/exchange. Absent for income/foreign_aid/coup."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "challenge_pass — emitted when a player declines to challenge the action claim. Outer `player` is the passer.",
+      "required": ["player"],
+      "additionalProperties": false,
+      "properties": {
+        "player": { "type": "string" }
+      }
+    },
+    {
+      "type": "object",
+      "description": "challenge — emitted when a player challenges the action's role claim. Outer `player` is the challenger.",
+      "required": ["challenger", "actor", "claimed_role"],
+      "additionalProperties": false,
+      "properties": {
+        "challenger": { "type": "string" },
+        "actor": { "type": "string" },
+        "claimed_role": {
+          "type": "string",
+          "enum": ["Duke", "Assassin", "Captain", "Ambassador"]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "challenge_result — emitted after a challenge resolves. Outer `player` is the actor (whose claim was checked). result='fail' means actor was truthful (challenger loses influence + actor reshuffles and redraws — server reveals which card via revealed_card). result='success' means actor was lying (actor loses influence; action cancelled).",
+      "required": ["result", "actor", "challenger"],
+      "additionalProperties": true,
+      "properties": {
+        "result": {
+          "type": "string",
+          "enum": ["fail", "success"]
+        },
+        "revealed_card": {
+          "type": "string",
+          "enum": ["Duke", "Assassin", "Captain", "Ambassador", "Contessa"],
+          "description": "Role name of the card briefly exposed during a failed-challenge reshuffle. Present only when result == 'fail'."
+        },
+        "actor": { "type": "string" },
+        "challenger": { "type": "string" }
+      }
+    },
+    {
+      "type": "object",
+      "description": "block_pass — emitted when an eligible player declines to block. Outer `player` is the passer. For foreign_aid, any non-actor alive player emits one; for assassinate/steal, only the target can block so at most one block_pass.",
+      "required": ["player"],
+      "additionalProperties": false,
+      "properties": {
+        "player": { "type": "string" }
+      }
+    },
+    {
+      "type": "object",
+      "description": "block — emitted when a player declares a block. Outer `player` is the blocker.",
+      "required": ["blocker", "claimed_role", "action"],
+      "additionalProperties": false,
+      "properties": {
+        "blocker": { "type": "string" },
+        "claimed_role": {
+          "type": "string",
+          "enum": ["Duke", "Contessa", "Captain", "Ambassador"]
+        },
+        "action": {
+          "type": "string",
+          "enum": ["foreign_aid", "assassinate", "steal"],
+          "description": "The pending action being blocked."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "block_challenge_pass — emitted when a player declines to challenge the block. Outer `player` is the passer.",
+      "required": ["player"],
+      "additionalProperties": false,
+      "properties": {
+        "player": { "type": "string" }
+      }
+    },
+    {
+      "type": "object",
+      "description": "block_accepted — emitted when all eligible players have passed on challenging the block. Outer `player` is the blocker. Action is cancelled; turn advances.",
+      "required": ["blocker"],
+      "additionalProperties": false,
+      "properties": {
+        "blocker": { "type": "string" }
+      }
+    },
+    {
+      "type": "object",
+      "description": "challenge_block — emitted when a player challenges the block claim. Outer `player` is the challenger.",
+      "required": ["challenger", "blocker", "claimed_role"],
+      "additionalProperties": false,
+      "properties": {
+        "challenger": { "type": "string" },
+        "blocker": { "type": "string" },
+        "claimed_role": {
+          "type": "string",
+          "enum": ["Duke", "Contessa", "Captain", "Ambassador"]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "challenge_block_result — emitted after a block-challenge resolves. Outer `player` is the blocker. result='fail' means blocker was truthful (challenger loses influence + blocker reshuffles and redraws); block stands, action cancelled. result='success' means blocker was lying (blocker loses influence); block fails, action executes.",
+      "required": ["result", "blocker", "challenger"],
+      "additionalProperties": true,
+      "properties": {
+        "result": {
+          "type": "string",
+          "enum": ["fail", "success"]
+        },
+        "revealed_card": {
+          "type": "string",
+          "enum": ["Duke", "Contessa", "Captain", "Ambassador"],
+          "description": "Role exposed during reshuffle on result=='fail'."
+        },
+        "blocker": { "type": "string" },
+        "challenger": { "type": "string" }
+      }
+    },
+    {
+      "type": "object",
+      "description": "influence_lost — emitted when a player reveals one of their cards (losing influence). Outer `player` is the card owner. Public knowledge from here on.",
+      "required": ["player", "card", "card_index"],
+      "additionalProperties": false,
+      "properties": {
+        "player": { "type": "string" },
+        "card": {
+          "type": "string",
+          "enum": ["Duke", "Assassin", "Captain", "Ambassador", "Contessa"]
+        },
+        "card_index": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "player_eliminated — emitted when a player has no face-down cards remaining. Outer `player` is the eliminated player.",
+      "required": ["player"],
+      "additionalProperties": false,
+      "properties": {
+        "player": { "type": "string" }
+      }
+    },
+    {
+      "type": "object",
+      "description": "exchange_draw — emitted when the Exchange action resolves and the server draws 2 cards for the actor. Outer `player` is the actor. drawn_count is normally 2 but may be fewer if the deck is nearly empty.",
+      "required": ["action", "drawn_count"],
+      "additionalProperties": false,
+      "properties": {
+        "action": { "const": "exchange" },
+        "drawn_count": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "exchange_complete — emitted when the actor has returned their chosen cards to the deck, completing the Exchange. Outer `player` is the actor.",
+      "required": ["player", "returned_count"],
+      "additionalProperties": false,
+      "properties": {
+        "player": { "type": "string" },
+        "returned_count": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "action_resolved — emitted when a non-coup action finally applies its effect (after all challenge/block phases completed). Outer `player` is the actor. Emitted for foreign_aid / tax / assassinate / steal (exchange uses exchange_draw + exchange_complete instead; coup skips this and goes straight to lose_influence).",
+      "required": ["action"],
+      "additionalProperties": true,
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["foreign_aid", "tax", "assassinate", "steal"]
+        },
+        "coins_now": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Actor's coin count after the action. Present for foreign_aid/tax/steal."
+        },
+        "target": {
+          "type": "string",
+          "description": "Target player ID. Present for assassinate/steal."
+        },
+        "stolen": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Coins actually stolen (capped at target's pre-steal balance). Present for steal."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "game_over — emitted when only one (or zero, degenerate) alive player remains. No outer `player`.",
+      "required": ["winner"],
+      "additionalProperties": false,
+      "properties": {
+        "winner": {
+          "type": "string",
+          "description": "Player ID of the winner. Empty string if zero alive players remained."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "player_disconnected — emitted when a player is removed mid-match due to timeout/disconnect. Outer `player` is the disconnected player. All their cards are force-revealed; usually followed by player_eliminated and a state-flow continuation (advanceTurn / executeAction).",
+      "required": ["player"],
+      "additionalProperties": false,
+      "properties": {
+        "player": { "type": "string" }
+      }
+    }
+  ]
+}

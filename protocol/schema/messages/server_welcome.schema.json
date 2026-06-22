@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/messages/server_welcome.schema.json",
+  "title": "welcome",
+  "description": "Sent by the server immediately after a successful WebSocket authentication (X-API-Key header). Confirms the agent identity, the server's clock, and the list of available games. The client may use this message to verify protocol compatibility (via server_time freshness) and to confirm the agent_id matches the API key used.",
+  "type": "object",
+  "required": ["type", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "welcome"
+    },
+    "data": {
+      "type": "object",
+      "required": ["server_protocol_version", "agent_id", "agent_name", "server_time", "games"],
+      "additionalProperties": false,
+      "properties": {
+        "server_protocol_version": {
+          "type": "string",
+          "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+$",
+          "description": "SemVer string of the WebSocket protocol the server speaks (e.g. '1.0.0' or 'v1.0.0'). Mirrors the content of protocol/VERSION (currently 'v1.2.0'). Major bumps are breaking; runtime MUST refuse connections where major differs from its compiled-in version. Minor/patch are additive; runtime may warn but should continue. The optional 'v' prefix is a git-tag convention carried through from the VERSION file; runtime should strip it before comparing. Required per plan §6 / ADR-016."
+        },
+        "agent_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The authenticated agent's UUID (matches the API key's owning agent)."
+        },
+        "agent_name": {
+          "type": "string",
+          "description": "Human-readable agent name as registered via POST /api/agents/register."
+        },
+        "server_time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC3339 timestamp of the server clock at welcome-send time. Clients can use this for drift detection."
+        },
+        "games": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Registered game names the agent may join (e.g. texas_holdem, liars_dice, coup). Matches engine.Names() on the server."
+        }
+      }
+    },
+    "match_id": {
+      "type": "string",
+      "description": "Envelope-level field, not used for welcome. Server omits it; some clients may send empty. Kept optional for envelope compatibility."
+    }
+  }
+}

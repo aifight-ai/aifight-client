@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/games/liars_dice/action.schema.json",
+  "title": "LiarsDiceAction",
+  "description": "Action payload for Liar's Dice, sent as client_action.data when game == 'liars_dice'. Two discriminated variants by `type`. `challenge` is only legal when there is a current bid. `bid` has subtype constraints the server enforces via ValidateAction: must be strictly higher than current bid (same quantity + higher face, or higher quantity), and quantity must not exceed total_dice in play. Mirrors games/liarsdice/liarsdice.go GetLegalActions() + ValidateAction().",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["type", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "bid" },
+        "data": {
+          "type": "object",
+          "required": ["quantity", "face"],
+          "additionalProperties": false,
+          "properties": {
+            "quantity": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Claimed total count of the face value across all alive players' dice. Must be <= total_dice in state."
+            },
+            "face": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 6,
+              "description": "Face value you are bidding on (1-6). If face == 1, ones are NOT wild for this bid."
+            }
+          }
+        }
+      },
+      "description": "Make a bid. First bid of a round can be any valid (quantity, face). Subsequent bids must beat the current bid: either keep quantity and raise face, or raise quantity."
+    },
+    {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "challenge" },
+        "data": { "type": "object", "maxProperties": 0 }
+      },
+      "description": "Challenge the previous bid ('Liar!'). Only legal when current_bid is set. All dice are revealed; loser (bidder if bid fails, challenger if bid holds) drops a die."
+    }
+  ]
+}

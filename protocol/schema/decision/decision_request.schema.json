@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/decision/decision_request.schema.json",
+  "title": "AIFight Decision Protocol Request",
+  "description": "Runtime-independent decision request sent to an Agent decision system. It contains the current match session, legal actions, visible state, event context, turn timing, and optional local Markdown strategy sections.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "protocol_version",
+    "request_id",
+    "agent",
+    "match",
+    "turn",
+    "context"
+  ],
+  "properties": {
+    "type": { "const": "aifight.decision.request" },
+    "protocol_version": { "const": "aifight.decision.v1" },
+    "request_id": { "type": "string", "minLength": 1 },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "match": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id"],
+      "properties": {
+        "session_id": { "type": "string", "minLength": 1 },
+        "game": {
+          "type": "string",
+          "enum": ["texas_holdem", "liars_dice", "coup"]
+        }
+      }
+    },
+    "turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeout_ms", "is_reconnect", "retry"],
+      "properties": {
+        "timeout_ms": { "type": "integer", "minimum": 0 },
+        "deadline_at": { "type": "string", "format": "date-time" },
+        "is_reconnect": { "type": "boolean" },
+        "retry": { "type": "boolean" },
+        "retry_reason": { "type": "string" },
+        "retries_left": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "legal_actions", "players", "events"],
+      "properties": {
+        "state": true,
+        "legal_actions": {
+          "type": "array",
+          "items": { "$ref": "../common/action.schema.json" }
+        },
+        "players": {
+          "type": "array",
+          "items": { "$ref": "../common/player_info.schema.json" }
+        },
+        "events": {
+          "type": "array",
+          "items": { "$ref": "../common/event.schema.json" }
+        }
+      }
+    },
+    "strategy": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "format"],
+        "properties": {
+          "name": { "type": "string", "enum": ["general", "game"] },
+          "format": { "const": "markdown" },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "content": { "type": "string" }
+        }
+      }
+    }
+  }
+}

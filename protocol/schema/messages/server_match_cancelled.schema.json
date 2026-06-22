@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/messages/server_match_cancelled.schema.json",
+  "title": "match_cancelled",
+  "description": "Sent by the server when a pending match or an ongoing match's peer cohort does not hold together. Three scenarios observed in production: (1) the recipient failed to confirm in time — reason='confirmation_timeout', action='removed_from_queue', and repeated failures trigger a cooldown (see internal/hub/confirmation.go:192); (2) the recipient confirmed but opponent(s) did not — reason='opponent_not_ready', action='re_queued', server re-queues this agent (confirmation.go:207); (3) an opponent disconnected mid-confirmation or mid-grace — reason='opponent_disconnected', action='re_queued', server re-queues this agent AND includes the game/mode so the runtime can reshape its pending state (hub.go:1611). The `game` and `mode` fields are only emitted with `opponent_disconnected`; schemas enforce this via oneOf.",
+  "type": "object",
+  "required": ["type", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "type": { "const": "match_cancelled" },
+    "data": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["reason", "action"],
+          "additionalProperties": false,
+          "properties": {
+            "reason": { "const": "confirmation_timeout" },
+            "action": { "const": "removed_from_queue" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["reason", "action"],
+          "additionalProperties": false,
+          "properties": {
+            "reason": { "const": "opponent_not_ready" },
+            "action": { "const": "re_queued" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["reason", "action", "game", "mode"],
+          "additionalProperties": false,
+          "properties": {
+            "reason": { "const": "opponent_disconnected" },
+            "action": { "const": "re_queued" },
+            "game": {
+              "type": "string",
+              "description": "Game the cancelled match was for. Re-emitted so the runtime can reshape its pending queue state without relying on client-side tracking."
+            },
+            "mode": {
+              "type": "string",
+              "description": "Match mode (e.g. 'ranked', 'friendly')."
+            }
+          }
+        }
+      ]
+    }
+  }
+}

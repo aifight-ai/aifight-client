@@ -1,0 +1,120 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/games/liars_dice/event.schema.json",
+  "title": "LiarsDiceEvent",
+  "description": "Liar's Dice-specific event payload, describing the `data` field of common/event.schema.json when the event occurred in a Liar's Dice match. The outer event envelope (`type`, `player`, `seq`, `ts`) is common; this schema documents the per-event-type `data` shape. Discriminator is the outer `type` field. Mirrors games/liarsdice/liarsdice.go emission sites.",
+  "oneOf": [
+    {
+      "type": "object",
+      "description": "bid — emitted when a player places a bid. Outer envelope's `player` is the bidder.",
+      "required": ["quantity", "face"],
+      "additionalProperties": false,
+      "properties": {
+        "quantity": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Claimed count of the face value across all alive players' dice."
+        },
+        "face": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6,
+          "description": "Face value bid upon."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "challenge — emitted when a player challenges the current bid. Outer envelope's `player` is the challenger. Reveals ALL alive players' dice in `all_dice`.",
+      "required": ["challenger", "bidder", "bid_quantity", "bid_face", "actual_count", "bid_met", "all_dice", "loser"],
+      "additionalProperties": false,
+      "properties": {
+        "challenger": {
+          "type": "string",
+          "description": "Player ID of the challenger (same as outer `player`)."
+        },
+        "bidder": {
+          "type": "string",
+          "description": "Player ID who made the bid being challenged."
+        },
+        "bid_quantity": { "type": "integer", "minimum": 1 },
+        "bid_face": { "type": "integer", "minimum": 1, "maximum": 6 },
+        "actual_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Actual count of matching face values. If bid_face != 1, ones count as wild."
+        },
+        "bid_met": {
+          "type": "boolean",
+          "description": "True iff actual_count >= bid_quantity. When true, challenger loses a die; when false, bidder loses."
+        },
+        "all_dice": {
+          "type": "object",
+          "description": "Map of player_id -> array of their revealed dice face values (1-6). Only alive players at challenge time are included.",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 1, "maximum": 6 }
+          }
+        },
+        "loser": {
+          "type": "string",
+          "description": "Player ID who loses a die."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "player_eliminated — emitted when a player loses their last die. Outer envelope's `player` is the eliminated player.",
+      "required": ["player"],
+      "additionalProperties": false,
+      "properties": {
+        "player": {
+          "type": "string",
+          "description": "Player ID eliminated (same as outer `player`)."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "round_start — emitted at the start of each round after round 1 (or after a drop-induced reset). No `player`. Dice are re-rolled before this event.",
+      "required": ["round", "dice_counts"],
+      "additionalProperties": false,
+      "properties": {
+        "round": {
+          "type": "integer",
+          "minimum": 2,
+          "description": "New round number (>= 2)."
+        },
+        "dice_counts": {
+          "type": "object",
+          "description": "Map of player_id -> dice count for alive players only.",
+          "additionalProperties": { "type": "integer", "minimum": 1, "maximum": 5 }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "game_over — emitted when only one alive player remains (or zero, in degenerate cases). No `player`.",
+      "required": ["winner"],
+      "additionalProperties": false,
+      "properties": {
+        "winner": {
+          "type": "string",
+          "description": "Player ID of the winner. Empty string if no winner (e.g. simultaneous elimination)."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "player_disconnected — emitted when a player is removed mid-match due to timeout/disconnect. Outer envelope's `player` is the disconnected player. Usually followed by player_eliminated and possibly round_start.",
+      "required": ["player"],
+      "additionalProperties": false,
+      "properties": {
+        "player": {
+          "type": "string",
+          "description": "Player ID disconnected (same as outer `player`)."
+        }
+      }
+    }
+  ]
+}

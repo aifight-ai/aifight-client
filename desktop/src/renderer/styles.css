@@ -1,0 +1,144 @@
+@import "tailwindcss";
+
+/* Faithful copy of the website's game-visual styles + the @theme color/font
+   tokens they read, so the desktop draws matches identically to the online
+   replay/live view. The website's index.css is NOT modified — see the header in
+   game-visuals.css for why (shared .card/.chip classes) and how to re-sync. */
+@import "./game-visuals.css";
+
+/* Desktop shell tokens. The theme is switched by toggling the `light` / `dark`
+   class on <html> (see theme.tsx), which ALSO sets data-theme="light|dark" so
+   the vendored game tokens above follow the same switch. The app chrome reads
+   these via var(--token).
+
+   These are tuned to the WEBSITE's "paper" palette (see the @theme block in
+   game-visuals.css, copied from web/src/index.css) so the app chrome matches the
+   game canvas and aifight.ai: warm paper surfaces + the brand orange accent
+   (#FF700A light / #FF8A3D dark), not the old off-brand indigo.
+     --accent       brand orange — buttons, borders, focus rings, active marks
+     --accent-2     lighter orange — the second stop of the logo/hero gradient
+     --accent-soft  faint orange wash — highlighted stat tiles, the "in match" pill
+     --accent-text  legible brand-orange text (deepened on light paper for contrast) */
+
+.light {
+  color-scheme: light;
+  --bg: #faf9f6;
+  --surface: #ffffff;
+  --surface-2: #f4f3ee;
+  --text: #1a1a1a;
+  --text-muted: #6b6b6b;
+  --text-faint: #8a8a8a;
+  --border: #e5e1d8;
+  --accent: #ff700a;
+  --accent-2: #ff9a4a;
+  --accent-soft: rgba(255, 112, 10, 0.1);
+  --accent-text: #d85c00;
+  --hover: rgba(0, 0, 0, 0.045);
+  --active: rgba(0, 0, 0, 0.08);
+}
+
+.dark {
+  color-scheme: dark;
+  --bg: #0e0e10;
+  --surface: #1a1a1d;
+  --surface-2: #222226;
+  --text: #f4f1ea;
+  --text-muted: #b9b4a8;
+  --text-faint: #908b7f;
+  --border: #2d2d34;
+  --accent: #ff8a3d;
+  --accent-2: #ffa870;
+  --accent-soft: rgba(255, 138, 61, 0.14);
+  --accent-text: #ff8a3d;
+  --hover: rgba(255, 255, 255, 0.05);
+  --active: rgba(255, 255, 255, 0.1);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "SF Pro Text", "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* macOS hidden-inset title bar drag regions. */
+.app-drag {
+  -webkit-app-region: drag;
+}
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Paper-style raised card — mirrors the website's .card-raised so app surfaces get
+   the same soft elevation instead of looking flat. --shadow-paper-1/2 come from the
+   vendored @theme (game-visuals.css) and are already theme-aware. */
+.app-card {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 12px;
+  box-shadow: var(--shadow-paper-1);
+}
+.app-card-hover {
+  transition: box-shadow 160ms ease, border-color 160ms ease;
+}
+.app-card-hover:hover {
+  box-shadow: var(--shadow-paper-2);
+  border-color: var(--color-border-3);
+}
+
+/* Editorial serif display, matching the website's titles. The font tokens resolve
+   to Source Serif 4 → Georgia / PingFang SC fallbacks (no web fonts bundled yet). */
+.font-display {
+  font-family: var(--font-serif);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+/* .btn / .btn-secondary / .btn-sm — the desktop chrome uses bespoke styles, but
+   shared web components (e.g. the reused AvatarPicker) reference these classes.
+   Define a faithful, token-driven fallback so the shared UI looks native here. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, opacity 140ms ease;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.btn-sm {
+  padding: 6px 11px;
+  font-size: 12.5px;
+}
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-2);
+}
+.btn-secondary {
+  background: var(--surface-2);
+  color: var(--text);
+  border-color: var(--border);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--hover);
+}

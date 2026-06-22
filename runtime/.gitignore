@@ -1,0 +1,9 @@
+# Build output — reproducible via build.sh, not committed.
+dist/
+*.tgz
+node_modules/
+
+# M1-04 build artifact: schema.sql inlined as TS string constant
+# via scripts/bundle-schema.mjs. Regenerated on every check-types /
+# test / build; never commit.
+src/store/schema.generated.ts

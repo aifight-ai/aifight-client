@@ -1,0 +1,75 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/messages/server_action_request.schema.json",
+  "title": "action_request",
+  "description": "Sent by the server when it is the client's turn to act. `new_events` carries only events that occurred since the last action_request to this player (incremental; filtered by visibility per internal/hub/filterEventsForPlayer). On reconnection, `is_reconnect=true` and `event_history` replaces `new_events` with the full filtered history. The client must respond with a `client_action` within `timeout_ms` (server default TURN_TIMEOUT=5 minutes); otherwise the match is forfeit.",
+  "type": "object",
+  "required": ["type", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "type": { "const": "action_request" },
+    "data": {
+      "type": "object",
+      "required": ["match_id", "state", "legal_actions", "players", "timeout_ms", "new_events"],
+      "additionalProperties": false,
+      "properties": {
+        "match_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Per-player session_id matching game_start.data.match_id."
+        },
+        "state": {
+          "type": "object",
+          "description": "Game-specific state (PlayerView.GameData). Includes public + private-to-you fields. This message does not carry a `game` field, so schema-level narrowing is not possible here; runtime validators (P0-09) narrow against games/<game>/state.schema.json based on active match context. Per-game state schemas: games/texas_holdem/state.schema.json, games/liars_dice/state.schema.json, games/coup/state.schema.json."
+        },
+        "legal_actions": {
+          "type": ["array", "null"],
+          "items": { "$ref": "../common/action.schema.json" },
+          "description": "The full set of actions legal for you at this decision point. Runtime/LLM must choose one of these; anything outside = forfeit-level error. May be `null` in degenerate cases (e.g. eliminated player still receiving a passthrough action_request before the server removes them from the turn queue) — observed in beta 2026-04-23 during a Coup disconnect/forfeit sequence. Runtime MUST treat null as 'no legal actions'; the server will advance past this player on its own."
+        },
+        "players": {
+          "type": "array",
+          "items": { "$ref": "../common/player_info.schema.json" },
+          "description": "Public player view (anonymized names, game-specific public data)."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Milliseconds within which you must respond. Server default 300000 (5 min)."
+        },
+        "new_events": {
+          "type": ["array", "null"],
+          "items": { "$ref": "../common/event.schema.json" },
+          "description": "Events that occurred since your last action_request, filtered by visibility. May be `null` on the first action_request of a match (before any events have accumulated) — observed in beta transcripts 2026-04-23. Runtime MUST treat null and [] identically."
+        },
+        "event_history": {
+          "type": "array",
+          "items": { "$ref": "../common/event.schema.json" },
+          "description": "Full filtered event history since match start. Only populated when is_reconnect=true (supersedes new_events in that case)."
+        },
+        "is_reconnect": {
+          "type": "boolean",
+          "description": "True when this action_request is a re-send after client reconnect. Runtime should use event_history to rebuild full context."
+        },
+        "retry": {
+          "type": "boolean",
+          "description": "True when this action_request is the server's retry offer after the runtime sent an invalid action. Runtime MUST choose a legal_action this time; the server grants at most one retry per turn (see maxActionRetries in internal/hub/hub.go)."
+        },
+        "retry_reason": {
+          "type": "string",
+          "description": "Why the retry was granted. Currently only 'invalid_action' is emitted. Present iff retry == true."
+        },
+        "retries_left": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Retries remaining after this one. Usually 0 (at most one retry). Present iff retry == true."
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Server-generated id of THIS action_request (protocol v1.2, F07/R3-01). Echo it back as the `request_id` field of your `action` message. In multi-responder phases (Coup challenge/block) another player's response can supersede this request; an action echoing a superseded id is answered with `action_stale` (no retry consumed, no invalid_action) instead of being judged against a state you never saw. Only sent to clients that declared protocol >= v1.2.0 via the X-AIFight-Protocol-Version connect header."
+        }
+      }
+    },
+    "match_id": { "type": "string" }
+  }
+}

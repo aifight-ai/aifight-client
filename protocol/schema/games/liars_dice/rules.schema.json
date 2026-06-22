@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/games/liars_dice/rules.schema.json",
+  "title": "LiarsDiceRules",
+  "description": "Rules payload for Liar's Dice, delivered in server_game_start.data.rules when game == 'liars_dice'. Mirrors games/liarsdice/liarsdice.go Game.Rules(). Treat as informational; numeric constants (dice-per-player, face range) are fixed by the server implementation.",
+  "type": "object",
+  "required": ["name", "summary", "available_actions", "key_rules"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "const": "Liar's Dice"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Free-form summary paragraph; treat as informational."
+    },
+    "phases": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable phase descriptions (bidding is the only phase in this implementation)."
+    },
+    "available_actions": {
+      "type": "object",
+      "required": ["bid", "challenge"],
+      "additionalProperties": false,
+      "properties": {
+        "bid": { "type": "string" },
+        "challenge": { "type": "string" }
+      }
+    },
+    "key_rules": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

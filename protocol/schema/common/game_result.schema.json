@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/common/game_result.schema.json",
+  "title": "GameResult",
+  "description": "Final outcome of a match, carried in game_over.data.result. Mirrors engine.GameResult in internal/engine/types.go. `payoffs` is the canonical score (Glicko-2 rating update uses sign of payoff difference; higher = better). `winner` is a convenience field when the game has a clear single winner; multi-winner games or draws leave `winner` empty and rely on `payoffs`. `is_draw` is game-specific semantic — not always equivalent to `winner == \"\"`.",
+  "type": "object",
+  "required": ["payoffs", "is_draw"],
+  "additionalProperties": false,
+  "properties": {
+    "payoffs": {
+      "type": "object",
+      "description": "Map of PlayerID -> payoff (float). Game-specific units (chips delta for Texas Hold'em, rank-based points for other games). Rating updates consume the sign of differences.",
+      "additionalProperties": { "type": "number" }
+    },
+    "winner": {
+      "type": "string",
+      "description": "PlayerID of the single winner, if applicable. Empty for draws / multi-winner games."
+    },
+    "is_draw": {
+      "type": "boolean",
+      "description": "True if the match is explicitly a draw by game rules."
+    },
+    "details": {
+      "type": "object",
+      "description": "Per-player game-specific details (final hand, tricks won, etc.). Optional; game-specific structure per inner value.",
+      "additionalProperties": {
+        "type": "object"
+      }
+    }
+  }
+}

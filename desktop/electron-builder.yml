@@ -1,0 +1,80 @@
+# electron-builder packaging. Produces installable artifacts for macOS (dmg +
+# zip — the zip feeds electron-updater) and Windows (NSIS). Code signing and
+# notarization are intentionally NOT enabled yet: wire them once the Apple
+# Developer ID + Windows cert are in hand (see DESKTOP_PACKAGING.md). Until then,
+#   CSC_IDENTITY_AUTO_DISCOVERY=false npm run package
+# produces an unsigned build for local validation.
+
+appId: ai.aifight.desktop
+productName: AIFight
+copyright: © AIFight
+
+directories:
+  output: release
+  buildResources: build
+
+# Bundled main/preload/renderer + the copied protocol schemas live under dist/.
+# Production deps (better-sqlite3, @napi-rs/keyring, ws, electron-updater) are
+# pulled in from node_modules automatically. Sourcemaps are stripped.
+files:
+  - "dist/**/*"
+  - "package.json"
+  - "!dist/**/*.map"
+
+# Native .node addons cannot be loaded from inside the asar — unpack them.
+asarUnpack:
+  - "**/*.node"
+  - "node_modules/better-sqlite3/**"
+  - "node_modules/@napi-rs/keyring/**"
+
+# Rebuild native deps against Electron's ABI during packaging.
+npmRebuild: true
+
+# After signing, notarize + staple the .app (auth via the "aifight-notary"
+# keychain profile). SKIP_NOTARIZE=1 bypasses it for a fast signed-only check.
+afterSign: build/notarize.cjs
+# After the dmg is built, notarize + staple the .dmg container too, so the
+# downloaded disk image itself passes Gatekeeper (the .app inside is already
+# stapled by afterSign). SKIP_NOTARIZE=1 bypasses it.
+afterAllArtifactBuild: build/notarize-dmg.cjs
+
+mac:
+  category: public.app-category.games
+  target:
+    - dmg
+    - zip # required: electron-updater updates macOS via the zip artifact
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  # Hardened-runtime entitlements (inert for unsigned builds; applied only when a
+  # real Developer ID identity signs the app).
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  # Notarization stays OFF here so unsigned local validation
+  # (CSC_IDENTITY_AUTO_DISCOVERY=false npm run package) still works. Flip it on at
+  # release time once the Developer ID cert is installed AND the notary creds are
+  # exported in the shell: set `notarize: true` and provide APPLE_ID /
+  # APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID. electron-builder calls notarytool.
+  # notarize: true
+
+win:
+  target:
+    - nsis
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+# Linux needs no code-signing cert (the OS doesn't enforce signing). AppImage is
+# a single self-contained, no-install binary — the lowest-friction Linux target.
+linux:
+  target:
+    - AppImage
+  category: Game
+
+# Auto-update feed. Placeholder generic provider — finalize the host (or switch
+# to a GitHub provider) when the first release is published. electron-updater
+# reads the generated app-update.yml from this block.
+publish:
+  provider: generic
+  url: https://aifight.ai/desktop

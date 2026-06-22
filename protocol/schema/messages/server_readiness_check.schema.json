@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/messages/server_readiness_check.schema.json",
+  "title": "readiness_check",
+  "description": "Sent by the server to ask the outbound Bridge to check whether its local Agent runtime is currently ready to answer match decisions. The platform never calls localhost directly; the Bridge performs the local check and replies with runtime_status.",
+  "type": "object",
+  "required": ["type", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "readiness_check"
+    },
+    "data": {
+      "type": "object",
+      "required": ["request_id"],
+      "additionalProperties": false,
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "description": "Opaque request ID echoed by runtime_status."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable reason for the check, such as competition_finals."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Suggested time budget for the local readiness check."
+        },
+        "server_time": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "match_id": {
+      "type": "string",
+      "description": "Envelope-level field, not used for readiness_check."
+    }
+  }
+}

@@ -1,0 +1,98 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/games/texas_holdem/state.schema.json",
+  "title": "TexasHoldemState",
+  "description": "Per-player state delivered in server_action_request.data.state (and server_game_state.data.state) when game == 'texas_holdem'. Built by games/texasholdem/texasholdem.go GetPlayerView(). Mixes **public fields** (visible to all: phase, community_cards, pot, etc.) with **private fields** (only visible to recipient: your_hand, your_chips, your_bet, etc.). At showdown (phase == 'done'), all non-folded players' hole cards are revealed via optional `player_N_hand` fields.",
+  "type": "object",
+  "required": [
+    "phase", "community_cards", "pot", "current_bet",
+    "dealer", "dealer_id", "hand_num", "max_hands",
+    "small_blind", "big_blind"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "phase": {
+      "type": "string",
+      "enum": ["preflop", "flop", "turn", "river", "showdown", "done"],
+      "description": "Current hand phase. 'showdown' = cards compared, 'done' = match fully complete."
+    },
+    "community_cards": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Card notation: rank (2-9, T, J, Q, K, A) + suit (c, d, h, s). E.g. 'Ah' = Ace of hearts."
+      },
+      "description": "0 cards preflop; 3 on flop; 4 on turn; 5 on river."
+    },
+    "pot": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total chips in all pots (main + any side pots) this hand."
+    },
+    "current_bet": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The highest bet any player has contributed this betting round. To continue, you must match this (by call/raise/allin) or fold."
+    },
+    "dealer": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Seat index of the dealer button this hand."
+    },
+    "dealer_id": {
+      "type": "string",
+      "description": "Player ID of the dealer this hand."
+    },
+    "hand_num": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Current hand number (1-based)."
+    },
+    "max_hands": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Total hands in this match."
+    },
+    "small_blind": { "type": "integer", "minimum": 1 },
+    "big_blind": { "type": "integer", "minimum": 1 },
+    "current_player_id": {
+      "type": "string",
+      "description": "Player ID currently on the action. Omitted when hand is over or match is done."
+    },
+    "action_order": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Player IDs in the order they are expected to act this phase (clockwise from first-to-act, busted players removed). Omitted at showdown/done."
+    },
+    "your_hand": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 2,
+      "maxItems": 2,
+      "description": "**PRIVATE.** Your two hole cards."
+    },
+    "your_chips": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "**PRIVATE.** Your current stack."
+    },
+    "your_bet": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "**PRIVATE.** Chips you've committed this round (not total-hand)."
+    },
+    "your_seat": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "**PRIVATE.** Your seat index."
+    },
+    "your_position": {
+      "type": "string",
+      "description": "**PRIVATE.** Position name (e.g. 'BTN', 'SB', 'BB', 'UTG', 'MP', 'CO')."
+    },
+    "your_player_id": {
+      "type": "string",
+      "description": "**PRIVATE.** Your player ID. Matches server_game_start.data.your_player_id."
+    }
+  }
+}

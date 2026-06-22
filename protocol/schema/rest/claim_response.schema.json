@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/rest/claim_response.schema.json",
+  "title": "ClaimResponse",
+  "description": "Response body for POST /api/claim on HTTP 200. `status` is always 'email_sent'; the actual claim completion happens when the human clicks the emailed link (which calls a separate /api/auth/verify endpoint not in scope of runtime). In dev mode (s.auth.DevMode), also returns `dev_token` so tests can skip the email step. Mirrors internal/server/server.go:1097 writeJSON call.",
+  "type": "object",
+  "required": ["status", "message"],
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["email_sent"],
+      "description": "Always 'email_sent' on success."
+    },
+    "message": {
+      "type": "string",
+      "description": "Human-readable message (e.g. 'Verification email sent to foo@bar.com.'). Content is informational."
+    },
+    "dev_token": {
+      "type": "string",
+      "description": "Only present in dev mode. Skips the email-click step for test automation. Never present in production."
+    }
+  }
+}

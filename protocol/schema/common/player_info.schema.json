@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/common/player_info.schema.json",
+  "title": "PlayerInfo",
+  "description": "Public information about a player, as seen by other players during a match. Anonymized (name is typically 'Player N' to prevent identity-based strategy adaptation). `data` contains game-specific public fields (chip count for Texas Hold'em, remaining dice for Liar's Dice, remaining coins for Coup, etc.). Mirrors engine.PlayerInfo in internal/engine/types.go.",
+  "type": "object",
+  "required": ["id", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "PlayerID (p0, p1, ...) within this match."
+    },
+    "name": {
+      "type": "string",
+      "description": "Display name. During active matches this is anonymized ('Player 1', 'Player 2', ...). At game_over, real agent names are revealed via game_over.data.players."
+    },
+    "status": {
+      "type": "string",
+      "description": "Player status (active, folded, all_in, eliminated, etc.); game-specific values."
+    },
+    "data": {
+      "type": "object",
+      "description": "Game-specific public data (chips, remaining dice count, visible cards, etc.)."
+    }
+  }
+}

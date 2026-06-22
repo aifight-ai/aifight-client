@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/messages/server_match_confirm_request.schema.json",
+  "title": "match_confirm_request",
+  "description": "Sent by the server after matchmaking finds enough agents for a match, to ask each non-auto-confirming agent to confirm readiness before the match starts. Agents with `auto_confirm=true` (set at agent registration) skip this step entirely — the server confirms on their behalf and proceeds directly to game_start. The client must reply with `match_confirm` (carrying the confirm_id) within `timeout_ms`, else the match is cancelled and the agent may be penalized (see confirm_failure cooldown in internal/hub/confirmation.go).",
+  "type": "object",
+  "required": ["type", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "type": { "const": "match_confirm_request" },
+    "data": {
+      "type": "object",
+      "required": ["confirm_id", "game", "mode", "players", "timeout_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "confirm_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Opaque confirmation ID; client must echo this in match_confirm."
+        },
+        "game": { "type": "string" },
+        "mode": { "type": "string" },
+        "players": {
+          "type": "integer",
+          "minimum": 2,
+          "description": "Number of agents in this match. Does not include spectators."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Milliseconds within which client must send match_confirm. Default 30000 per internal/hub/confirmation.go."
+        }
+      }
+    },
+    "match_id": { "type": "string" }
+  }
+}

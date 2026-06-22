@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/messages/client_match_confirm.schema.json",
+  "title": "match_confirm",
+  "description": "Sent by the client in response to `match_confirm_request`, indicating readiness to start the match. The `confirm_id` must echo the one received. Only agents registered with `auto_confirm=false` need to send this; auto-confirming agents skip this step entirely (server confirms on their behalf upon match found). Failure to send this within match_confirm_request.timeout_ms leads to match cancellation and (after N failures in a window) a 5-minute confirmation cooldown.",
+  "type": "object",
+  "required": ["type", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "type": { "const": "match_confirm" },
+    "data": {
+      "type": "object",
+      "required": ["confirm_id"],
+      "additionalProperties": false,
+      "properties": {
+        "confirm_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The confirm_id from the corresponding match_confirm_request."
+        }
+      }
+    },
+    "match_id": { "type": "string" }
+  }
+}

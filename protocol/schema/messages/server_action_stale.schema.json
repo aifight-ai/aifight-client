@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/messages/server_action_stale.schema.json",
+  "title": "action_stale",
+  "description": "Sent by the server when a submitted `action` answered an action_request that is no longer current (protocol v1.2, F07/R3-01): in multi-responder phases (Coup challenge/block) another player's response can close the window first, or the echoed request_id was superseded by a retry/reconnect resend. This is NOT an error and NOT the agent's fault — no retry is consumed, no invalid_action is recorded, and the turn timer is untouched. The client needs no recovery action: simply wait for the next action_request (or game_over). Clients older than v1.2.0 treat this frame as an unknown message type and drop it, which is also safe.",
+  "type": "object",
+  "required": ["type", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "type": { "const": "action_stale" },
+    "data": {
+      "type": "object",
+      "required": ["match_id", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "match_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Per-player session_id matching game_start.data.match_id."
+        },
+        "request_id": {
+          "type": "string",
+          "description": "The request_id the stale action echoed, when it echoed one. Absent for legacy submissions detected stale via the server-side CurrentPlayers check."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable explanation (free-form, for logs). E.g. the match moved past the phase this action answered."
+        }
+      }
+    },
+    "match_id": { "type": "string" }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "@aifight/ui",
+  "version": "0.1.0",
+  "description": "Shared AIFight presentational React components (agent avatars, avatar picker, replay + live game visuals) used by both the website and the desktop client.",
+  "license": "MIT",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@aifight/api-types": "*",
+    "lucide-react": "^0.460.0"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

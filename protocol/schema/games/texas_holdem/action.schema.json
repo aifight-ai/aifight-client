@@ -1,0 +1,88 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/games/texas_holdem/action.schema.json",
+  "title": "TexasHoldemAction",
+  "description": "Action payload for Texas Hold'em, sent as client_action.data when game == 'texas_holdem'. One of five discriminated variants by `type`. Legal actions at any point are enumerated in server_action_request.data.legal_actions; client must pick one of those. Mirrors games/texasholdem/texasholdem.go GetLegalActions() + ValidateAction().",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "fold" },
+        "data": { "type": "object", "maxProperties": 0 }
+      },
+      "description": "Surrender the hand. Only legal when there's a bet to call (toCall > 0)."
+    },
+    {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "check" },
+        "data": { "type": "object", "maxProperties": 0 }
+      },
+      "description": "Pass. Only legal when no bet to call (toCall == 0)."
+    },
+    {
+      "type": "object",
+      "required": ["type", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "call" },
+        "data": {
+          "type": "object",
+          "required": ["amount"],
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "type": "number",
+              "minimum": 1,
+              "description": "Chips to call. Must equal server's suggested call amount from legal_actions[call].data.amount. Short-stack auto-caps to remaining chips."
+            }
+          }
+        }
+      },
+      "description": "Match the current bet. Legal only when toCall > 0."
+    },
+    {
+      "type": "object",
+      "required": ["type", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "raise" },
+        "data": {
+          "type": "object",
+          "required": ["amount"],
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "type": "number",
+              "minimum": 1,
+              "description": "Total bet size (NOT the delta). Must be >= min_raise total and <= max (all-in). Server provides min/max in legal_actions[raise].data.{min,max}."
+            },
+            "min": {
+              "type": "number",
+              "description": "Echo of server-provided min (not required on outbound)."
+            },
+            "max": {
+              "type": "number",
+              "description": "Echo of server-provided max (not required on outbound)."
+            }
+          }
+        }
+      },
+      "description": "Increase the bet. Not legal when last raise was a short all-in (ShortAllInBet flag blocks further raises this round)."
+    },
+    {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "allin" },
+        "data": { "type": "object", "maxProperties": 0 }
+      },
+      "description": "Bet all remaining chips. Legal whenever you have chips. Creates side pot if < current_bet + min_raise (short all-in)."
+    }
+  ]
+}

@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "protocols": {
+    "anthropic_messages": {
+      "displayName": "Anthropic Messages API",
+      "defaultBaseURL": "https://api.anthropic.com",
+      "supportsBaseURL": true,
+      "supportsTemperature": true,
+      "supportsJSONMode": false,
+      "supportsThinking": true,
+      "supportsReasoningSummary": false,
+      "maxTokensParam": "max_tokens",
+      "effortValues": ["low", "medium", "high", "xhigh", "max"],
+      "defaultEffort": "high",
+      "models": [
+        {
+          "pattern": "^claude-opus-4-7",
+          "thinkingModes": ["adaptive"],
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "supportsManualBudget": false,
+          "supportsTemperature": false,
+          "maxOutputTokens": 128000,
+          "notes": "Use adaptive thinking + output_config.effort. Never send manual budget_tokens."
+        },
+        {
+          "pattern": "^claude-opus-4-6",
+          "thinkingModes": ["adaptive"],
+          "efforts": ["low", "medium", "high", "max"],
+          "supportsManualBudget": true,
+          "supportsTemperature": true,
+          "maxOutputTokens": 128000,
+          "notes": "xhigh not supported. Manual budget deprecated but functional."
+        },
+        {
+          "pattern": "^claude-sonnet-4",
+          "thinkingModes": ["adaptive"],
+          "efforts": ["low", "medium", "high", "max"],
+          "supportsManualBudget": true,
+          "supportsTemperature": true,
+          "maxOutputTokens": 64000,
+          "notes": "Good cost/performance default."
+        }
+      ]
+    },
+    "openai_responses": {
+      "displayName": "OpenAI Responses API",
+      "defaultBaseURL": "https://api.openai.com/v1",
+      "supportsBaseURL": true,
+      "supportsTemperature": true,
+      "supportsJSONMode": true,
+      "supportsThinking": true,
+      "supportsReasoningSummary": true,
+      "maxTokensParam": "max_output_tokens",
+      "effortValues": ["none", "minimal", "low", "medium", "high", "xhigh"],
+      "defaultEffort": "medium",
+      "models": [
+        {
+          "pattern": "^gpt-5\\.5",
+          "efforts": ["none", "low", "medium", "high", "xhigh"],
+          "defaultEffort": "medium",
+          "maxOutputTokens": 128000,
+          "notes": "Default medium. Reasoning tokens billed as output."
+        },
+        {
+          "pattern": "^gpt-5\\.4",
+          "efforts": ["none", "low", "medium", "high", "xhigh"],
+          "defaultEffort": "none",
+          "maxOutputTokens": 128000,
+          "notes": "Default none is dangerous for strategy games. Set effort explicitly."
+        }
+      ]
+    },
+    "openai_chat_completions": {
+      "displayName": "OpenAI Chat Completions API",
+      "defaultBaseURL": "https://api.openai.com/v1",
+      "supportsBaseURL": true,
+      "supportsTemperature": true,
+      "supportsJSONMode": true,
+      "supportsThinking": false,
+      "supportsReasoningSummary": false,
+      "maxTokensParam": "max_completion_tokens",
+      "effortValues": [],
+      "models": []
+    },
+    "openai_chat_compat": {
+      "displayName": "OpenAI-Compatible Chat API",
+      "defaultBaseURL": "",
+      "supportsBaseURL": true,
+      "supportsTemperature": true,
+      "supportsJSONMode": true,
+      "supportsThinking": false,
+      "supportsReasoningSummary": false,
+      "maxTokensParam": "max_tokens",
+      "effortValues": [],
+      "models": [],
+      "notes": "Generic compatibility. Validate per provider."
+    },
+    "deepseek_chat_completions": {
+      "displayName": "DeepSeek Chat Completions",
+      "defaultBaseURL": "https://api.deepseek.com",
+      "supportsBaseURL": true,
+      "supportsTemperature": "ignored_when_thinking",
+      "supportsJSONMode": true,
+      "supportsThinking": true,
+      "supportsReasoningSummary": false,
+      "maxTokensParam": "max_tokens",
+      "effortValues": ["high", "max"],
+      "defaultEffort": "high",
+      "compatEffortMap": {
+        "low": "high",
+        "medium": "high",
+        "xhigh": "max"
+      },
+      "models": [
+        {
+          "pattern": "^deepseek-v4-(pro|flash)",
+          "thinkingModes": ["enabled", "disabled"],
+          "efforts": ["high", "max"],
+          "samplingIgnoredWhenThinking": true,
+          "maxOutputTokens": 65536,
+          "notes": "thinking defaults to enabled. temperature/top_p have no effect in thinking mode."
+        }
+      ]
+    },
+    "gemini_generate_content": {
+      "displayName": "Google Gemini generateContent API",
+      "defaultBaseURL": "https://generativelanguage.googleapis.com/v1beta",
+      "supportsBaseURL": true,
+      "supportsTemperature": true,
+      "supportsJSONMode": true,
+      "supportsThinking": true,
+      "supportsReasoningSummary": false,
+      "maxTokensParam": "maxOutputTokens",
+      "effortValues": ["minimal", "low", "medium", "high"],
+      "defaultEffort": "high",
+      "models": [
+        {
+          "pattern": "^gemini-3",
+          "thinkingParam": "thinkingLevel",
+          "efforts": ["minimal", "low", "medium", "high"],
+          "maxOutputTokens": 65536,
+          "notes": "Gemini 3.x uses thinkingLevel. 3.1 Pro does not support minimal."
+        },
+        {
+          "pattern": "^gemini-2\\.5",
+          "thinkingParam": "thinkingBudget",
+          "efforts": [],
+          "maxOutputTokens": 65536,
+          "notes": "Gemini 2.5 uses thinkingBudget (token count), not thinkingLevel."
+        }
+      ]
+    }
+  }
+}

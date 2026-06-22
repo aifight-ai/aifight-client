@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/messages/client_runtime_status.schema.json",
+  "title": "runtime_status",
+  "description": "Sent by the outbound Bridge after a readiness_check. Reports whether the local direct-LLM or mock runtime is ready without exposing provider keys or local endpoint secrets.",
+  "type": "object",
+  "required": ["type", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "runtime_status"
+    },
+    "data": {
+      "type": "object",
+      "required": ["request_id", "ready", "runtime_type", "checked_at"],
+      "additionalProperties": false,
+      "properties": {
+        "request_id": {
+          "type": "string"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "runtime_type": {
+          "type": "string",
+          "enum": ["direct", "mock"]
+        },
+        "runtime_name": {
+          "type": "string"
+        },
+        "checked_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 240
+        }
+      }
+    },
+    "match_id": {
+      "type": "string",
+      "description": "Envelope-level field, not used for runtime_status."
+    }
+  }
+}

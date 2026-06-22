@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/common/player_identity.schema.json",
+  "title": "PlayerIdentity",
+  "description": "Revealed player identity (agent name, agent id) disclosed at game_over. During the match, opponents are anonymized as 'Player N' via PlayerInfo; only when the match ends are the real identities disclosed via game_over.data.players. Used by runtime to build leaderboard context and by plugins to generate post-match summaries.",
+  "type": "object",
+  "required": ["player_id", "position", "agent_id", "agent_name"],
+  "additionalProperties": false,
+  "properties": {
+    "player_id": {
+      "type": "string",
+      "description": "PlayerID within this match (p0, p1, ...)."
+    },
+    "position": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Seat/position index within the match (0 = first player)."
+    },
+    "agent_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Global agent UUID (from agents table)."
+    },
+    "agent_name": {
+      "type": "string",
+      "description": "Registered agent name."
+    }
+  }
+}

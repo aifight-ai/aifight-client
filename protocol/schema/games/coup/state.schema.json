@@ -1,0 +1,123 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/games/coup/state.schema.json",
+  "title": "CoupState",
+  "description": "Per-player state delivered in server_action_request.data.state when game == 'coup'. Built by games/coup/coup.go GetPlayerView() L1592. Mixes **public fields** (phase, current_turn, pending_action, pending_target, claimed_role, blocker, block_role, influence_loser, turn_log, winner) with **private fields** (your_cards, your_revealed, coins, exchange_cards, all_exchange_options). The outer PlayerView.players array carries coins + hidden_cards count + revealed cards for everyone (public); only the recipient sees their own hidden card roles via your_cards.",
+  "type": "object",
+  "required": ["phase", "current_turn"],
+  "additionalProperties": true,
+  "properties": {
+    "phase": {
+      "type": "string",
+      "enum": ["action", "challenge_action", "block", "challenge_block", "lose_influence", "exchange_return", "done"],
+      "description": "State machine phase. 'action' = actor chooses. 'challenge_action' = others may challenge role claim. 'block' = eligible players may block. 'challenge_block' = anyone may challenge the block. 'lose_influence' = a player reveals a card. 'exchange_return' = Ambassador picks cards to return."
+    },
+    "current_turn": {
+      "type": "string",
+      "description": "Player ID whose turn it is (i.e. the actor of this action). Not necessarily the player being prompted — see legal_actions in the message envelope."
+    },
+    "pending_action": {
+      "type": "string",
+      "enum": ["income", "foreign_aid", "coup", "tax", "assassinate", "steal", "exchange"],
+      "description": "The action being resolved. Present in all phases except 'action' (when the actor is picking) and 'done'."
+    },
+    "pending_target": {
+      "type": "string",
+      "description": "Player ID target of the pending action (coup/assassinate/steal). Omitted when action has no target."
+    },
+    "claimed_role": {
+      "type": "string",
+      "enum": ["Duke", "Assassin", "Captain", "Ambassador", "Contessa"],
+      "description": "Role the actor claims for their action (Tax=Duke, Assassinate=Assassin, Steal=Captain, Exchange=Ambassador). Omitted for income / foreign_aid / coup (no role claim)."
+    },
+    "blocker": {
+      "type": "string",
+      "description": "Player ID who has declared a block. Present in 'challenge_block' phase; absent otherwise."
+    },
+    "block_role": {
+      "type": "string",
+      "enum": ["Duke", "Contessa", "Captain", "Ambassador"],
+      "description": "Role the blocker claims (Duke blocks foreign_aid; Contessa blocks assassinate; Captain or Ambassador blocks steal). Present in 'challenge_block' phase."
+    },
+    "influence_loser": {
+      "type": "string",
+      "description": "Player ID who must choose a card to reveal. Present in 'lose_influence' phase."
+    },
+    "turn_log": {
+      "type": "object",
+      "description": "Narrative trace of this turn's resolution. Fields populate as the turn progresses. All entries refer to the current turn; cleared when advanceTurn() runs.",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["income", "foreign_aid", "coup", "tax", "assassinate", "steal", "exchange"]
+        },
+        "actor": { "type": "string" },
+        "target": { "type": "string" },
+        "claimed_role": {
+          "type": "string",
+          "enum": ["Duke", "Assassin", "Captain", "Ambassador", "Contessa"]
+        },
+        "challenger": { "type": "string" },
+        "challenge_result": {
+          "type": "string",
+          "enum": ["success", "fail"],
+          "description": "'success' = actor was lying, actor loses influence. 'fail' = actor was truthful, challenger loses influence."
+        },
+        "blocker": { "type": "string" },
+        "block_role": {
+          "type": "string",
+          "enum": ["Duke", "Contessa", "Captain", "Ambassador"]
+        },
+        "block_challenger": { "type": "string" },
+        "block_challenge_result": {
+          "type": "string",
+          "enum": ["success", "fail"],
+          "description": "'success' = blocker was lying, blocker loses influence. 'fail' = blocker was truthful, block_challenger loses influence."
+        }
+      }
+    },
+    "your_cards": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["Duke", "Assassin", "Captain", "Ambassador", "Contessa"]
+      },
+      "maxItems": 2,
+      "description": "**PRIVATE.** Your unrevealed (face-down) cards. 1-2 entries. Replaced by server after a successful-claim challenge shuffle-and-redraw."
+    },
+    "your_revealed": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["Duke", "Assassin", "Captain", "Ambassador", "Contessa"]
+      },
+      "description": "Your face-up (revealed) cards. Public — opponents' equivalent appears in the players array's `revealed` field."
+    },
+    "coins": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "**PRIVATE** convenience field (opponents' coins are in the players array's `coins`). Your current coin count."
+    },
+    "exchange_cards": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["Duke", "Assassin", "Captain", "Ambassador", "Contessa"]
+      },
+      "description": "**PRIVATE.** The 2 cards drawn from the deck for your pending Exchange. Present only when phase == 'exchange_return' AND you are the actor."
+    },
+    "all_exchange_options": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["Duke", "Assassin", "Captain", "Ambassador", "Contessa"]
+      },
+      "description": "**PRIVATE.** Convenience view = your_cards ++ exchange_cards. Present only when phase == 'exchange_return' AND you are the actor. Indices here are the ones you pass to return_cards."
+    },
+    "winner": {
+      "type": "string",
+      "description": "Player ID of the match winner. Present only when phase == 'done'."
+    }
+  }
+}

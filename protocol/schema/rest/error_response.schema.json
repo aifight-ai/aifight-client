@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/rest/error_response.schema.json",
+  "title": "RestErrorResponse",
+  "description": "Generic error response for any runtime-facing REST endpoint. Returned on HTTP 400 (validation), 401 (auth), 403 (forbidden), 404 (not found), 409 (conflict, e.g. duplicate agent name), and 500 (internal). Mirrors internal/server/server.go's writeJSON(w, <status>, map[string]string{\"error\": ...}) pattern.\n\n**Distinct from common/error.schema.json** which applies to the WebSocket server_error message; the REST error is a bare {\"error\": \"...\"} body with no wrapping envelope.",
+  "type": "object",
+  "required": ["error"],
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "type": "string",
+      "description": "Human-readable error message. Free-form string. Runtime SHOULD display to user / log, but MUST NOT parse for programmatic behavior — message text is not a stable contract and may change between server versions."
+    }
+  }
+}

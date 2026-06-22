@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/messages/server_error.schema.json",
+  "title": "error",
+  "description": "Sent by the server when it cannot process a client message (invalid format, bad match_id, unknown message type, matchmaking gate denied, etc.). Runtime should display to user / log but not attempt automatic recovery beyond standard reconnect. Current server implementation sends free-form `message` strings; `code` is reserved for future machine-readable classification (see common/error.schema.json).",
+  "type": "object",
+  "required": ["type", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "type": { "const": "error" },
+    "data": {
+      "$ref": "../common/error.schema.json"
+    },
+    "match_id": { "type": "string" }
+  }
+}

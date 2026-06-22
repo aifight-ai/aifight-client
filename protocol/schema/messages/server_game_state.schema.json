@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/messages/server_game_state.schema.json",
+  "title": "game_state",
+  "description": "Sent by the server on reconnect to a non-current player — i.e. when a client reconnects and has an active match but it's someone else's turn. Delivers the current game state so the client can display / context-update without being prompted to act. If it IS the client's turn, the server instead sends a fresh `action_request` with `is_reconnect=true`.",
+  "type": "object",
+  "required": ["type", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "type": { "const": "game_state" },
+    "data": {
+      "type": "object",
+      "required": ["match_id", "state", "players"],
+      "additionalProperties": false,
+      "properties": {
+        "match_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Per-player session_id."
+        },
+        "state": {
+          "type": "object",
+          "description": "Game-specific state (PlayerView.GameData). Same shape as action_request.data.state. Runtime validators (P0-09) narrow against games/<game>/state.schema.json based on active match context."
+        },
+        "players": {
+          "type": "array",
+          "items": { "$ref": "../common/player_info.schema.json" }
+        }
+      }
+    },
+    "match_id": { "type": "string" }
+  }
+}

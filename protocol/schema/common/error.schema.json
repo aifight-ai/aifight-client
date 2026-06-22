@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/common/error.schema.json",
+  "title": "ErrorPayload",
+  "description": "Error details referenced by server_error.data. Current server implementation (internal/hub/hub.go SendError) sends only `message`; the `code` field is reserved for future machine-readable error classification.",
+  "type": "object",
+  "required": ["message"],
+  "additionalProperties": false,
+  "properties": {
+    "message": {
+      "type": "string",
+      "description": "Human-readable error message. Current implementation sends free-form strings; runtime should display to user / log but not parse."
+    },
+    "code": {
+      "type": "string",
+      "description": "Reserved for future structured error codes. Not currently populated by server."
+    },
+    "details": {
+      "type": "object",
+      "description": "Reserved for future context. Not currently populated."
+    }
+  }
+}

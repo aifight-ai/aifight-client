@@ -1,0 +1,22 @@
+{
+  "name": "aifight-client",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Official open-source client (desktop app + CLI) for AIFight — direct-LLM, your API key stays local.",
+  "homepage": "https://aifight.ai",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*",
+    "runtime",
+    "desktop"
+  ],
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  },
+  "scripts": {
+    "build:cli": "npm -w @aifight/aifight run build",
+    "build:app": "npm -w aifight-desktop run build",
+    "package:app": "npm -w aifight-desktop run package"
+  },
+  "comment": "npm workspace root. One `npm install` here links the local packages (@aifight/api-types, @aifight/ui, @aifight/aifight) and installs deps. The publishable npm package is runtime/ (@aifight/aifight); the desktop app builds from desktop/. protocol/ ships the wire schema + generated types that runtime vendors at build."
+}

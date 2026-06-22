@@ -1,0 +1,135 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/games/texas_holdem/event.schema.json",
+  "title": "TexasHoldemEvent",
+  "description": "Texas Hold'em-specific event payload, describing the `data` field of common/event.schema.json when the event occurred in a Texas Hold'em match. The outer event envelope (`type`, `player`, `seq`, `ts`) is common; this schema documents the per-event-type `data` shape. Discriminator is the outer `type` field. Mirrors games/texasholdem/texasholdem.go emission sites.",
+  "oneOf": [
+    {
+      "type": "object",
+      "description": "new_hand — emitted at start of every hand (initial + subsequent). No `player` field on the outer envelope.",
+      "required": ["hand_num", "max_hands", "dealer", "chips", "small_blind", "big_blind"],
+      "additionalProperties": false,
+      "properties": {
+        "hand_num": { "type": "integer", "minimum": 1 },
+        "max_hands": { "type": "integer", "minimum": 1 },
+        "dealer": {
+          "type": "string",
+          "description": "Player ID of the dealer this hand."
+        },
+        "chips": {
+          "type": "object",
+          "description": "Map of player_id -> pre-blind chip count.",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "small_blind": { "type": "integer", "minimum": 1 },
+        "big_blind": { "type": "integer", "minimum": 1 }
+      }
+    },
+    {
+      "type": "object",
+      "description": "player_action — emitted whenever any player takes a betting action (including blinds). Outer envelope's `player` is the actor.",
+      "required": ["action"],
+      "additionalProperties": true,
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["small_blind", "big_blind", "fold", "check", "call", "raise", "allin"]
+        },
+        "amount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Chips bet this action (delta). Present for blinds/call/raise/allin; omitted for fold/check."
+        },
+        "total_bet": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Player's total bet this round after this action."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "community_cards — emitted at flop/turn/river when cards are revealed. No `player`.",
+      "required": ["cards"],
+      "additionalProperties": true,
+      "properties": {
+        "cards": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Card notation (e.g. ['2h', '3d', '7s'] for flop)."
+        },
+        "phase": {
+          "type": "string",
+          "enum": ["flop", "turn", "river"]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "cards_dealt — (rare) emitted when hole cards are re-disclosed during reconnect scenarios. Outer envelope's `player` is the card owner.",
+      "required": ["cards"],
+      "additionalProperties": false,
+      "properties": {
+        "cards": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "The player's 2 hole cards."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "hand_result — emitted at hand end. No `player`; pot distribution and winners listed in `data`.",
+      "required": ["winners", "pot"],
+      "additionalProperties": true,
+      "properties": {
+        "winners": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Player IDs who won (tie-split gives multiple entries)."
+        },
+        "pot": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "type": "string",
+          "description": "How the hand was decided (e.g. 'all_others_folded', 'showdown')."
+        },
+        "showdown": {
+          "type": "object",
+          "description": "Per-player cards + hand-ranking at showdown (only when reason='showdown'). Key = player_id.",
+          "additionalProperties": true
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "match_result — emitted at match end (after final hand). No `player`.",
+      "required": ["winner", "final_chips"],
+      "additionalProperties": true,
+      "properties": {
+        "winner": {
+          "type": "string",
+          "description": "Player ID with most chips at match end. Empty string on tie."
+        },
+        "final_chips": {
+          "type": "object",
+          "description": "Map of player_id -> final chip count.",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "description": "player_disconnected — emitted when a player is removed mid-match due to timeout/disconnect. Outer envelope's `player` is the disconnected player.",
+      "required": ["reason"],
+      "additionalProperties": true,
+      "properties": {
+        "reason": { "type": "string" }
+      }
+    }
+  ]
+}

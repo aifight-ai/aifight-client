@@ -1,0 +1,198 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/games/coup/action.schema.json",
+  "title": "CoupAction",
+  "description": "Action payload for Coup, sent as client_action.data when game == 'coup'. Twelve discriminated variants by `type`. Legality depends on the current phase and the actor's role (actor vs. challenger vs. target vs. influence-loser vs. exchange-returner). server_action_request.data.legal_actions is the authoritative list. Mirrors games/coup/coup.go GetLegalActions() L385 + ValidateAction() L613.",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "income" },
+        "data": { "type": "object", "maxProperties": 0 }
+      },
+      "description": "Take 1 coin. Cannot be blocked or challenged. Phase: action."
+    },
+    {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "foreign_aid" },
+        "data": { "type": "object", "maxProperties": 0 }
+      },
+      "description": "Claim +2 coins. Anyone may block claiming Duke. Phase: action."
+    },
+    {
+      "type": "object",
+      "required": ["type", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "coup" },
+        "data": {
+          "type": "object",
+          "required": ["target"],
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "string",
+              "description": "Player ID of the target. Must be an alive player other than yourself."
+            }
+          }
+        }
+      },
+      "description": "Pay 7 coins; target loses 1 influence. Cannot be blocked or challenged. MANDATORY when your coins >= 10. Phase: action."
+    },
+    {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "tax" },
+        "data": { "type": "object", "maxProperties": 0 }
+      },
+      "description": "Claim Duke: +3 coins. Challengeable. Phase: action."
+    },
+    {
+      "type": "object",
+      "required": ["type", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "assassinate" },
+        "data": {
+          "type": "object",
+          "required": ["target"],
+          "additionalProperties": false,
+          "properties": {
+            "target": { "type": "string" }
+          }
+        }
+      },
+      "description": "Claim Assassin: pay 3 coins (debited on declaration, not kept on caught-lie), target loses 1 influence. Challengeable. Target may block with Contessa. Phase: action."
+    },
+    {
+      "type": "object",
+      "required": ["type", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "steal" },
+        "data": {
+          "type": "object",
+          "required": ["target"],
+          "additionalProperties": false,
+          "properties": {
+            "target": { "type": "string" }
+          }
+        }
+      },
+      "description": "Claim Captain: take 2 coins from target (capped at target's balance). Challengeable. Target may block with Captain or Ambassador. Phase: action."
+    },
+    {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "exchange" },
+        "data": { "type": "object", "maxProperties": 0 }
+      },
+      "description": "Claim Ambassador: draw 2 cards from the deck, keep same number as current hidden count, return the rest. Challengeable. Phase: action."
+    },
+    {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "challenge" },
+        "data": { "type": "object", "maxProperties": 0 }
+      },
+      "description": "Challenge the current role claim. Phase: challenge_action or challenge_block. If claim is truthful, challenger loses influence; claimant shuffles the card back and draws a replacement. If claim is a lie, claimant loses influence and the action (or block) is cancelled."
+    },
+    {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "pass" },
+        "data": { "type": "object", "maxProperties": 0 }
+      },
+      "description": "Decline to challenge or block. Phase: challenge_action, challenge_block, or block. For foreign_aid block, each eligible player passes independently; for targeted-action blocks, target passes."
+    },
+    {
+      "type": "object",
+      "required": ["type", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "block" },
+        "data": {
+          "type": "object",
+          "required": ["role"],
+          "additionalProperties": false,
+          "properties": {
+            "role": {
+              "type": "string",
+              "enum": ["Duke", "Contessa", "Captain", "Ambassador"],
+              "description": "Role claimed for the block. Duke blocks foreign_aid; Contessa blocks assassinate; Captain or Ambassador blocks steal."
+            }
+          }
+        }
+      },
+      "description": "Block the pending action by claiming a role. Phase: block. Role must match the block-eligibility for the pending action."
+    },
+    {
+      "type": "object",
+      "required": ["type", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "lose_card" },
+        "data": {
+          "type": "object",
+          "required": ["card_index"],
+          "additionalProperties": false,
+          "properties": {
+            "card_index": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Zero-based index into your full `cards` array (hidden + already-revealed). Must point to a currently face-down card. Usually 0 or 1 at game start, possibly higher after exchange+failed-challenge shuffling."
+            }
+          }
+        }
+      },
+      "description": "Choose which of your face-down cards to reveal (lose). Phase: lose_influence."
+    },
+    {
+      "type": "object",
+      "required": ["type", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "return_cards" },
+        "data": {
+          "type": "object",
+          "required": ["return_indices"],
+          "additionalProperties": true,
+          "properties": {
+            "return_indices": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0
+              },
+              "description": "Indices into all_exchange_options (your hidden_cards ++ exchange_cards) identifying which cards go back to the deck. Must return exactly (total - original_hidden_count) cards."
+            },
+            "cards": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Echo of the role names at return_indices. Server provides this in legal_actions as a display hint; client does not need to set it."
+            },
+            "all_cards": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Echo of all_exchange_options. Server provides as a display hint."
+            }
+          }
+        }
+      },
+      "description": "After an Exchange draws 2 cards, pick which ones (from your hidden + drawn pool) to return to the deck. Phase: exchange_return."
+    }
+  ]
+}

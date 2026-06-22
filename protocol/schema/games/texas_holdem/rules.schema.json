@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/games/texas_holdem/rules.schema.json",
+  "title": "TexasHoldemRules",
+  "description": "Rules payload for Texas Hold'em, delivered in server_game_start.data.rules when game == 'texas_holdem'. Mirrors games/texasholdem/texasholdem.go Game.Rules(). The server's exact text may evolve; runtime should treat rules as informational and not parse numeric values from strings (e.g. blind amounts come from the `config` field, not from parsing `summary`).",
+  "type": "object",
+  "required": ["name", "summary", "available_actions", "key_rules"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "const": "No-Limit Texas Hold'em"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Free-form summary paragraph; treat as informational."
+    },
+    "phases": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable phase descriptions (preflop/flop/turn/river/showdown)."
+    },
+    "available_actions": {
+      "type": "object",
+      "required": ["fold", "check", "call", "raise", "allin"],
+      "additionalProperties": false,
+      "properties": {
+        "fold": { "type": "string" },
+        "check": { "type": "string" },
+        "call": { "type": "string" },
+        "raise": { "type": "string" },
+        "allin": { "type": "string" }
+      }
+    },
+    "key_rules": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

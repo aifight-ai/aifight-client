@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/common/event.schema.json",
+  "title": "Event",
+  "description": "A game event that occurred during a match. Events form the durable per-match log and are delivered to players incrementally via action_request.new_events. Mirrors engine.Event in internal/engine/types.go. The event `type` is game-specific; see games/<game>/event.schema.json for the per-game enum + `data` narrowing.\n\n**Game narrowing:** This common envelope is intentionally permissive — action_request.data.new_events[*] / server_event.data.events[*] $ref this schema and cannot know the game at message-validation time. Runtime validators (P0-09) narrow `data` based on active match context. Per-game oneOf schemas:\n- games/texas_holdem/event.schema.json (7 types: new_hand, player_action, community_cards, cards_dealt, hand_result, match_result, player_disconnected)\n- games/liars_dice/event.schema.json (6 types: bid, challenge, player_eliminated, round_start, game_over, player_disconnected)\n- games/coup/event.schema.json (17 types: action, challenge_pass, challenge, challenge_result, block_pass, block, block_challenge_pass, block_accepted, challenge_block, challenge_block_result, influence_lost, player_eliminated, exchange_draw, exchange_complete, action_resolved, game_over, player_disconnected)",
+  "type": "object",
+  "required": ["type"],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "type": "string",
+      "description": "Event type name; game-specific enumeration. See games/<game>/event.schema.json."
+    },
+    "player": {
+      "type": "string",
+      "description": "PlayerID (p0, p1, ...) this event is attributed to. Omitted for global events (e.g. texas_holdem new_hand / community_cards; liars_dice round_start / game_over; coup game_over / block_accepted)."
+    },
+    "data": {
+      "type": "object",
+      "description": "Event-specific payload. Game-specific shape; see games/<game>/event.schema.json variants."
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic sequence number within a match. Runtime uses this to deduplicate / detect gaps. Required for engine-emitted events (bundled in action_request.new_events / event_history). **Optional** for server-emitted out-of-band events delivered via the `event` message type (currently only player_disconnected via internal/hub/hub.go:notifyPlayerEvent — see spec 02-message-flow.md §3)."
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 timestamp when the event was appended to the match log. Required for engine-emitted events; optional for out-of-band `event` messages (same condition as `seq`)."
+    }
+  }
+}

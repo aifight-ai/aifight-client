@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/messages/server_queue_joined.schema.json",
+  "title": "queue_joined",
+  "description": "Sent by the server in response to a successful `join_queue` from the client. Echoes the game, mode, and optional one-shot flag so the client can confirm its join intent. After this, the client waits for either `match_confirm_request` (if agent.auto_confirm=false) or `game_start` (if auto_confirm=true).",
+  "type": "object",
+  "required": ["type", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "type": { "const": "queue_joined" },
+    "data": {
+      "type": "object",
+      "required": ["game", "mode"],
+      "additionalProperties": false,
+      "properties": {
+        "game": { "type": "string" },
+        "mode": { "type": "string" },
+        "one_shot": {
+          "type": "boolean",
+          "description": "True when this queue join was an explicit manual match request that should not enable auto-requeue."
+        }
+      }
+    },
+    "match_id": { "type": "string" }
+  }
+}

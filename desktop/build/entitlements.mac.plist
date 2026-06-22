@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS hardened-runtime entitlements for the AIFight desktop app, signed with a
+  Developer ID Application certificate and distributed outside the Mac App Store
+  (no App Sandbox). Kept to the minimum an Electron app with native modules needs
+  so notarization stays clean.
+-->
+<plist version="1.0">
+<dict>
+  <!-- Electron/V8 JIT requires writable+executable memory under hardened runtime. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <!-- The app loads native .node addons (better-sqlite3, @napi-rs/keyring); allow them. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

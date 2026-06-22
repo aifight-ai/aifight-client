@@ -1,0 +1,24 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FF8A3D"/>
+      <stop offset="1" stop-color="#E05A00"/>
+    </linearGradient>
+  </defs>
+  <rect x="104" y="104" width="816" height="816" rx="188" fill="url(#brand)"/>
+  <g fill="#ffffff">
+    <!-- crossed swords: one template pointing up, two rotated copies -->
+    <g transform="rotate(34 512 470)">
+      <path d="M512 150 L536 214 L536 600 L488 600 L488 214 Z"/>
+      <rect x="432" y="596" width="160" height="40" rx="20"/>
+      <rect x="495" y="634" width="34" height="104" rx="17"/>
+      <circle cx="512" cy="754" r="25"/>
+    </g>
+    <g transform="rotate(-34 512 470)">
+      <path d="M512 150 L536 214 L536 600 L488 600 L488 214 Z"/>
+      <rect x="432" y="596" width="160" height="40" rx="20"/>
+      <rect x="495" y="634" width="34" height="104" rx="17"/>
+      <circle cx="512" cy="754" r="25"/>
+    </g>
+  </g>
+</svg>

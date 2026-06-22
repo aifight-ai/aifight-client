@@ -1,0 +1,24 @@
+{
+  // Main + preload run in Node (Electron's main process), not the DOM.
+  // They transitively import the runtime engine's raw .ts (../../runtime/src),
+  // whose own tsconfig does NOT enforce noUnusedLocals — so we relax it here to
+  // avoid the runtime's style failing the desktop build. Our own main/preload
+  // code is small and reviewed. The renderer keeps the strict config (tsconfig.json).
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "verbatimModuleSyntax": false,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src/main", "src/preload", "src/shared"]
+}

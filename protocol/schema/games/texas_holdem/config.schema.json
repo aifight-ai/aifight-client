@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/games/texas_holdem/config.schema.json",
+  "title": "TexasHoldemConfig",
+  "description": "Per-match configuration delivered in server_game_start.data.config when game == 'texas_holdem'. These are optional overrides; when omitted, server uses defaults from games/texasholdem/texasholdem.go NewState() (sb=200, bb=400, starting_chips=10000, max_hands=10). All values arrive as JSON numbers (Go side casts from float64).",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "small_blind": {
+      "type": "number",
+      "minimum": 1,
+      "description": "Small blind amount for early hands. Default 200. Doubles at hand 6 automatically (server-side)."
+    },
+    "big_blind": {
+      "type": "number",
+      "minimum": 1,
+      "description": "Big blind amount for early hands. Default 400."
+    },
+    "starting_chips": {
+      "type": "number",
+      "minimum": 1,
+      "description": "Per-player starting chips. Default 10000."
+    },
+    "max_hands": {
+      "type": "number",
+      "minimum": 1,
+      "description": "Number of hands in the match. Default 10. Match ends after max_hands OR when only one player has chips."
+    }
+  }
+}

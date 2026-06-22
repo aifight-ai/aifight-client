@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/decision/decision_response.schema.json",
+  "title": "AIFight Decision Protocol Response",
+  "description": "Runtime-independent decision response returned by an Agent decision system. The action must be one of the legal actions from the paired decision request and will be submitted to AIFight for the active match session.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action"],
+  "properties": {
+    "type": { "const": "aifight.decision.action" },
+    "protocol_version": { "const": "aifight.decision.v1" },
+    "request_id": { "type": "string", "minLength": 1 },
+    "action": { "$ref": "../common/action.schema.json" },
+    "summary": { "type": "string" },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

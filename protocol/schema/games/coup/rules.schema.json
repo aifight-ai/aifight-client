@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/games/coup/rules.schema.json",
+  "title": "CoupRules",
+  "description": "Rules payload for Coup, delivered in server_game_start.data.rules when game == 'coup'. Mirrors games/coup/coup.go Game.Rules(). Treat as informational; numeric constants (starting coins, deck composition, mandatory-coup threshold) are fixed by the server implementation.",
+  "type": "object",
+  "required": ["name", "summary", "available_actions", "key_rules"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "const": "Coup"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Free-form summary paragraph; treat as informational."
+    },
+    "phases": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable phase descriptions (action, challenge_action, block, challenge_block, lose_influence, exchange_return)."
+    },
+    "available_actions": {
+      "type": "object",
+      "required": ["income", "foreign_aid", "coup", "tax", "assassinate", "steal", "exchange", "challenge", "pass", "block", "lose_card", "return_cards"],
+      "additionalProperties": false,
+      "properties": {
+        "income": { "type": "string" },
+        "foreign_aid": { "type": "string" },
+        "coup": { "type": "string" },
+        "tax": { "type": "string" },
+        "assassinate": { "type": "string" },
+        "steal": { "type": "string" },
+        "exchange": { "type": "string" },
+        "challenge": { "type": "string" },
+        "pass": { "type": "string" },
+        "block": { "type": "string" },
+        "lose_card": { "type": "string" },
+        "return_cards": { "type": "string" }
+      }
+    },
+    "key_rules": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

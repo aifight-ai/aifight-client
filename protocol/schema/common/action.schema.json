@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/common/action.schema.json",
+  "title": "Action",
+  "description": "A player's action in a game. The `type` is game-specific (see protocol/schema/games/<game>/action.schema.json for the canonical oneOf enum per game). `data` holds per-type parameters (e.g. raise amount for Texas Hold'em, target for Coup). Mirrors engine.Action in internal/engine/types.go.\n\n**Game narrowing:** This common envelope is intentionally permissive — client_action.schema.json / action_request.data.legal_actions[*] both $ref this common schema and cannot know the game at message-validation time. Runtime validators (P0-09) perform per-game narrowing by selecting the appropriate games/<game>/action.schema.json based on active match context. Per-game oneOf schemas:\n- games/texas_holdem/action.schema.json (5 types: fold, check, call, raise, allin)\n- games/liars_dice/action.schema.json (2 types: bid, challenge)\n- games/coup/action.schema.json (12 types: income, foreign_aid, coup, tax, assassinate, steal, exchange, challenge, pass, block, lose_card, return_cards)\n\nNote: `challenge` and `pass` appear in both liars_dice and coup; they cannot be disambiguated by `type` alone, which is why this common schema does NOT attempt an anyOf across games.",
+  "type": "object",
+  "required": ["type"],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "type": "string",
+      "description": "Game-specific action name. Legal values depend on game; see games/<game>/action.schema.json for the per-game oneOf discriminated union."
+    },
+    "data": {
+      "type": "object",
+      "description": "Action parameters (amount, target, etc.). Game-specific shape; see games/<game>/action.schema.json variants."
+    }
+  }
+}

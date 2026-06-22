@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+**/dist/
+desktop/release/
+desktop/out/
+
+# Secrets / env — never commit these
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.keystore
+
+# OS / editor
+.DS_Store
+*.log

@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/games/liars_dice/state.schema.json",
+  "title": "LiarsDiceState",
+  "description": "Per-player state delivered in server_action_request.data.state when game == 'liars_dice'. Built by games/liarsdice/liarsdice.go GetPlayerView(). Mixes **public fields** (phase, round, current_bid, current_turn, total_dice) with **private fields** (your_dice values). The outer PlayerView.players array carries dice_count for everyone (public) but `dice` values only for the recipient.",
+  "type": "object",
+  "required": ["phase", "round"],
+  "additionalProperties": true,
+  "properties": {
+    "phase": {
+      "type": "string",
+      "enum": ["bidding", "done"],
+      "description": "Current phase. 'bidding' = a player may bid or challenge. 'done' = match is over."
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Current round (1-based). Increments after each challenge that does not end the match."
+    },
+    "current_bid": {
+      "type": "object",
+      "description": "The most recent bid this round. Omitted at the start of a round (first bidder has no bid to beat).",
+      "required": ["quantity", "face", "bidder"],
+      "additionalProperties": false,
+      "properties": {
+        "quantity": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Claimed total count of `face` across all alive players' dice."
+        },
+        "face": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6,
+          "description": "Face value (1-6). Note: if face == 1, ones are NOT wild for the challenge resolution."
+        },
+        "bidder": {
+          "type": "string",
+          "description": "Player ID who made this bid."
+        }
+      }
+    },
+    "current_turn": {
+      "type": "string",
+      "description": "Player ID currently on the action. Omitted when phase == 'done'."
+    },
+    "total_dice": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Sum of dice_count across all alive players. Upper bound for any bid quantity. Omitted when phase == 'done'."
+    },
+    "your_dice": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 6
+      },
+      "description": "**PRIVATE.** Your current dice face values. Length equals your_dice_count. Omitted when recipient is eliminated or not in game."
+    },
+    "your_dice_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5,
+      "description": "**PRIVATE.** Number of dice you have remaining (0-5). Omitted when recipient is eliminated or not in game."
+    },
+    "winner": {
+      "type": "string",
+      "description": "Player ID of the match winner. Present only when phase == 'done' and there is a surviving player."
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "@aifight/protocol-tools",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.14"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "lint:schemas": "node --experimental-strip-types src/lint.ts",
+    "validate:transcripts": "node --experimental-strip-types src/validate-transcript.ts",
+    "codegen": "node --experimental-strip-types src/codegen.ts",
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "json-schema-to-typescript": "^15.0.4",
+    "typescript": "^5.6.0"
+  }
+}

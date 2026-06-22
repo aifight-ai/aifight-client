@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/messages/client_leave_queue.schema.json",
+  "title": "leave_queue",
+  "description": "Sent by the client to exit the matchmaking queue. Server replies with `queue_left`. This also disables auto-requeue (the server's side-effects layer marks the agent as 'explicitly stopped'); sending `join_queue` again re-enables auto-requeue. No data payload is required.",
+  "type": "object",
+  "required": ["type"],
+  "additionalProperties": false,
+  "properties": {
+    "type": { "const": "leave_queue" },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Empty; no fields required."
+    },
+    "match_id": { "type": "string" }
+  }
+}

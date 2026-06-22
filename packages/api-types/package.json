@@ -1,0 +1,20 @@
+{
+  "name": "@aifight/api-types",
+  "version": "0.1.0",
+  "description": "Shared AIFight REST API DTOs (match / agent profile / rating / achievement / enterprise data shapes) used by both the website and the desktop + CLI client.",
+  "license": "MIT",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}
