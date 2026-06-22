@@ -1,0 +1,57 @@
+name: Publish CLI to npm
+
+# Publishes @aifight/aifight to npm via npm Trusted Publishing (OIDC) — no token
+# is stored anywhere, and each publish carries a provenance attestation.
+#
+# Manual trigger (Actions tab → "Publish CLI to npm" → Run workflow). It publishes
+# whatever version is in runtime/package.json. npm publishes are permanent, so this
+# is a deliberate click rather than automatic on every tag.
+#
+# ── ONE-TIME setup on npmjs.com (owner) ──────────────────────────────────────
+#   npmjs.com → the @aifight/aifight package → Settings → Trusted Publisher →
+#   GitHub Actions, and enter:
+#     Organization or user : aifight-ai
+#     Repository           : aifight-client
+#     Workflow filename    : npm-publish.yml
+#     Environment          : (leave blank)
+#   After saving, this workflow can publish without any token.
+#
+# dist-tag:
+#   latest → plain `npm install -g @aifight/aifight` installs it
+#   beta   → opt-in channel; users run `npm install -g @aifight/aifight@beta`
+
+on:
+  workflow_dispatch:
+    inputs:
+      dist_tag:
+        description: "npm dist-tag (latest = default install; beta = opt-in channel)"
+        type: choice
+        options:
+          - latest
+          - beta
+        default: latest
+
+permissions:
+  contents: read
+  id-token: write # required for npm Trusted Publishing (OIDC) + provenance
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - name: Upgrade npm (Trusted Publishing needs >= 11.5.1)
+        run: npm install -g npm@latest
+      - name: Install workspace deps (root)
+        run: npm install
+      - name: Publish @aifight/aifight (OIDC + provenance)
+        # prepublishOnly runs runtime/build.sh; BUILD_ONLY=1 skips the
+        # env-dependent test suite + scratch install (same as the release build).
+        env:
+          BUILD_ONLY: "1"
+        run: npm publish --workspace @aifight/aifight --provenance --access public --tag "${{ inputs.dist_tag }}"
