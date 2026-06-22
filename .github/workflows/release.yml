@@ -99,6 +99,10 @@ jobs:
         with:
           name: runtime-dist
           path: runtime/dist
+      - name: Generate runtime schema source
+        # desktop bundles the bridge core from ../runtime/src; schema.generated.ts
+        # is git-ignored (generated), so produce it before esbuild runs.
+        run: npm -w @aifight/aifight run gen:schema
       - name: Package desktop installer
         working-directory: desktop
         # Signing secrets are passed ONLY on macOS — CSC_LINK is an Apple
