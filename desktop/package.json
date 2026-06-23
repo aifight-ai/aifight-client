@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
-    "package": "npm run build && electron-builder",
+    "package": "npm run build && electron-builder --publish never",
     "package:dir": "npm run build && electron-builder --dir"
   },
   "dependencies": {
