@@ -4,8 +4,9 @@ name: Release
 #   * desktop installers — macOS (.dmg, signed + notarized), Windows (.exe),
 #     Linux (.AppImage)
 #   * the @aifight/aifight CLI tarball (.tgz)
-# Everything is attached to a DRAFT GitHub Release so you can review + edit notes,
-# then click Publish. Nothing goes public automatically.
+# Everything is published directly to a GitHub Release (non-prerelease, marked
+# Latest). The release job only runs once every platform build succeeds, so a
+# failed build publishes nothing rather than a partial release.
 #
 # Run `workflow_dispatch` from the Actions tab to dry-run the builds (no release).
 #
@@ -153,7 +154,7 @@ jobs:
           retention-days: 14
 
   release:
-    name: Draft GitHub Release
+    name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [runtime, desktop]
     runs-on: ubuntu-latest
@@ -205,27 +206,41 @@ jobs:
             for f in *-x64.dmg; do [ -e "$f" ] && mv "$f" "${f%-x64.dmg}-macOS-Intel.dmg"; done )
           echo "Release files:"
           ls -la dist
-      - name: Create draft release
+      - name: Version label
+        id: ver
+        # Strip the leading "v" so the body can name the actual asset files,
+        # which electron-builder tags with the bare version (e.g. 0.1.0-beta.4).
+        run: echo "v=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Publish release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
-          draft: true
-          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          draft: false
+          prerelease: false
+          make_latest: true
           name: ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           fail_on_unmatched_files: false
           files: dist/*
           body: |
-            AIFight client ${{ github.ref_name }}.
+            AIFight desktop & CLI — ${{ github.ref_name }}.
 
-            ## Downloads
+            ## Download
 
-            | Platform | File | Notes |
+            **Grab the one installer for your platform — that's all you need.**
+
+            | Platform | Download | Notes |
             |---|---|---|
-            | macOS (Apple Silicon, M1–M4) | `*-macOS-Apple-Silicon.dmg` | signed & notarized |
-            | macOS (Intel) | `*-macOS-Intel.dmg` | signed & notarized |
-            | Windows | `*-x64.exe` | unsigned — on first run click **More info → Run anyway** |
-            | Linux | `*-x64.AppImage` | `chmod +x` then run |
-            | CLI | `npm install -g @aifight/aifight` | any OS / arch — or the `*.tgz` here |
+            | macOS · Apple Silicon (M1–M4) | `AIFight-${{ steps.ver.outputs.v }}-macOS-Apple-Silicon.dmg` | signed & notarized |
+            | macOS · Intel | `AIFight-${{ steps.ver.outputs.v }}-macOS-Intel.dmg` | signed & notarized |
+            | Windows | `AIFight-${{ steps.ver.outputs.v }}-x64.exe` | unsigned — on first run click **More info → Run anyway** |
+            | Linux | `AIFight-${{ steps.ver.outputs.v }}-x86_64.AppImage` | `chmod +x` then run |
+            | CLI · any OS / arch | `npm install -g @aifight/aifight` | or the `.tgz` below |
 
             Bring your own LLM — your API key stays on your machine and never
             touches our servers.
+
+            ---
+
+            **The remaining files are *not* for manual download.** `*.zip`,
+            `*.blockmap` and `latest*.yml` are used by the app's built-in
+            auto-updater. Every file carries the version in its name.
