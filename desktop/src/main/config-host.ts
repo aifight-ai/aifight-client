@@ -7,8 +7,12 @@
 // never the raw key; the key never travels through argv/shell history).
 //
 // All imported runtime modules are native-module-free (config-schema, secret-ref,
-// profile-loader, strategy-schema, soul), so they're safe to import statically in
-// the Electron main process (no sqlite eager-load trap).
+// profile-loader), so they're safe to import statically in the Electron main
+// process (no sqlite eager-load trap).
+//
+// Strategy is NOT handled here — it lives as free-form Markdown managed by
+// strategy-host.ts (strategy/global.md + strategy/games/<game>.md). This host
+// owns only config.json (model routing + provider key refs).
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -22,8 +26,6 @@ import {
   type ReasoningEffort,
 } from "@aifight/aifight/profile/config-schema";
 import { storeSecretFile, checkSecretStatus } from "@aifight/aifight/profile/secret-ref";
-import { DEFAULT_STRATEGY } from "@aifight/aifight/profile/strategy-schema";
-import { DEFAULT_SOUL } from "@aifight/aifight/profile/soul";
 import type {
   ConfigMutResult,
   ConfigProfileView,
@@ -127,14 +129,6 @@ async function readConfigOptional(slug: string): Promise<LLMConfig | null> {
   return result.ok ? result.config : null;
 }
 
-async function writeIfAbsent(filePath: string, content: string): Promise<void> {
-  try {
-    await fs.access(filePath);
-  } catch {
-    await fs.writeFile(filePath, content, "utf8");
-  }
-}
-
 async function writeConfig(slug: string, config: LLMConfig): Promise<void> {
   const result = validateConfig(config);
   if (!result.ok) throw new Error(`refusing to write invalid config: ${result.errors.join("; ")}`);
@@ -144,10 +138,9 @@ async function writeConfig(slug: string, config: LLMConfig): Promise<void> {
   const tmp = `${configPath}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(config, null, 2) + "\n", "utf8");
   await fs.rename(tmp, configPath);
-  // Direct mode's loadAgentProfile requires strategy.json + soul.md to exist —
-  // scaffold them (idempotent) so the GUI-only flow is fully playable.
-  await writeIfAbsent(path.join(dir, "strategy.json"), JSON.stringify(DEFAULT_STRATEGY, null, 2) + "\n");
-  await writeIfAbsent(path.join(dir, "soul.md"), DEFAULT_SOUL);
+  // config.json is the only profile file. The GUI-only flow is fully playable
+  // with just this — strategy is optional Markdown (strategy-host.ts), scaffolded
+  // for new agents by `aifight setup`, and the runtime skips it when absent.
 }
 
 function emptyConfig(): LLMConfig {

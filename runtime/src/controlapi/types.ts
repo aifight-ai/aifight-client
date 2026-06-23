@@ -95,8 +95,8 @@ export interface ControlServerOptions {
   /** rev2 fix #4 — daemon source-of-truth current cfg reader. Used by
    *  GET /schedule + POST /pause + POST /resume when the server's
    *  internal lastSetSchedules cache misses (e.g. first POST /pause
-   *  after daemon startup with strategy.json initial schedule). May
-   *  return null when the agent has no configured schedule yet. */
+   *  after daemon startup with an initial schedule). May return null
+   *  when the agent has no configured schedule yet. */
   readonly scheduleConfigLookup?: (
     agentName: string,
   ) => DailyScheduleConfig | null;

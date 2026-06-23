@@ -1,15 +1,19 @@
 // Unified agent profile loader.
 //
-// An "agent profile" is the set of four files that describe one agent
+// An "agent profile" is the set of files that describe one agent
 // in ~/.aifight/agents/<slug>/:
 //
 //   config.json    — LLM provider + model + auth (required)
-//   strategy.json  — per-game strategy overrides (required)
-//   soul.md        — competitive personality capsule (required)
 //   identity.json  — public display name + avatar (optional)
 //
+// An agent's *strategy* is NOT part of the profile: it lives as free-form
+// Markdown in strategy/global.md (+ strategy/games/<game>.md), loaded and
+// hot-reloaded per decision by strategy/local-strategy.ts. There is no
+// strategy.json or soul.md — those were removed when strategy converged to
+// Markdown-only (see docs/agent-bridge/STRATEGY_MD_CONVERGENCE_DESIGN.md).
+//
 // This module owns:
-//   loadAgentProfile(agentDir)  — parse + validate all four files
+//   loadAgentProfile(agentDir)  — parse + validate the profile files
 //   computeFileHash(filePath)   — SHA-256 of file bytes
 //   resolveAgentDir(slug)       — ~/.aifight/agents/<slug>
 //   ensureAgentDir(slug)        — mkdir -p the agent directory
@@ -23,20 +27,14 @@ import path from "node:path";
 
 import { getAgentsRoot } from "../store/paths.js";
 import { validateConfig, type LLMConfig } from "./config-schema.js";
-import { validateStrategy, type Strategy } from "./strategy-schema.js";
 import { validateIdentity, type AgentIdentity } from "./identity-schema.js";
-import { loadSoul, validateSoul } from "./soul.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
-/** Combined in-memory representation of all profile files. */
+/** Combined in-memory representation of the profile files. */
 export interface AgentProfile {
   /** Parsed and validated config.json. */
   readonly config: LLMConfig;
-  /** Parsed and validated strategy.json. */
-  readonly strategy: Strategy;
-  /** Raw Markdown content of soul.md. */
-  readonly soul: string;
   /** Parsed and validated identity.json, or null if the file is absent. */
   readonly identity: AgentIdentity | null;
 }
@@ -45,8 +43,6 @@ export interface AgentProfile {
  *  Used by the daemon to detect on-disk changes without re-reading. */
 export interface AgentProfileHashes {
   readonly config: string;
-  readonly strategy: string;
-  readonly soul: string;
   /** null when identity.json is absent (file is optional). */
   readonly identity: string | null;
 }
@@ -107,15 +103,16 @@ export class ProfileLoadError extends Error {
 }
 
 /**
- * Reads and validates all profile files for an agent.
+ * Reads and validates the profile files for an agent.
  *
- * - config.json and strategy.json are required JSON files validated by
- *   their respective schema modules.
- * - soul.md is required and validated by validateSoul().
+ * - config.json is a required JSON file validated by the config schema.
  * - identity.json is optional; absent file yields profile.identity = null.
  *
- * Throws ProfileLoadError on any read or validation failure for required
- * files. For identity.json, ENOENT is silently treated as absent.
+ * Strategy is intentionally NOT loaded here — it lives as Markdown under
+ * strategy/ and is read per-decision by strategy/local-strategy.ts.
+ *
+ * Throws ProfileLoadError on any read or validation failure for config.json.
+ * For identity.json, ENOENT is silently treated as absent.
  */
 export async function loadAgentProfile(agentDir: string): Promise<AgentProfileResult> {
   // ── config.json (required) ──────────────────────────────────────
@@ -148,57 +145,6 @@ export async function loadAgentProfile(agentDir: string): Promise<AgentProfileRe
     );
   }
   const configHash = crypto.createHash("sha256").update(configRaw, "utf8").digest("hex");
-
-  // ── strategy.json (required) ────────────────────────────────────
-  const strategyPath = path.join(agentDir, "strategy.json");
-  let strategyRaw: string;
-  try {
-    strategyRaw = await fs.readFile(strategyPath, "utf8");
-  } catch (e) {
-    throw new ProfileLoadError(
-      strategyPath,
-      `cannot read strategy.json at ${strategyPath}: ${(e as Error).message}`,
-      e,
-    );
-  }
-  let strategyParsed: unknown;
-  try {
-    strategyParsed = JSON.parse(strategyRaw);
-  } catch (e) {
-    throw new ProfileLoadError(
-      strategyPath,
-      `strategy.json at ${strategyPath} is not valid JSON: ${(e as Error).message}`,
-      e,
-    );
-  }
-  const strategyResult = validateStrategy(strategyParsed);
-  if (!strategyResult.ok) {
-    throw new ProfileLoadError(
-      strategyPath,
-      `strategy.json validation failed: ${strategyResult.errors.join("; ")}`,
-    );
-  }
-  const strategyHash = crypto.createHash("sha256").update(strategyRaw, "utf8").digest("hex");
-
-  // ── soul.md (required) ──────────────────────────────────────────
-  const soulPath = path.join(agentDir, "soul.md");
-  let soulResult: { content: string; hash: string };
-  try {
-    soulResult = await loadSoul(soulPath);
-  } catch (e) {
-    throw new ProfileLoadError(
-      soulPath,
-      `cannot read soul.md at ${soulPath}: ${(e as Error).message}`,
-      e,
-    );
-  }
-  const soulValidation = validateSoul(soulResult.content);
-  if (!soulValidation.ok) {
-    throw new ProfileLoadError(
-      soulPath,
-      `soul.md validation failed: ${soulValidation.errors.join("; ")}`,
-    );
-  }
 
   // ── identity.json (optional) ────────────────────────────────────
   const identityPath = path.join(agentDir, "identity.json");
@@ -244,14 +190,10 @@ export async function loadAgentProfile(agentDir: string): Promise<AgentProfileRe
   return {
     profile: {
       config: configResult.config,
-      strategy: strategyResult.strategy,
-      soul: soulResult.content,
       identity,
     },
     hashes: {
       config: configHash,
-      strategy: strategyHash,
-      soul: soulResult.hash,
       identity: identityHash,
     },
   };

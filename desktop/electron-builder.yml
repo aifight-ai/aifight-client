@@ -77,9 +77,18 @@ linux:
     - AppImage
   category: Game
 
-# Auto-update feed. Placeholder generic provider — finalize the host (or switch
-# to a GitHub provider) when the first release is published. electron-updater
-# reads the generated app-update.yml from this block.
+# Auto-update feed. GitHub Releases on the public client repo. electron-builder
+# bakes this into the app's app-update.yml; at runtime electron-updater fetches
+# the newest published release's latest-*.yml from
+#   https://github.com/aifight-ai/aifight-client/releases
+# Requirements for the check to succeed:
+#   - the release must be Published (a draft is invisible to the unauthenticated
+#     updater),
+#   - the release must carry the updater manifests (latest*.yml) + the macOS
+#     update *.zip (+ *.blockmap) — the release job attaches these,
+#   - for -beta/-rc tags, updater.ts enables allowPrerelease so the channel is
+#     visible (GitHub's /releases/latest excludes pre-releases).
 publish:
-  provider: generic
-  url: https://aifight.ai/desktop
+  provider: github
+  owner: aifight-ai
+  repo: aifight-client

@@ -1,24 +1,4 @@
-<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#FF8A3D"/>
-      <stop offset="1" stop-color="#E05A00"/>
-    </linearGradient>
-  </defs>
-  <rect x="104" y="104" width="816" height="816" rx="188" fill="url(#brand)"/>
-  <g fill="#ffffff">
-    <!-- crossed swords: one template pointing up, two rotated copies -->
-    <g transform="rotate(34 512 470)">
-      <path d="M512 150 L536 214 L536 600 L488 600 L488 214 Z"/>
-      <rect x="432" y="596" width="160" height="40" rx="20"/>
-      <rect x="495" y="634" width="34" height="104" rx="17"/>
-      <circle cx="512" cy="754" r="25"/>
-    </g>
-    <g transform="rotate(-34 512 470)">
-      <path d="M512 150 L536 214 L536 600 L488 600 L488 214 Z"/>
-      <rect x="432" y="596" width="160" height="40" rx="20"/>
-      <rect x="495" y="634" width="34" height="104" rx="17"/>
-      <circle cx="512" cy="754" r="25"/>
-    </g>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="#F4F6FA" stroke="#D8DCE3" stroke-width="2.5"/>
+  <g transform="translate(23.02 77.64) scale(0.2451)"><path d="M32 0L4 0L48-144L88.60-144L132.60 0L104.60 0L95.30-30L41.10-30L32 0M48.80-55.40L87.50-55.40L68-118.50L48.80-55.40M179.80 0L152.60 0L152.60-144L179.80-144" fill="#0B0E14"/><path d="M237 0L209.80 0L209.80-144L297.80-144L297.80-116.80L237-116.80L237-85.60L285.80-85.60L285.80-58.40L237-58.40" fill="#FF700A"/></g>
 </svg>

@@ -34,6 +34,7 @@ import { onboardDailyCap } from "./bridge-set";
 import { runConfigInit } from "./config-init";
 import { onboardDirectLLM } from "./onboard-llm";
 import { createOnboardIO } from "./onboard-io";
+import { scaffoldGlobalStrategy } from "../../strategy/local-strategy";
 
 const DEFAULT_BASE_URL = "https://aifight.ai";
 const DEFAULT_AUTO_DAILY_LIMIT = 2;
@@ -127,6 +128,18 @@ export async function runSetup(args: HandlerArgs, env: HandlerEnv): Promise<numb
   }
 
   const slug = config.directAgentSlug ?? "default";
+
+  // Scaffold a starter Markdown strategy (strategy/global.md) for the new agent,
+  // at the exact path the runtime reads each decision. Best-effort and
+  // idempotent — never clobbers an existing file and never blocks setup. Runs in
+  // every mode (interactive / --auto / --json) so a fresh agent always has an
+  // editable strategy; the LLM config (config.json) is scaffolded separately.
+  try {
+    await scaffoldGlobalStrategy(config.agentId);
+  } catch {
+    // A strategy scaffold hiccup must never look like a setup failure; the user
+    // can always create it later with `aifight strategy init`.
+  }
 
   // ── Programmatic JSON path (desktop / scripting) ──
   if (args.jsonMode) {

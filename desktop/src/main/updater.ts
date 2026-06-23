@@ -19,6 +19,11 @@ export function initUpdater(sink: Send): void {
   send = sink;
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  // While we ship -beta/-rc builds, track the matching pre-release channel so a
+  // beta updates to the next beta. Stable builds (no "-" in the version) only see
+  // stable releases. Without this, GitHub's /releases/latest hides pre-releases,
+  // so a beta build would find nothing and the check would surface as an error.
+  autoUpdater.allowPrerelease = app.getVersion().includes("-");
   // electron-updater is chatty on its own logger; we forward status ourselves.
   autoUpdater.logger = null;
 

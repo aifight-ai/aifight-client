@@ -4,7 +4,7 @@
 // Internal-only — not re-exported from runtime/src/index.ts (M1-15
 // rev1 decision #9). Daemon lifecycle (M1-18) wires one DailyScheduler
 // per AgentInstance; control API (M1-16) / CLI (M1-17) own the config
-// surface (read/write SQLite + strategy.json).
+// surface (read/write SQLite).
 
 import type { AgentInstanceSnapshot } from "../agents/agent";
 import type { GameType } from "../decision/types";

@@ -1,13 +1,15 @@
 // `aifight config validate [agent-slug]` — Validate an agent's config files.
 //
-// Loads all four profile files for the agent and reports validation
-// results. Exits 0 if all required files pass; exits 1 if any errors
-// are found.
+// Loads the profile files for the agent and reports validation results.
+// Exits 0 if config.json passes; exits 1 if any errors are found.
+//
+// Strategy is validated separately with `aifight strategy validate` — it is
+// free-form Markdown, not part of the profile.
 //
 // Behavior:
 //   1. Resolve agent slug (positional arg or "default").
-//   2. loadAgentProfile — reads and validates config.json, strategy.json,
-//      soul.md (required) and identity.json (optional).
+//   2. loadAgentProfile — reads and validates config.json (required) and
+//      identity.json (optional).
 //   3. Print per-file OK / error status.
 //   4. Exit 0 on full pass, exit 1 if ProfileLoadError is thrown.
 //
@@ -81,18 +83,6 @@ export async function runConfigValidate(
             profileCount: Object.keys(profile.config.profiles).length,
             hash: hashes.config,
           },
-          "strategy.json": {
-            ok: true,
-            name: profile.strategy.name,
-            version: profile.strategy.version,
-            gameCount: Object.keys(profile.strategy.games).length,
-            hash: hashes.strategy,
-          },
-          "soul.md": {
-            ok: true,
-            bytes: Buffer.byteLength(profile.soul, "utf8"),
-            hash: hashes.soul,
-          },
           "identity.json": {
             ok: true,
             present: profile.identity !== null,
@@ -115,16 +105,6 @@ export async function runConfigValidate(
   env.stdout(`    profiles       : ${configProfileNames.join(", ")}\n`);
   env.stdout(`    hash           : ${hashes.config.slice(0, 12)}...\n`);
   env.stdout(`\n`);
-  env.stdout(`  strategy.json : OK\n`);
-  env.stdout(`    name           : ${profile.strategy.name}\n`);
-  env.stdout(`    version        : ${profile.strategy.version}\n`);
-  env.stdout(`    games          : ${Object.keys(profile.strategy.games).join(", ")}\n`);
-  env.stdout(`    hash           : ${hashes.strategy.slice(0, 12)}...\n`);
-  env.stdout(`\n`);
-  env.stdout(`  soul.md       : OK\n`);
-  env.stdout(`    size           : ${Buffer.byteLength(profile.soul, "utf8")} bytes\n`);
-  env.stdout(`    hash           : ${hashes.soul.slice(0, 12)}...\n`);
-  env.stdout(`\n`);
 
   if (profile.identity !== null) {
     env.stdout(`  identity.json : OK\n`);
@@ -139,5 +119,6 @@ export async function runConfigValidate(
   }
 
   env.stdout(`\nAll required files OK.\n`);
+  env.stdout(`Strategy is separate: run \`aifight strategy validate\` to check your Markdown strategy.\n`);
   return 0;
 }

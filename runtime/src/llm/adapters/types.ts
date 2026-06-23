@@ -54,7 +54,7 @@ export type LLMProtocol = (typeof SUPPORTED_PROTOCOLS)[number];
 // ─── Decision input (what the daemon sends to adapter) ──────────────
 
 export interface DecisionInput {
-  /** System prompt assembled from soul + strategy + rules + context */
+  /** System prompt assembled from the agent's Markdown strategy + rules + context */
   readonly systemPrompt: string;
   /** User prompt with current state + legal actions + output contract */
   readonly userPrompt: string;

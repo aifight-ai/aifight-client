@@ -166,16 +166,40 @@ jobs:
           path: artifacts
       - name: Collect release files
         run: |
-          set -e
+          set -euo pipefail
           mkdir -p dist
-          # User-facing installers + CLI tarball only. Updater plumbing
-          # (*.zip / *.blockmap / latest*.yml) and the runtime-dist build artifact
-          # are intentionally skipped — re-add the zip/yml when auto-update is wired.
+          # User-facing installers + CLI tarball.
           find artifacts -type f \( \
             -name '*.dmg' -o -name '*.exe' -o \
             -name '*.AppImage' -o -name '*.tgz' \) \
             -exec cp -n {} dist/ \;
-          # Friendly macOS names so users can tell the chip apart at a glance.
+          # Auto-update plumbing electron-updater fetches at runtime: the macOS
+          # update ZIPs + blockmaps, plus the per-OS manifests. ZIP/exe/AppImage
+          # names stay CANONICAL — the manifests reference them by name, so only
+          # the DMGs (which the manifests don't reference) get the friendly rename
+          # below. Without these assets the in-app "Check for updates" errors out.
+          # macOS is the only target that emits a .zip (Win=exe, Linux=AppImage,
+          # CLI=tgz); electron-builder names it "...-<arch>.zip" (older versions
+          # used "...-<arch>-mac.zip"), so match any .zip to stay version-proof.
+          find artifacts -type f \( -name '*.zip' -o -name '*.blockmap' \) \
+            -exec cp -n {} dist/ \;
+          find artifacts -type f \( -name 'latest.yml' -o -name 'latest-linux.yml' \) \
+            -exec cp -n {} dist/ \;
+          # macOS builds on two separate runners (arm64 + Intel); each emits its own
+          # latest-mac.yml listing only its arch. A plain copy would keep just one,
+          # leaving the other arch unable to update — so merge their file lists into
+          # one manifest electron-updater can arch-resolve from.
+          mapfile -t MACYML < <(find artifacts -type f -name 'latest-mac.yml' | sort)
+          if [ "${#MACYML[@]}" -gt 0 ]; then
+            base="${MACYML[0]}"
+            for extra in "${MACYML[@]:1}"; do
+              yq -i ".files += load(\"$extra\").files" "$base"
+            done
+            cp "$base" dist/latest-mac.yml
+            echo "Merged latest-mac.yml: $(yq '.files | length' dist/latest-mac.yml) file entries from ${#MACYML[@]} arch manifest(s)."
+          fi
+          # Friendly macOS DMG names so users can tell the chip apart at a glance
+          # (safe: the update manifests point at the ZIPs, never the DMGs).
           ( cd dist
             for f in *-arm64.dmg; do [ -e "$f" ] && mv "$f" "${f%-arm64.dmg}-macOS-Apple-Silicon.dmg"; done
             for f in *-x64.dmg; do [ -e "$f" ] && mv "$f" "${f%-x64.dmg}-macOS-Intel.dmg"; done )

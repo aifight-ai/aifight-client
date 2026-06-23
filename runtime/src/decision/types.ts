@@ -56,12 +56,16 @@ export type LegalAction = Action;
 
 // ─── Strategy profile (plan §5.6) ───────────────────────────────────
 //
-// Loaded from ~/.aifight/runtime/agents/<name>/strategy.json by
-// M1-14 / scheduler. M1-12 prompt-builder consumes:
-//   - systemPrompt — user-controlled persona / strategy text
+// In-memory inputs the decision provider assembles per match — NOT a file
+// on disk. Model routing (provider / model / temperature / maxTokens) comes
+// from config.json; `systemPrompt` carries the agent's user-controlled
+// strategy text (the free-form Markdown strategy in strategy/global.md +
+// strategy/games/<game>.md — there is no persona/soul concept). M1-12
+// prompt-builder consumes:
+//   - systemPrompt — user-controlled strategy text
 //   - gameSpecific[game].extraPrompt — per-game adjunct
-// `temperature` / `maxTokens` are透 by M1-14 to direct-model client
-// (M1-12 拍板点 #12). API key is NOT in this profile — sourced from
+// `temperature` / `maxTokens` are passed by M1-14 to the direct-model
+// client (M1-12 拍板点 #12). API key is NOT in this profile — sourced from
 // keychain / env var per plan §5.7 layer 2.
 
 export interface GameSpecificProfile {

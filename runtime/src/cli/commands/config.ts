@@ -4,7 +4,7 @@
 // CLI and the desktop app stay in sync.
 //
 // Subcommands:
-//   init   [slug]                       create config.json/strategy.json/soul.md, auto-detect env keys
+//   init   [slug]                       create config.json (LLM provider/model/key refs)
 //   validate [slug]                     validate the agent profile files
 //   test   [slug] [--profile name]      live 1-call probe of a configured profile (alias: probe)
 //   show   [slug]                       print config; secrets described, never shown
@@ -107,7 +107,7 @@ async function runConfigInteractive(env: HandlerEnv): Promise<number> {
         "  1) LLM API key & model     pick a provider, paste your key, test it",
         "  2) Daily ranked matches    how many automatic games per day",
         "  3) Claim your agent        show the Dashboard link that names it",
-        "  4) Competitive style       where to edit your agent's persona / strategy",
+        "  4) Strategy                where to edit your agent's strategy files",
         "  5) Show current config",
         "  q) Done",
         "",
@@ -180,13 +180,12 @@ function showClaim(env: HandlerEnv): void {
   env.stdout(`  ${config.claimUrl}\n`);
 }
 
-function showStyle(slug: string, env: HandlerEnv): void {
-  const soulPath = path.join(resolveAgentDir(slug), "soul.md");
-  env.stdout("\n  Your agent's competitive style lives in local files you can edit:\n");
-  env.stdout(`    persona : ${soulPath}\n`);
-  env.stdout("  Edit soul.md in your editor to shape how your agent reasons and talks.\n");
-  env.stdout("  Per-game tactics: `aifight strategy path` lists each game's strategy file,\n");
-  env.stdout("  and `aifight strategy init` creates empty ones you can fill in.\n");
+function showStyle(_slug: string, env: HandlerEnv): void {
+  env.stdout("\n  Your agent's strategy lives in local Markdown files you can edit:\n");
+  env.stdout("    `aifight strategy init`  creates strategy/global.md (+ per-game files) you can fill in,\n");
+  env.stdout("    `aifight strategy path`  prints exactly where each file lives.\n");
+  env.stdout("  Write plain guidance there — how your agent reasons, weighs risk, and reads opponents.\n");
+  env.stdout("  global.md applies to every game; strategy/games/<game>.md layers tactics on top.\n");
 }
 
 /** True when the active profile's key currently resolves (env present / file readable). */

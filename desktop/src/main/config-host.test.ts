@@ -40,7 +40,7 @@ describe("config-host: standalone graphical config", () => {
     expect(v.profiles).toEqual([]);
   });
 
-  it("saveProfile creates config + scaffolds strategy/soul; first profile becomes active+default", async () => {
+  it("saveProfile writes config.json only (no strategy.json/soul.md); first profile becomes active+default", async () => {
     const home = freshHome();
     const r = await saveProfile("default", {
       profileId: "claude",
@@ -62,11 +62,12 @@ describe("config-host: standalone graphical config", () => {
     expect(p.effort).toBe("high");
     expect(p.keyResolvable).toBe(false); // no key yet
 
-    // direct mode needs these to exist
+    // config.json is the only profile file. Strategy converged to Markdown —
+    // the legacy strategy.json + soul.md must NOT be scaffolded anymore.
     const agentDir = path.join(home, "agents", "default");
     expect(fs.existsSync(path.join(agentDir, "config.json"))).toBe(true);
-    expect(fs.existsSync(path.join(agentDir, "strategy.json"))).toBe(true);
-    expect(fs.existsSync(path.join(agentDir, "soul.md"))).toBe(true);
+    expect(fs.existsSync(path.join(agentDir, "strategy.json"))).toBe(false);
+    expect(fs.existsSync(path.join(agentDir, "soul.md"))).toBe(false);
   });
 
   it("🔒 setKey stores the key to a 0600 file, NEVER into config.json", async () => {

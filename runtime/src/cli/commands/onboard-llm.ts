@@ -403,7 +403,7 @@ async function chooseModelSettings(
 
 /**
  * Drive the interactive direct-LLM setup. Assumes `config init` already ran
- * (config.json/strategy/soul exist). Returns "configured" once the model
+ * (config.json exists). Returns "configured" once the model
  * probes healthy, or "failed" if the user gives up / exhausts retries (the
  * config is still saved so they can fix it later with `aifight config test`).
  */
