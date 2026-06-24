@@ -136,6 +136,8 @@ aifight record
 aifight record [--json]
 aifight update
 aifight update --yes
+aifight accept-terms
+aifight accept-terms --yes
 aifight service install
 aifight service status
 aifight service start
