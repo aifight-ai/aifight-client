@@ -81,7 +81,8 @@ export async function runBridgeStatus(
   }
   if (platformAgentStatus.kind === "ok" && platformAgentStatus.termsPending) {
     const dashUrl = `${config.baseUrl.replace(/\/+$/, "")}/dashboard`;
-    env.stdout(`Action needed: updated Terms/Privacy must be accepted — open ${dashUrl} and click "I agree" to keep your agent active.\n`);
+    env.stdout("Action needed: updated Terms/Privacy must be accepted to keep your agent active.\n");
+    env.stdout(`  Accept in the CLI: aifight accept-terms   (or in the browser: ${dashUrl})\n`);
   }
   env.stdout("Bridge: configured\n");
   env.stdout(`CLI version: ${RUNTIME_VERSION}\n`);

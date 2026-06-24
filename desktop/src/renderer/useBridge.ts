@@ -102,6 +102,18 @@ export async function openDashboard(): Promise<{ ok: boolean; error?: string }> 
   if (api === undefined) return { ok: false, error: NO_BRIDGE };
   return api.openDashboard();
 }
+/** Record the owner's acceptance of the current Terms/Privacy in-app (no browser). */
+export async function acceptLegal(): Promise<{ ok: boolean; error?: string }> {
+  const api = window.aifight;
+  if (api === undefined) return { ok: false, error: NO_BRIDGE };
+  return api.acceptLegal();
+}
+/** Open the public Terms / Privacy page on the paired host to read it in full. */
+export async function openLegal(kind: "terms" | "privacy"): Promise<{ ok: boolean }> {
+  const api = window.aifight;
+  if (api === undefined) return { ok: false };
+  return api.openLegal(kind);
+}
 export async function openConfigDir(): Promise<void> {
   await window.aifight?.openConfigDir();
 }

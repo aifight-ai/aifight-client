@@ -123,6 +123,24 @@ export class BridgeHost {
   }
 
   /**
+   * The public Terms / Privacy page URL on the paired host, for the in-app consent
+   * card's "view the full document" links. Like getClaimTarget, the URL is built
+   * from local config and validated to http(s) on the configured host before it
+   * can reach shell.openExternal (F41/AIF-11). `kind` is a fixed enum — never a
+   * renderer-supplied path — so no arbitrary path can be opened.
+   */
+  legalDocUrl(kind: "terms" | "privacy"): string | null {
+    try {
+      const config = readBridgeConfig();
+      const base = config.baseUrl?.replace(/\/+$/, "") ?? null;
+      if (base === null) return null;
+      return safeExternalClaimUrl(`${base}/${kind}`, config.baseUrl ?? null);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Desktop → Dashboard passwordless SSO (design: DASHBOARD_SSO_DESIGN.md). Mint a
    * one-time console-handoff token with the agent key, then hand main the returned
    * URL to open in the SYSTEM browser so the user lands on the Dashboard already
@@ -516,9 +534,48 @@ export class BridgeHost {
         // older servers); the hero renders these so a rename on any device shows.
         name: typeof j.name === "string" ? j.name : undefined,
         publicNo: typeof j.public_no === "number" ? j.public_no : undefined,
+        // Current legal versions so the in-app consent card can show WHICH docs
+        // changed and echo them back when accepting. undefined on older servers.
+        currentTermsVersion: typeof j.current_terms_version === "string" ? j.current_terms_version : undefined,
+        currentPrivacyVersion: typeof j.current_privacy_version === "string" ? j.current_privacy_version : undefined,
       };
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Record the owner's acceptance of the CURRENT Terms/Privacy in-app — no browser
+   * round-trip — via POST /api/agents/me/accept-legal with the agent key. The
+   * server takes the owner from the authenticated agent (never the body) and
+   * rejects anything but the current versions, so we re-read them fresh here and
+   * echo exactly what the server serves. Returns a result, never throws.
+   */
+  async acceptLegal(): Promise<{ ok: boolean; error?: string }> {
+    const policy = await this.getAgentPolicy();
+    if (policy === null) return { ok: false, error: "not configured" };
+    if (policy.currentTermsVersion === undefined || policy.currentPrivacyVersion === undefined) {
+      return { ok: false, error: "server did not report current versions" };
+    }
+    const ep = this.#meEndpoint("/api/agents/me/accept-legal");
+    if (ep === null) return { ok: false, error: "not configured" };
+    try {
+      const res = await fetch(ep.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-Key": ep.apiKey },
+        body: JSON.stringify({
+          terms_version: policy.currentTermsVersion,
+          privacy_version: policy.currentPrivacyVersion,
+        }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        return { ok: false, error: `HTTP ${res.status}${t ? ": " + t.slice(0, 200) : ""}` };
+      }
+      return { ok: true };
+    } catch (cause) {
+      return { ok: false, error: describeError(cause) };
     }
   }
 

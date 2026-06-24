@@ -21,6 +21,7 @@ import {
 
 import {
   useBridgeStatus, cliRun, bridgeStart, requestMatches, setMatchingPaused, openClaim, openDashboard,
+  acceptLegal, openLegal,
   getAgentProfile, getOwnProfileRaw, getAgentPolicy, setAgentPolicy, setAgentName, getUsageOverview, resultText,
   desktopAvatarActions,
 } from "../useBridge";
@@ -162,6 +163,83 @@ function guidePendingFor(agentId: string | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+// In-app Terms/Privacy consent. The owner can read both documents (links open the
+// public pages on the paired host) and accept right here — no browser round-trip.
+// Acceptance posts through the agent key to the owner's own account; on success the
+// parent re-reads the policy and this card disappears (termsPending flips false).
+function TermsConsentCard({ policy, onAccepted }: { policy: AgentPolicy; onAccepted: () => void }) {
+  const { t } = useTranslation();
+  const [agreed, setAgreed] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const onConfirm = async () => {
+    if (!agreed || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    const res = await acceptLegal();
+    setSubmitting(false);
+    if (res.ok) {
+      setDone(true);
+      onAccepted();
+    } else {
+      setError(t("play.terms.error"));
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-5 py-4">
+      <div className="flex items-start gap-2.5">
+        <ShieldAlert size={18} className="mt-0.5 shrink-0 text-amber-500" />
+        <div className="min-w-0 flex-1">
+          <div className="text-[14px] font-medium text-[var(--text)]">{t("play.terms.title")}</div>
+          <div className="mt-0.5 text-[12px] text-[var(--text-muted)]">{t("play.terms.body")}</div>
+          {policy.currentTermsVersion !== undefined && policy.currentPrivacyVersion !== undefined && (
+            <div className="mt-1 text-[11px] text-[var(--text-faint)]">
+              {t("play.terms.versions", { terms: policy.currentTermsVersion, privacy: policy.currentPrivacyVersion })}
+            </div>
+          )}
+          {done ? (
+            <div className="mt-2 flex items-center gap-1.5 text-[12px] text-emerald-600">
+              <Check size={14} /> {t("play.terms.success")}
+            </div>
+          ) : (
+            <>
+              <div className="mt-2 flex flex-wrap items-center gap-4">
+                <button onClick={() => void openLegal("terms")} className="app-no-drag inline-flex items-center gap-1 text-[12px] text-[var(--accent)] hover:underline">
+                  <ExternalLink size={12} /> {t("play.terms.viewTerms")}
+                </button>
+                <button onClick={() => void openLegal("privacy")} className="app-no-drag inline-flex items-center gap-1 text-[12px] text-[var(--accent)] hover:underline">
+                  <ExternalLink size={12} /> {t("play.terms.viewPrivacy")}
+                </button>
+              </div>
+              <label className="mt-2.5 flex cursor-pointer items-start gap-2 text-[12px] text-[var(--text)]">
+                <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} className="mt-0.5" />
+                <span>{t("play.terms.agree")}</span>
+              </label>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <button
+                  onClick={() => void onConfirm()}
+                  disabled={!agreed || submitting}
+                  className="flex items-center gap-1.5 rounded-md bg-amber-500 px-3.5 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                >
+                  {submitting && <Loader2 size={13} className="animate-spin" />}
+                  {submitting ? t("play.terms.submitting") : t("play.terms.confirm")}
+                </button>
+                <button onClick={() => void openDashboard()} className="text-[12px] text-[var(--text-faint)] hover:text-[var(--text-muted)]">
+                  {t("play.terms.browserFallback")}
+                </button>
+              </div>
+              {error !== null && <div className="mt-2 text-[12px] text-red-500">{error}</div>}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function PlayView({ onNavigate }: { onNavigate?: (view: string) => void }) {
@@ -908,26 +986,17 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
         </div>
       )}
 
-      {/* Terms banner — the claimed owner must accept the current Terms/Privacy. */}
+      {/* Terms — the claimed owner must accept the current Terms/Privacy. Accepted
+          in-app (no browser): read the linked docs, tick the box, confirm. */}
       {policy?.termsPending === true && (
-        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-5 py-4">
-          <div className="flex items-start gap-2.5">
-            <ShieldAlert size={18} className="mt-0.5 shrink-0 text-amber-500" />
-            <div className="min-w-0 flex-1">
-              <div className="text-[14px] font-medium text-[var(--text)]">{t("play.terms.title")}</div>
-              <div className="mt-0.5 text-[12px] text-[var(--text-muted)]">{t("play.terms.body")}</div>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <button
-                  onClick={() => void openDashboard()}
-                  className="flex items-center gap-1.5 rounded-md bg-amber-500 px-3.5 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90"
-                >
-                  <ExternalLink size={14} />
-                  {t("play.terms.btn")}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <TermsConsentCard
+          policy={policy}
+          onAccepted={() => {
+            void getAgentPolicy().then((p) => {
+              if (p !== null) setPolicyState(p);
+            });
+          }}
+        />
       )}
 
       {/* ── Hero: identity + live activity ── */}

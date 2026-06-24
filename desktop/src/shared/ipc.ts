@@ -65,6 +65,10 @@ export interface AgentPolicy {
   readonly name?: string;
   /** Immutable 10-digit numeric public ID. undefined/0 when unassigned or on older servers. */
   readonly publicNo?: number;
+  /** Current Terms version the server expects acceptance of. undefined on older servers. */
+  readonly currentTermsVersion?: string;
+  /** Current Privacy Policy version the server expects acceptance of. undefined on older servers. */
+  readonly currentPrivacyVersion?: string;
 }
 
 /** Public win/loss record + rating for the user's own agent (from the public profile). */
@@ -467,6 +471,8 @@ export const IPC = {
   eventsGet: "events:get",
   openClaim: "bridge:open-claim",
   openDashboard: "app:open-dashboard",
+  acceptLegal: "bridge:accept-legal",
+  openLegal: "app:open-legal",
   setMatchingPaused: "matching:set-paused",
   loginItemGet: "login-item:get",
   loginItemSet: "login-item:set",
@@ -521,6 +527,12 @@ export interface AifightBridgeApi {
    * SSO via a one-time agent-key handoff token). Falls back to the bare dashboard
    * (login page) when the agent isn't claimed or the handoff fails. */
   openDashboard(): Promise<{ ok: boolean; error?: string }>;
+  /** Record the owner's acceptance of the current Terms/Privacy in-app (no browser),
+   * via the agent key. The server consents for the agent's own owner. */
+  acceptLegal(): Promise<{ ok: boolean; error?: string }>;
+  /** Open the public Terms or Privacy Policy page on the paired host in the browser,
+   * so the user can read the full document before accepting in-app. */
+  openLegal(kind: "terms" | "privacy"): Promise<{ ok: boolean }>;
   /** The agent's public identity + record (post-claim). name null while unclaimed; stats null without a public profile. */
   getAgentProfile(): Promise<AgentProfileData>;
   /** The OWN agent's FULL public profile JSON (ratings[], rating_history[], summary,

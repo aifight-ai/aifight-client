@@ -46,6 +46,7 @@ import { runBridgeSessions } from "./commands/bridge-sessions";
 import { runBridgeStrategy } from "./commands/bridge-strategy";
 import { runConfig } from "./commands/config";
 import { runStats } from "./commands/stats";
+import { runAcceptTerms } from "./commands/accept-terms";
 import { runPrices } from "./commands/prices";
 import { runRecord } from "./commands/record";
 import { runReview } from "./commands/review";
@@ -238,6 +239,8 @@ async function dispatch(
       return runRecord(subArgs, env);
     case "review":
       return runReview(subArgs, env);
+    case "accept-terms":
+      return runAcceptTerms(subArgs, env);
 
     default:
       throw new UsageError(`unknown command '${cmd}'`);
@@ -275,6 +278,7 @@ function globalUsage(): string {
     "",
     "Tune your agent (adjust any time):",
     "  aifight rename <name>             Change your agent's public display name",
+    "  aifight accept-terms              Review & accept updated Terms/Privacy (keeps your agent active)",
     "  aifight set daily <N>             Set daily automatic match preference",
     "  aifight set game <game1,game2>    Set automatic match game preference",
     "  aifight strategy <command>        Show/init/validate local strategy files",

@@ -101,6 +101,20 @@ export function registerBridgeIpc(host: BridgeHost): void {
     return { ok: target.url !== null, ...(target.url === null ? { error: target.error } : {}) };
   });
 
+  // Record the owner's acceptance of the current Terms/Privacy in-app (no browser).
+  ipcMain.handle(IPC.acceptLegal, () => host.acceptLegal());
+
+  // Open the public Terms / Privacy page on the paired host so the user can read
+  // the full document before accepting. `kind` is validated to a fixed enum and
+  // the URL is host-checked in legalDocUrl before it reaches shell.openExternal.
+  ipcMain.handle(IPC.openLegal, (_e, kind: unknown) => {
+    if (kind !== "terms" && kind !== "privacy") return { ok: false };
+    const url = host.legalDocUrl(kind);
+    if (url === null) return { ok: false };
+    void shell.openExternal(url);
+    return { ok: true };
+  });
+
   // Open the shared ~/.aifight config folder in the OS file manager (for backup /
   // inspecting keys + strategy). Resolved via the runtime path helper — never a
   // hardcoded path. shell.openPath resolves to "" on success or an error string.

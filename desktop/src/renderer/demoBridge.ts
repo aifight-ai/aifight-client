@@ -119,6 +119,8 @@ export function installDemoBridge(): void {
       Promise.resolve({ phase: "running", connectedAt: Date.now() - 3_600_000, reconnects: 0, lastActivityAt: Date.now() - 30_000 }),
     openClaim: () => Promise.resolve({ ok: true }),
     openDashboard: () => Promise.resolve({ ok: true }),
+    acceptLegal: () => Promise.resolve({ ok: true }),
+    openLegal: () => Promise.resolve({ ok: true }),
     getAgentProfile: () =>
       Promise.resolve({
         name: "Demo Strategist",

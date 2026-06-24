@@ -192,7 +192,7 @@ export class BridgeRunner {
         this.#log(
           "warning",
           "bridge.terms_pending",
-          `Updated Terms/Privacy must be accepted — open ${base}/dashboard and click "I agree" to keep your agent active.`,
+          `Updated Terms/Privacy must be accepted to keep your agent active. Accept in the CLI: \`aifight accept-terms\` (or in the browser: ${base}/dashboard).`,
         );
       }
     } catch {
