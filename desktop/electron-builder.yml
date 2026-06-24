@@ -44,7 +44,11 @@ afterSign: build/notarize.cjs
 afterAllArtifactBuild: build/notarize-dmg.cjs
 
 mac:
-  category: public.app-category.games
+  # NOT public.app-category.games: a game category makes macOS (Sonoma+) attach the
+  # Game Mode / Game Overlay (the "rocket" menu-bar item with brightness/sound/
+  # controller controls) — wrong here, the user doesn't play; AI agents do. AIFight
+  # is a tool for building + competing agents, so categorize it as a developer tool.
+  category: public.app-category.developer-tools
   target:
     - dmg
     - zip # required: electron-updater updates macOS via the zip artifact
@@ -75,7 +79,8 @@ nsis:
 linux:
   target:
     - AppImage
-  category: Game
+  # Match the macOS category: a tool for building/competing AI agents, not a game.
+  category: Development
 
 # Auto-update feed. GitHub Releases on the public client repo. electron-builder
 # bakes this into the app's app-update.yml; at runtime electron-updater fetches

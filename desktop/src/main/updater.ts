@@ -51,7 +51,12 @@ export async function checkForUpdates(): Promise<void> {
   }
 }
 
-/** Quit and install a downloaded update (renderer "Restart & update"). */
+/**
+ * Quit and install a downloaded update (the "Restart & update" prompt). The
+ * caller sets `isQuitting` first so the close-to-tray handler lets the quit
+ * through (see main.ts); electron-updater then installs and relaunches. Windows
+ * shows its installer briefly — that's fine, the user explicitly asked to update.
+ */
 export function quitAndInstall(): void {
   if (app.isPackaged) autoUpdater.quitAndInstall();
 }

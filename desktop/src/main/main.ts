@@ -36,6 +36,16 @@ app.on("before-quit", () => {
   isQuitting = true;
 });
 
+// Single instance: a second launch (double-click while already running in the
+// tray, or an updater relaunch racing a manual open) must not spawn a second
+// process and a second menu-bar icon. The first instance keeps the lock; any
+// later one exits immediately and just re-focuses the existing window.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on("second-instance", () => showMainWindow());
+}
+
 /** Push an event to the renderer, if a live window exists. */
 function broadcast(channel: string, payload: unknown): void {
   if (mainWindow !== null && !mainWindow.isDestroyed()) {

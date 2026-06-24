@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Swords, MonitorPlay, Trophy, CalendarDays, Cpu, ScrollText, History, Settings, PanelLeft, Sun, Moon, Monitor, FolderOpen, LayoutDashboard } from "lucide-react";
+import { Swords, MonitorPlay, Trophy, CalendarDays, Cpu, ScrollText, History, Settings, PanelLeft, Sun, Moon, Monitor, FolderOpen, LayoutDashboard, Download } from "lucide-react";
 
 import { useTheme, type ThemeMode } from "./theme";
 import { getLangPref, setLangPref, type LangPref } from "./i18n";
@@ -190,6 +190,7 @@ export function App() {
         </header>
         <DeviceMismatchBanner />
         <BridgeErrorBanner />
+        <UpdateReadyBanner />
         <MatchBanner live={live.match} onWatch={() => setActive("watch")} />
         <section className="flex-1 overflow-auto p-6">
           {active === "settings" ? (
@@ -399,6 +400,41 @@ function BridgeErrorBanner() {
         >
           {t("play.status.retry")}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// Update-ready banner — a globally visible prompt (above every view, including the
+// home page) while an update downloads / once it's ready, so "Restart & update"
+// isn't buried in Settings → About. Mirrors the AboutCard's onUpdateStatus feed.
+function UpdateReadyBanner() {
+  const { t } = useTranslation();
+  const [update, setUpdate] = useState<UpdateStatus>({ state: "idle" });
+  useEffect(() => {
+    const api = window.aifight;
+    if (api === undefined) return;
+    return api.onUpdateStatus((s) => setUpdate(s));
+  }, []);
+  if (update.state !== "downloading" && update.state !== "downloaded") return null;
+  const ready = update.state === "downloaded";
+  return (
+    <div className="border-b border-[var(--border)] bg-[var(--accent)]/10 px-4 py-2.5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Download size={14} className="shrink-0 text-[var(--accent)]" />
+          <span className="truncate text-[13px] font-medium text-[var(--text)]">
+            {ready ? t("about.downloaded") : t("about.downloading", { percent: update.percent })}
+          </span>
+        </div>
+        {ready && (
+          <button
+            onClick={() => void window.aifight?.installUpdate()}
+            className="flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-2.5 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90"
+          >
+            {t("about.restart")}
+          </button>
+        )}
       </div>
     </div>
   );

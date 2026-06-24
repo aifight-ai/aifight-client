@@ -4,9 +4,13 @@
        automatically — black on a light bar, white on a dark one. Letter paths are
        lifted verbatim from the brand AIF favicon (aifight-favicon-light.svg); the
        orange F flattens to one color here because the menu bar is monochrome by
-       design (the colored mark stays on Windows/Linux + the Dock/app icon). -->
-  <g transform="translate(23.02 77.64) scale(0.2451)" fill="#000000">
-    <path d="M32 0L4 0L48-144L88.60-144L132.60 0L104.60 0L95.30-30L41.10-30L32 0M48.80-55.40L87.50-55.40L68-118.50L48.80-55.40M179.80 0L152.60 0L152.60-144L179.80-144"/>
-    <path d="M237 0L209.80 0L209.80-144L297.80-144L297.80-116.80L237-116.80L237-85.60L285.80-85.60L285.80-58.40L237-58.40"/>
+       design (the colored mark stays on Windows/Linux + the Dock/app icon).
+       The 0.75 scale around the viewBox centre (60,60) adds padding so the glyph
+       sits at a normal menu-bar size instead of filling the full bar height. -->
+  <g transform="translate(60 60) scale(0.75) translate(-60 -60)">
+    <g transform="translate(23.02 77.64) scale(0.2451)" fill="#000000">
+      <path d="M32 0L4 0L48-144L88.60-144L132.60 0L104.60 0L95.30-30L41.10-30L32 0M48.80-55.40L87.50-55.40L68-118.50L48.80-55.40M179.80 0L152.60 0L152.60-144L179.80-144"/>
+      <path d="M237 0L209.80 0L209.80-144L297.80-144L297.80-116.80L237-116.80L237-85.60L285.80-85.60L285.80-58.40L237-58.40"/>
+    </g>
   </g>
 </svg>
