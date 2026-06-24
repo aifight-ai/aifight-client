@@ -75,7 +75,15 @@ ipcMain.handle(IPC.focusWindow, () => {
 // Auto-update controls (renderer Settings → About). Status is pushed back via
 // IPC.updateStatus from initUpdater (wired in whenReady).
 ipcMain.handle(IPC.updateCheck, () => checkForUpdates());
-ipcMain.handle(IPC.updateInstall, () => quitAndInstall());
+ipcMain.handle(IPC.updateInstall, () => {
+  // "Restart & update" is a real exit, not a close-to-tray. Without this flag the
+  // window's close handler would preventDefault + hide, so electron-updater's
+  // quit-to-install never completes and the app merely vanishes to the tray
+  // (the update then only applies on the next genuine quit). Setting isQuitting
+  // lets the quit through so the update installs and the app relaunches now.
+  isQuitting = true;
+  quitAndInstall();
+});
 
 function createWindow(): void {
   // Restore the last window size/position (validated to be on-screen).
