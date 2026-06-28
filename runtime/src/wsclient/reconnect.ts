@@ -7,6 +7,10 @@
 //   - factory + ReconnectingWSClient facade only
 //   - 5 Roy 拍板: exponential 1s base × 2 cap 30s; full jitter; no max-attempts
 //     cap by default; error classes per TED; close whitelist 1001/1006/1011/1012
+//   - 2026-06-28 amendment (owner directive): a reconnect (post first-success)
+//     never permanently gives up over a transient server blip — 401/404 are
+//     retriable on reconnect (terminal only on first-connect); auth-class
+//     retries use a 60s cap. See isRetriableError. 403 stays terminal (re-pair).
 //   - inline error class ReconnectStoppedError (NOT in wsclient/errors.ts)
 //   - local ReconnectCloseInfo / ReconnectCloseHandler — facade.onClose does
 //     NOT reuse M1-06 WSCloseHandler (rev 2 Codex C3)
@@ -139,6 +143,12 @@ export interface ReconnectingWSClient {
 const DEFAULT_INITIAL_BACKOFF_MS = 1_000;
 const DEFAULT_BACKOFF_FACTOR = 2;
 const DEFAULT_MAX_BACKOFF_MS = 30_000;
+/** Gentler backoff ceiling for auth-class reconnect failures (401/404 after a
+ *  healthy session). A server restart self-heals within seconds, but a truly
+ *  revoked/wiped credential 401s forever — so cap the steady-state retry at 60s
+ *  (vs 30s for network) to avoid hammering a dead credential, while still
+ *  recovering within ~a minute of the server returning (2026-06-28). */
+const AUTH_MAX_BACKOFF_MS = 60_000;
 const DEFAULT_JITTER: JitterStrategy = "full";
 
 const SEVERITY_WARN_THRESHOLD_MS = 5 * 60 * 1_000;
@@ -182,8 +192,20 @@ function isRetriableClose(info: WSCloseInfo): boolean {
   return RETRIABLE_CLOSE_CODES.has(info.code);
 }
 
-/** Roy 拍板 #4: WSClientError class dispatch. */
-function isRetriableError(err: unknown): boolean {
+/** Roy 拍板 #4: WSClientError class dispatch.
+ *  `connectedBefore` distinguishes a first-connect failure from a reconnect.
+ *  401/404 are terminal on the FIRST connect — a genuinely bad or unclaimed
+ *  credential (or a wrong URL) should surface as an error, not spin forever —
+ *  but RETRIABLE once we've connected before: a 401/404 after a healthy session
+ *  almost always means the server is mid-restart (auth/DB not yet ready) or is
+ *  briefly 404-routing during a deploy, both of which self-heal. A bridge that
+ *  worked a moment ago must never permanently give up over a transient server
+ *  blip (2026-06-28 owner directive: keep retrying through multi-hour outages,
+ *  even at a longer interval). 403 stays terminal both ways — it signals a
+ *  device-binding takeover (WSDeviceMismatchError, statusCode 403), where
+ *  retrying would thrash with the device that displaced us; the user must
+ *  re-pair on this machine. */
+function isRetriableError(err: unknown, connectedBefore: boolean): boolean {
   if (err instanceof WSAbortedError) return false;
   if (err instanceof WSWelcomeInvalidError) return false;
   if (err instanceof WSProtocolVersionError) return false;
@@ -191,7 +213,8 @@ function isRetriableError(err: unknown): boolean {
   if (err instanceof WSWelcomeTimeoutError) return true;
   if (err instanceof WSHandshakeError) {
     const sc = err.statusCode;
-    if (sc === 401 || sc === 403 || sc === 404) return false;
+    if (sc === 403) return false; // device-mismatch / forbidden → re-pair, never thrash
+    if (sc === 401 || sc === 404) return connectedBefore;
     if (sc === 408 || sc === 429) return true;
     if (sc >= 500 && sc < 600) return true;
     return false; // other 4xx conservatively terminal
@@ -411,7 +434,7 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
         if (err instanceof WSClientError) {
           lastErr = err;
         }
-        if (!isRetriableError(err)) {
+        if (!isRetriableError(err, this.#firstConnectSettled)) {
           const wsErr = err instanceof WSClientError ? err : undefined;
           const kind: ReconnectStopReason =
             err instanceof WSAbortedError ? "signal" : "fatal-error";
@@ -429,11 +452,18 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
       // rev 5 (Codex 预审 fix): backoff curve indexed by `#failures`
       // (consecutive failures), NOT `this.attempt + 1`. Maps 1st failure
       // to 1s, 2nd to 2s, ..., 6th+ capped at 30s per plan §5.9.
+      // 2026-06-28: auth-class reconnect failures (401/404) use a gentler 60s
+      // cap so a permanently-revoked credential isn't retried every 30s, while
+      // network/server failures keep the fast 30s cap for prompt recovery.
+      const baseCap = this.#opts.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
+      const isAuthFailure =
+        lastErr instanceof WSHandshakeError &&
+        (lastErr.statusCode === 401 || lastErr.statusCode === 404);
       const cappedBase = computeBackoff(
         this.#failures,
         this.#opts.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS,
         this.#opts.backoffFactor ?? DEFAULT_BACKOFF_FACTOR,
-        this.#opts.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS,
+        isAuthFailure ? Math.max(baseCap, AUTH_MAX_BACKOFF_MS) : baseCap,
       );
       const delay = computeJitter(
         cappedBase,

@@ -737,6 +737,70 @@ describe("aifight setup", () => {
     expect(config.runtimeLocalUrl).toBe("direct://local");
   });
 
+  it("--replace registers a fresh agent on the same host and archives the old identity", async () => {
+    configuredBridge({
+      agentId: "old-agent-9",
+      agentName: "old-one",
+      apiKey: "sk_test_secret",
+      baseUrl: "https://beta.aifight.ai",
+      wsUrl: "wss://beta.aifight.ai/api/ws",
+    });
+    const home = process.env.AIFIGHT_RUNTIME_HOME!;
+
+    // Plain --json (no --replace) must still REFUSE over an existing identity,
+    // without contacting the server.
+    const refusal = await runCapture(["setup", "--json"], {
+      fetchImpl: async () => {
+        throw new Error("must not contact server when refusing");
+      },
+    });
+    expect(refusal.code).not.toBe(0);
+    expect(refusal.stderr + refusal.stdout).toContain("already has local AIFight bridge credentials");
+
+    // --replace registers a FRESH agent on the SAME host (beta, not env/default).
+    let registerUrl = "";
+    const fetchImpl: typeof fetch = async (input) => {
+      registerUrl = String(input);
+      return jsonResp(
+        {
+          agent: {
+            id: "99999999-9999-4999-8999-999999999999",
+            name: "fresh-agent",
+            identity_status: "bootstrap",
+            api_key: "sk_fresh_secret",
+            model: "direct",
+            auto_confirm: false,
+            webhook_url: "",
+          },
+          claim_url: "https://beta.aifight.ai/claim/ct_FRESH",
+          claim_token: "ct_FRESH",
+          important: "Save your api_key!",
+        },
+        201,
+      );
+    };
+    const r = await runCapture(["setup", "--json", "--replace-local-identity"], { fetchImpl });
+    expect(r.code).toBe(0);
+    expect(registerUrl).toBe("https://beta.aifight.ai/api/agents/register");
+
+    const config = readBridgeConfig();
+    expect(config.agentId).toBe("99999999-9999-4999-8999-999999999999");
+    expect(config.apiKey).toBe("sk_fresh_secret");
+    expect(config.baseUrl).toBe("https://beta.aifight.ai");
+
+    // The old identity is ARCHIVED (not deleted), with its secrets redacted.
+    const archivePath = path.join(home, "bridge.replaced-old-agent-9.json");
+    expect(fs.existsSync(archivePath)).toBe(true);
+    const archived = JSON.parse(fs.readFileSync(archivePath, "utf8")) as {
+      agentId: string;
+      apiKey: string;
+      replacedAt: string;
+    };
+    expect(archived.agentId).toBe("old-agent-9");
+    expect(archived.apiKey).not.toBe("sk_test_secret"); // redacted
+    expect(typeof archived.replacedAt).toBe("string");
+  });
+
   it("rejects combining approved local setup with JSON mode", async () => {
     withRuntimeHome();
     let contacted = false;

@@ -190,6 +190,33 @@ export function removeBridgeConfig(): void {
   fs.rmSync(filePath, { force: true });
 }
 
+/** Archive a redacted snapshot of the active bridge.json before a re-register
+ *  replaces it (aifight setup --replace), so the prior agent's identity record
+ *  (id / name / host — secrets redacted) is preserved on disk. Local sessions
+ *  (runtime/agents/<id>/) and the shared agents/<slug> LLM config are NOT
+ *  touched by re-registration; this just keeps a record of the old pointer.
+ *  Best-effort: returns the archive path, or null if it could not be written
+ *  (must never block the re-register). */
+export function archiveReplacedBridgeConfig(config: BridgeConfig): string | null {
+  try {
+    ensureRuntimeHome();
+    const archivePath = path.join(
+      getRuntimeHome(),
+      `bridge.replaced-${config.agentId}.json`,
+    );
+    const snapshot = {
+      ...redactBridgeConfig(config),
+      replacedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(archivePath, JSON.stringify(snapshot, null, 2) + "\n", {
+      mode: 0o600,
+    });
+    return archivePath;
+  } catch {
+    return null;
+  }
+}
+
 export function writeBridgeConfig(config: BridgeConfig): void {
   ensureRuntimeHome();
   const filePath = getBridgeConfigPath();

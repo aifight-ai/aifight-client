@@ -64,6 +64,13 @@ export interface BridgeHostCallbacks {
   readonly onServerMessage?: (message: ServerMessageEnvelope) => void;
 }
 
+/** Shown when the runtime's reconnect loop permanently stops (a terminal
+ *  condition only — transient network/auth blips retry forever; see
+ *  reconnect.ts isRetriableError). Supplements the banner's localized error
+ *  label + 重连 button (App.tsx BridgeErrorBanner). */
+const RECONNECT_GAVE_UP_MESSAGE =
+  "Connection stopped and could not reconnect automatically. Retry below; if it keeps failing, re-pair this agent from the Dashboard.";
+
 export class BridgeHost {
   readonly #callbacks: BridgeHostCallbacks;
   #runner: BridgeRunnerInstance | null = null;
@@ -395,6 +402,24 @@ export class BridgeHost {
             this.#connectedAt = null;
             this.#setStatus({ phase: "starting", config: this.#status.config, message: undefined });
           }
+        } else if (event.code === "reconnect.give_up" || event.code === "reconnect.closed") {
+          // The reconnect loop has permanently stopped. With the 2026-06-28
+          // runtime change this only fires on a TRULY terminal condition (a
+          // protocol-version mismatch needing a client update, a 403 device
+          // takeover, or an aborted/closed transport) — transient network/auth
+          // (401/404) blips retry forever and never reach here. Surface it as an
+          // error with the 重连 button instead of leaving the host frozen on
+          // "starting"/"连接中", and RELEASE the runner so 重连 (→ start()) truly
+          // restarts rather than no-opping on a non-null runner.
+          const runner = this.#runner;
+          this.#runner = null;
+          this.#connectedAt = null;
+          if (runner !== null) void runner.stop().catch(() => {});
+          this.#setStatus({
+            phase: "error",
+            config: this.#status.config,
+            message: RECONNECT_GAVE_UP_MESSAGE,
+          });
         }
         this.#callbacks.onLog?.(event);
       },

@@ -273,6 +273,77 @@ describe("createReconnectingWSClient — close-code dispatch (Roy 拍板 #5)", (
     expect(mockedCreate).toHaveBeenCalledTimes(2);
   });
 
+  // 2026-06-28: a 401 on RECONNECT (after a healthy first connect) is a
+  // transient server-restart condition, not a dead credential — it must keep
+  // retrying and self-heal, never terminate like a first-connect 401 (case 3).
+  test("case 5b: reconnect 401 (server restart) is retriable → reconnects, never gives up", async () => {
+    const h1 = makeFakeInner();
+    const h2 = makeFakeInner({
+      welcome: {
+        type: "welcome",
+        data: {
+          server_protocol_version: "1.0.0",
+          agent_id: "agent-test",
+          agent_name: "test",
+          server_time: "2026-06-28T00:00:05.000Z",
+          games: ["coup"],
+        },
+      },
+    });
+    mockedCreate.mockResolvedValueOnce(h1.inner as any); // attempt 1: connect
+    mockedCreate.mockRejectedValueOnce(
+      new WSHandshakeError(401, "Unauthorized", "auth cold during restart"),
+    ); // attempt 2: transient 401
+    mockedCreate.mockResolvedValueOnce(h2.inner as any); // attempt 3: reconnect
+
+    const facade = await createReconnectingWSClient({
+      ...baseOpts,
+      jitter: "none",
+    });
+    expect(facade.state).toBe("connected");
+
+    // Server restarts: drop (1006), first reconnect hits a cold-auth 401.
+    h1.simulateServerClose(1006);
+    await vi.advanceTimersByTimeAsync(1000); // #failures=1 → 1s → attempt 2 (401)
+    await flushMicrotasks();
+    // The reconnect 401 must NOT terminate the facade — still alive, backing off.
+    expect(facade.state).not.toBe("closed");
+    expect(mockedCreate).toHaveBeenCalledTimes(2);
+
+    // #failures=2 (auth class) → 2s backoff → attempt 3 succeeds.
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    expect(facade.state).toBe("connected");
+    expect(facade.welcome).toBe(h2.inner.welcome);
+    expect(mockedCreate).toHaveBeenCalledTimes(3);
+  });
+
+  // A 403 stays terminal even on reconnect: it means the agent was re-paired to
+  // another machine (device binding), so retrying would thrash with that device.
+  test("case 5c: reconnect 403 stays terminal (re-pair, never thrash)", async () => {
+    const h1 = makeFakeInner();
+    mockedCreate.mockResolvedValueOnce(h1.inner as any);
+    mockedCreate.mockRejectedValueOnce(
+      new WSHandshakeError(403, "Forbidden", "device_mismatch"),
+    );
+
+    const facade = await createReconnectingWSClient({
+      ...baseOpts,
+      jitter: "none",
+    });
+    let closed: ReconnectCloseInfo | undefined;
+    facade.onClose((info) => {
+      closed = info;
+    });
+
+    h1.simulateServerClose(1006);
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushMicrotasks();
+
+    expect(facade.state).toBe("closed");
+    expect(closed?.kind).toBe("fatal-error");
+  });
+
   test("case 6: fatal close 1000 → onClose fires with kind=fatal-close, code=1000", async () => {
     const { inner, simulateServerClose } = makeFakeInner();
     mockedCreate.mockResolvedValueOnce(inner as any);

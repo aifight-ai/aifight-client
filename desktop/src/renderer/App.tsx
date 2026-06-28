@@ -379,10 +379,30 @@ function BridgeErrorBanner() {
   const { t } = useTranslation();
   const status = useBridgeStatus();
   const [retrying, setRetrying] = useState(false);
+  const [reRegistering, setReRegistering] = useState(false);
   if (status?.phase !== "error") return null;
+  const busy = retrying || reRegistering;
   const retry = () => {
     setRetrying(true);
     void window.aifight?.start().finally(() => setRetrying(false));
+  };
+  // Recovery for when the current agent no longer exists server-side (e.g. it was
+  // removed → first-connect 401, which retrying can never fix): register a FRESH
+  // agent on the SAME host, archiving the old identity (local data is never
+  // deleted), then bring it online. Confirmed first since it switches identity.
+  const newAgent = async () => {
+    if (!window.confirm(t("play.status.newAgentConfirm"))) return;
+    setReRegistering(true);
+    try {
+      const r = await cliRun(["setup", "--json", "--replace-local-identity"]);
+      if (r.exitCode === 0) {
+        await window.aifight?.start();
+      } else {
+        window.alert(t("play.status.newAgentFailed"));
+      }
+    } finally {
+      setReRegistering(false);
+    }
   };
   return (
     <div className="border-b border-[var(--border)] bg-red-500/10 px-4 py-2.5">
@@ -393,13 +413,22 @@ function BridgeErrorBanner() {
             <span className="truncate text-[12px] text-[var(--text-muted)]">{status.message}</span>
           )}
         </div>
-        <button
-          onClick={retry}
-          disabled={retrying}
-          className="flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-2.5 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60"
-        >
-          {t("play.status.retry")}
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            onClick={newAgent}
+            disabled={busy}
+            className="text-[12px] text-[var(--text-muted)] underline-offset-2 hover:underline disabled:opacity-60"
+          >
+            {t("play.status.newAgent")}
+          </button>
+          <button
+            onClick={retry}
+            disabled={busy}
+            className="flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-2.5 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+          >
+            {t("play.status.retry")}
+          </button>
+        </div>
       </div>
     </div>
   );

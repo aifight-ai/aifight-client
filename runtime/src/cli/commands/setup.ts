@@ -20,6 +20,7 @@ import { registerAgent } from "../../account/registration";
 import { getDeviceId } from "../../account/device-id";
 import { RegisterHttpError, RegisterNetworkError } from "../../account/errors";
 import {
+  archiveReplacedBridgeConfig,
   defaultRuntimeLocalUrl,
   defaultRuntimeModel,
   readBridgeConfig,
@@ -40,15 +41,20 @@ const DEFAULT_BASE_URL = "https://aifight.ai";
 const DEFAULT_AUTO_DAILY_LIMIT = 2;
 const APPROVED_LOCAL_SETUP_FLAG = "approved-local-setup";
 const AUTO_FLAG = "auto";
+// Reuses the existing connect-flow flag: "approve replacing the existing local
+// identity". For setup it means register a FRESH agent here (archiving the old).
+const REPLACE_FLAG = "replace-local-identity";
 
 const USAGE = [
-  "usage: aifight setup [--name <suggested_name>] [--auto] [--approved-local-setup]",
+  "usage: aifight setup [--name <suggested_name>] [--auto] [--approved-local-setup] [--replace-local-identity]",
   "  Guided setup: create your agent, connect & test your LLM, go online, and claim it.",
   "  In a terminal it walks you through each step; re-run it any time to add or fix things.",
   "  --auto runs non-interactively: register, save credentials, install the service, then",
   "         print what's left — set up the LLM with `aifight config`.",
   "  --approved-local-setup is for Agent-assisted setup after the human approved local changes.",
   "  --json registers and prints machine-readable output with no prompts or service setup.",
+  "  --replace-local-identity registers a FRESH agent on the same host even if one is already",
+  "         set up, archiving a redacted snapshot of the old identity (local sessions / LLM kept).",
 ].join("\n");
 
 export async function runSetup(args: HandlerArgs, env: HandlerEnv): Promise<number> {
@@ -65,6 +71,7 @@ export async function runSetup(args: HandlerArgs, env: HandlerEnv): Promise<numb
 
   const autoMode = args.flags[AUTO_FLAG] === true;
   const approvedLocalSetup = args.flags[APPROVED_LOCAL_SETUP_FLAG] === true;
+  const replace = args.flags[REPLACE_FLAG] === true;
   if (args.jsonMode && approvedLocalSetup) {
     throw new UsageError("--approved-local-setup cannot be combined with --json", USAGE);
   }
@@ -80,15 +87,27 @@ export async function runSetup(args: HandlerArgs, env: HandlerEnv): Promise<numb
   let config: BridgeConfig;
   let registeredNow = false;
 
-  if (existing !== undefined) {
+  if (existing !== undefined && replace) {
+    // Re-register on the SAME host (preserve beta/prod), archiving a redacted
+    // snapshot of the old identity first. Local sessions (runtime/agents/<id>)
+    // and the shared LLM config are untouched — only the active pointer moves.
+    // Desktop "set up a new agent" / `aifight setup --json --replace` use this.
+    archiveReplacedBridgeConfig(existing);
+    env.stdout("Creating a new agent — the previous local identity is archived, not deleted.\n\n");
+    config = await performRegistration(args, env, existing.baseUrl);
+    registeredNow = true;
+  } else if (existing !== undefined) {
     if (!interactive) {
-      // Non-interactive runs never silently replace an existing identity.
+      // Non-interactive runs never silently replace an existing identity (use
+      // --replace to opt in, which archives the old one first).
       throw new CommandError(
         "bridge_already_configured",
         [
           `This machine already has local AIFight bridge credentials for ${existing.agentName} (${existing.agentId}).`,
           "`aifight setup` will not replace an existing local identity without a prompt.",
-          "Run `aifight setup` in a terminal to choose use-existing or create-new, use `aifight update --yes` to upgrade,",
+          "Run `aifight setup` in a terminal to choose use-existing or create-new, pass",
+          "`--replace-local-identity` to register a fresh agent here (archiving the old one),",
+          "use `aifight update --yes` to upgrade,",
           "`aifight service install` to restore the background service, or Dashboard `Connect Bridge` plus",
           "`aifight connect <PAIRING_CODE>` to authorize this machine for an existing claimed Agent.",
           "To remove the local identity first, run `aifight uninstall`.",
@@ -224,9 +243,15 @@ async function preflightChoice(
 
 // ─── Registration core ───────────────────────────────────────────────
 
-async function performRegistration(args: HandlerArgs, env: HandlerEnv): Promise<BridgeConfig> {
+async function performRegistration(
+  args: HandlerArgs,
+  env: HandlerEnv,
+  baseUrlOverride?: string,
+): Promise<BridgeConfig> {
   const suggestedName = resolveAgentName(args);
-  const baseUrl = normalizeBaseUrl(process.env.AIFIGHT_BASE_URL ?? DEFAULT_BASE_URL);
+  // On --replace, keep the host the machine was already on (beta vs prod) rather
+  // than the env/default, so re-register doesn't silently jump servers.
+  const baseUrl = normalizeBaseUrl(baseUrlOverride ?? process.env.AIFIGHT_BASE_URL ?? DEFAULT_BASE_URL);
   const runtimeModel = defaultRuntimeModel("direct");
   const runtimeLocalUrl = defaultRuntimeLocalUrl("direct");
 
