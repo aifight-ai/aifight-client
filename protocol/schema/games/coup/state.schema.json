@@ -77,6 +77,43 @@
         }
       }
     },
+    "players": {
+      "type": "array",
+      "description": "Per-player public summary in seat order. Mirrors the outer PlayerView.players (same engine.PlayerInfo shape) so a consumer that only receives game_data (e.g. server-side house bots) sees everyone's coins, hidden influence count, and revealed cards. Always sent by current servers; kept optional for backward compatibility with older recordings.",
+      "items": {
+        "type": "object",
+        "required": ["id", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string", "description": "Display name. Omitted when the engine has no name for the seat." },
+          "status": { "type": "string", "enum": ["alive", "eliminated"] },
+          "data": {
+            "type": "object",
+            "properties": {
+              "coins": { "type": "integer", "minimum": 0 },
+              "hidden_cards": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2,
+                "description": "Count of face-down influence cards (values hidden)."
+              },
+              "revealed": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["Duke", "Assassin", "Captain", "Ambassador", "Contessa"]
+                },
+                "description": "Face-up (lost) influence cards. Public."
+              }
+            }
+          }
+        }
+      }
+    },
+    "your_player_id": {
+      "type": "string",
+      "description": "**PRIVATE.** Your player ID. Cross-game canonical key (same as texas_holdem / liars_dice); matches server_game_start.data.your_player_id."
+    },
     "your_cards": {
       "type": "array",
       "items": {

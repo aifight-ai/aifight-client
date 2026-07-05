@@ -20,6 +20,11 @@ export interface MatchSummary {
   created_at: string;
   finished_at?: string;
   duration_ms?: number;
+  /** When set, the match was finished by an interruption (not a clean play-out):
+   *  "timeout" | "disconnect" | "invalid_action" | "storage_failure". A clean
+   *  finish leaves this unset. (status is still 'completed' for forfeits;
+   *  'cancelled' means the whole match was voided.) */
+  forfeit_reason?: string;
 }
 
 /** Owner-curated featured match (§4) — a completed live-game match plus the curation note. */

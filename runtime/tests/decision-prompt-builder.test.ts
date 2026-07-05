@@ -206,8 +206,8 @@ describe("buildPrompt — dispatch by game (real formatters, no mock)", () => {
   it("liars_dice path produces Liars-specific anchors", () => {
     const out = buildPrompt(makeLiarsReq());
     expect(out.userPrompt).toContain("Round 2");
-    expect(out.userPrompt).toContain("Total dice in play: 9");
-    expect(out.userPrompt).toContain("Your dice: [3 4 5 5] (count: 4)");
+    expect(out.userPrompt).toContain("Total dice on the table: 9");
+    expect(out.userPrompt).toContain("You are p1. Your dice: [3 4 5 5] (4 dice)");
     expect(out.userPrompt).toContain("Match: liars_dice | match_id: match-ld-1");
   });
 

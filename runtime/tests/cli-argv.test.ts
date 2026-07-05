@@ -172,4 +172,23 @@ describe("argv parser (M1-17 Group 1)", () => {
     expect(r.errors).toEqual([]);
     expect(r.flags.limit).toBe(-1);
   });
+
+  it("case 15: repeatable string flag accumulates comma-joined (Batch A)", () => {
+    const spec: FlagSpec[] = [{ name: "feature", type: "string", repeatable: true }];
+    const r = parseArgs(["--feature", "a=on", "--feature", "b=off"], spec);
+    expect(r.errors).toEqual([]);
+    expect(r.flags.feature).toBe("a=on,b=off");
+  });
+
+  it("case 15b: non-repeatable string flag stays last-wins", () => {
+    const spec: FlagSpec[] = [{ name: "model", type: "string" }];
+    const r = parseArgs(["--model", "x", "--model", "y"], spec);
+    expect(r.flags.model).toBe("y");
+  });
+
+  it("case 15c: single repeatable occurrence is just the value", () => {
+    const spec: FlagSpec[] = [{ name: "feature", type: "string", repeatable: true }];
+    const r = parseArgs(["--feature", "a=on"], spec);
+    expect(r.flags.feature).toBe("a=on");
+  });
 });

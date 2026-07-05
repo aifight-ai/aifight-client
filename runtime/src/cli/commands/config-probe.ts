@@ -104,6 +104,101 @@ export async function faithfulProbe(
   }
 }
 
+/**
+ * The outcome of resolving a configured profile and running a faithful probe.
+ * `ok: false` = a pre-probe resolution failure (config load / unknown profile /
+ * secret / adapter); `ok: true` = the probe ran (see `result.success` for
+ * whether the model actually responded).
+ *
+ * Shared by `config test` (runConfigProbe) and `config add`/`update`'s D7
+ * auto-test so all three exercise the identical resolution + faithfulProbe path.
+ */
+export type ProbeOutcome =
+  | { readonly ok: true; readonly profileName: string; readonly result: ProbeResult }
+  | { readonly ok: false; readonly code: string; readonly message: string };
+
+/** Info handed to the pre-probe callback so callers can print a "testing…" banner. */
+export interface PreProbeInfo {
+  readonly profileName: string;
+  readonly protocol: string;
+  readonly model: string;
+  readonly thinkingOn: boolean;
+}
+
+export async function resolveAndProbe(
+  slug: string,
+  profileName: string | undefined,
+  env: HandlerEnv,
+  onBeforeProbe?: (info: PreProbeInfo) => void,
+): Promise<ProbeOutcome> {
+  const agentDir = resolveAgentDir(slug);
+
+  // Step 1: Load and validate the agent profile.
+  let agentProfile: Awaited<ReturnType<typeof loadAgentProfile>>;
+  try {
+    agentProfile = await loadAgentProfile(agentDir);
+  } catch (cause) {
+    const message =
+      cause instanceof ProfileLoadError || cause instanceof Error ? cause.message : String(cause);
+    return { ok: false, code: "config_probe_load_failed", message };
+  }
+
+  const { config } = agentProfile.profile;
+
+  // Step 2: Resolve target profile name.
+  const targetProfileName = profileName ?? config.activeProfile;
+  const profileDef = config.profiles[targetProfileName];
+  if (!profileDef) {
+    const available = Object.keys(config.profiles).join(", ");
+    return {
+      ok: false,
+      code: "config_probe_unknown_profile",
+      message: `unknown profile "${targetProfileName}". Available: ${available}`,
+    };
+  }
+
+  // Step 3: Resolve the API key.
+  let apiKey: string;
+  try {
+    apiKey = await resolveSecret(profileDef.apiKeyRef);
+  } catch (cause) {
+    const message =
+      cause instanceof SecretResolutionError || cause instanceof Error ? cause.message : String(cause);
+    return { ok: false, code: "config_probe_secret_failed", message };
+  }
+
+  // Step 4: Register adapters and get the one for this profile's protocol.
+  await registerBuiltinAdapters();
+  let adapter: ReturnType<typeof requireAdapter>;
+  try {
+    adapter = requireAdapter(profileDef.protocol);
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    return { ok: false, code: "config_probe_no_adapter", message };
+  }
+
+  // Step 5: Build the resolved LLMProfile. The shared mapper applies a
+  // protocol-default baseURL when the profile omits one (every adapter
+  // requires baseURL).
+  const resolvedProfile = resolveLLMProfile(targetProfileName, profileDef, apiKey);
+
+  if (onBeforeProbe) {
+    const r = resolvedProfile.reasoning;
+    const thinkingOn = r !== undefined && r.enabled !== false && r.mode !== "disabled";
+    onBeforeProbe({
+      profileName: targetProfileName,
+      protocol: profileDef.protocol,
+      model: profileDef.model,
+      thinkingOn,
+    });
+  }
+
+  // Step 6: Run a FAITHFUL test — a real decision call using the profile's
+  // actual reasoning + max tokens (see faithfulProbe), not a stripped-down ping.
+  const result = await faithfulProbe(adapter, resolvedProfile);
+  return { ok: true, profileName: targetProfileName, result };
+}
+
 export async function runConfigProbe(
   args: HandlerArgs,
   env: HandlerEnv,
@@ -114,104 +209,36 @@ export async function runConfigProbe(
   const profileFlag =
     typeof args.flags["profile"] === "string" ? args.flags["profile"] : undefined;
 
-  const agentDir = resolveAgentDir(slug);
-
-  // Step 1: Load and validate the agent profile.
-  let agentProfile: Awaited<ReturnType<typeof loadAgentProfile>>;
-  try {
-    agentProfile = await loadAgentProfile(agentDir);
-  } catch (cause) {
-    const msg =
-      cause instanceof ProfileLoadError || cause instanceof Error
-        ? cause.message
-        : String(cause);
-    if (args.jsonMode) {
-      env.stderr(
-        JSON.stringify({ error: { code: "config_probe_load_failed", message: msg } }) + "\n",
+  const outcome = await resolveAndProbe(slug, profileFlag, env, (info) => {
+    if (!args.jsonMode) {
+      env.stdout(
+        `aifight config test: testing profile "${info.profileName}" (${info.protocol}, ${info.model})` +
+          `${info.thinkingOn ? " with reasoning — this may take a few seconds" : ""}...\n`,
       );
+    }
+  });
+
+  // Pre-probe resolution failure → same messages/exit code as before.
+  if (!outcome.ok) {
+    if (args.jsonMode) {
+      env.stderr(JSON.stringify({ error: { code: outcome.code, message: outcome.message } }) + "\n");
+    } else if (outcome.code === "config_probe_load_failed") {
+      env.stderr(`aifight: config probe: failed to load profile: ${outcome.message}\n`);
+    } else if (outcome.code === "config_probe_secret_failed") {
+      env.stderr(`aifight: config probe: cannot resolve API key: ${outcome.message}\n`);
     } else {
-      env.stderr(`aifight: config probe: failed to load profile: ${msg}\n`);
+      env.stderr(`aifight: config probe: ${outcome.message}\n`);
     }
     return 1;
   }
 
-  const { config } = agentProfile.profile;
-
-  // Step 2: Resolve target profile name.
-  const targetProfileName = profileFlag ?? config.activeProfile;
-  const profileDef = config.profiles[targetProfileName];
-  if (!profileDef) {
-    const available = Object.keys(config.profiles).join(", ");
-    const msg = `unknown profile "${targetProfileName}". Available: ${available}`;
-    if (args.jsonMode) {
-      env.stderr(
-        JSON.stringify({ error: { code: "config_probe_unknown_profile", message: msg } }) + "\n",
-      );
-    } else {
-      env.stderr(`aifight: config probe: ${msg}\n`);
-    }
-    return 1;
-  }
-
-  // Step 3: Resolve the API key.
-  let apiKey: string;
-  try {
-    apiKey = await resolveSecret(profileDef.apiKeyRef);
-  } catch (cause) {
-    const msg =
-      cause instanceof SecretResolutionError || cause instanceof Error
-        ? cause.message
-        : String(cause);
-    if (args.jsonMode) {
-      env.stderr(
-        JSON.stringify({ error: { code: "config_probe_secret_failed", message: msg } }) + "\n",
-      );
-    } else {
-      env.stderr(`aifight: config probe: cannot resolve API key: ${msg}\n`);
-    }
-    return 1;
-  }
-
-  // Step 4: Register adapters and get the one for this profile's protocol.
-  await registerBuiltinAdapters();
-  let adapter: ReturnType<typeof requireAdapter>;
-  try {
-    adapter = requireAdapter(profileDef.protocol);
-  } catch (cause) {
-    const msg = cause instanceof Error ? cause.message : String(cause);
-    if (args.jsonMode) {
-      env.stderr(
-        JSON.stringify({ error: { code: "config_probe_no_adapter", message: msg } }) + "\n",
-      );
-    } else {
-      env.stderr(`aifight: config probe: ${msg}\n`);
-    }
-    return 1;
-  }
-
-  // Step 5: Build the resolved LLMProfile. The shared mapper applies a
-  // protocol-default baseURL when the profile omits one (every adapter
-  // requires baseURL).
-  const resolvedProfile = resolveLLMProfile(targetProfileName, profileDef, apiKey);
-
-  // Step 6: Run a FAITHFUL test — a real decision call using the profile's
-  // actual reasoning + max tokens (see faithfulProbe), not a stripped-down ping.
-  if (!args.jsonMode) {
-    const r = resolvedProfile.reasoning;
-    const thinkingOn = r !== undefined && r.enabled !== false && r.mode !== "disabled";
-    env.stdout(
-      `aifight config test: testing profile "${targetProfileName}" (${profileDef.protocol}, ${profileDef.model})` +
-        `${thinkingOn ? " with reasoning — this may take a few seconds" : ""}...\n`,
-    );
-  }
-
-  const probeResult = await faithfulProbe(adapter, resolvedProfile);
+  const probeResult = outcome.result;
 
   if (args.jsonMode) {
     env.stdout(
       JSON.stringify({
         agentSlug: slug,
-        profile: targetProfileName,
+        profile: outcome.profileName,
         protocol: probeResult.protocol,
         model: probeResult.model,
         success: probeResult.success,

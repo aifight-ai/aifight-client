@@ -297,8 +297,108 @@ function CoupVisual({ match, events }: { match: MatchDetail; events: MatchEvent[
     }
   }
 
-  const phases: Phase[] = ['action', 'challenge', 'block', 'reveal']
-  const phaseLabels: Record<Phase, string> = { action: 'action', challenge: 'challenge', block: 'block', reveal: 'resolve' }
+  // ── Narration ledger ────────────────────────────────────────────────
+  // A plain-language transcript, one line per visible frame, built in a second
+  // light pass over the same events. The LAST entry is the current frame. This
+  // is what makes income-heavy Coup games legible: every step adds a visible
+  // line, and the rare big moments (coup / lost influence / KO / win) are
+  // colour-coded so they pop instead of slipping past unnoticed.
+  const ROLE_LONG: Record<string, string> = {
+    duke: 'Duke', asn: 'Assassin', cap: 'Captain', amb: 'Ambassador', con: 'Contessa',
+  }
+  const prettyRole = (role: string) => ROLE_LONG[roleKey[role] || ''] || role
+  type Tone = 'gain' | 'loss' | 'win' | 'info'
+  type Line = { tone: Tone; big: boolean; node: React.ReactNode; coinIdx: number; coinDelta: number }
+  const who = (id: string) => <b className="who">{getName(id)}</b>
+  const ledger: Line[] = []
+  for (const evt of events) {
+    const d = evt.data || {}
+    switch (evt.type) {
+      case 'action': {
+        const actor = evt.player_id || ''
+        const action = d.action as string
+        const target = (d.target as string) || ''
+        const role = (d.claimed_role as string) || ''
+        const ai = findIdx(actor)
+        const delta = action === 'income' ? 1 : action === 'coup' ? -7 : action === 'assassinate' ? -3 : 0
+        const verbMap: Record<string, string> = {
+          income: 'takes income', foreign_aid: 'takes foreign aid', tax: 'collects tax',
+          coup: 'launches a COUP on', assassinate: 'assassinates', steal: 'steals from',
+          exchange: 'exchanges influence',
+        }
+        const big = action === 'coup' || action === 'assassinate'
+        ledger.push({
+          tone: big ? 'loss' : 'gain', big,
+          coinIdx: delta !== 0 ? ai : -1, coinDelta: delta,
+          node: (
+            <>
+              {who(actor)} <span className="lg-verb">{verbMap[action] || humanVerb(action)}</span>
+              {target ? <> {who(target)}</> : null}
+              {role ? <> · claims <RoleChip role={role} /></> : null}
+            </>
+          ),
+        })
+        break
+      }
+      case 'challenge': {
+        const challenger = (d.challenger as string) || evt.player_id || ''
+        ledger.push({ tone: 'info', big: true, coinIdx: -1, coinDelta: 0,
+          node: <>{who(challenger)} <span className="lg-verb">challenges</span> — demands proof</> })
+        break
+      }
+      case 'challenge_result': {
+        const actor = (d.actor as string) || ''
+        const challenger = (d.challenger as string) || ''
+        const revealed = (d.revealed_card as string) || ''
+        ledger.push(d.result === 'fail'
+          ? { tone: 'info', big: true, coinIdx: -1, coinDelta: 0,
+              node: <>{who(actor)} reveals <RoleChip role={revealed} /> — truthful · {who(challenger)} loses an influence</> }
+          : { tone: 'loss', big: true, coinIdx: -1, coinDelta: 0,
+              node: <>{who(actor)} was <span className="lg-verb">bluffing</span> — loses an influence</> })
+        break
+      }
+      case 'block': {
+        const blocker = (d.blocker as string) || evt.player_id || ''
+        const cr = (d.claimed_role as string) || ''
+        ledger.push({ tone: 'info', big: true, coinIdx: -1, coinDelta: 0,
+          node: <>{who(blocker)} <span className="lg-verb">blocks</span> · claims <RoleChip role={cr} /></> })
+        break
+      }
+      case 'challenge_block_result': {
+        const blocker = (d.blocker as string) || ''
+        const revealed = (d.revealed_card as string) || ''
+        ledger.push(d.result === 'fail'
+          ? { tone: 'info', big: true, coinIdx: -1, coinDelta: 0,
+              node: <>{who(blocker)} reveals <RoleChip role={revealed} /> — block stands</> }
+          : { tone: 'loss', big: true, coinIdx: -1, coinDelta: 0,
+              node: <>{who(blocker)} was <span className="lg-verb">bluffing</span> — block fails</> })
+        break
+      }
+      case 'influence_lost': {
+        const player = (d.player as string) || evt.player_id || ''
+        const card = (d.card as string) || ''
+        ledger.push({ tone: 'loss', big: true, coinIdx: -1, coinDelta: 0,
+          node: <>{who(player)} <span className="lg-verb">loses</span> {card ? <RoleChip role={card} /> : 'an influence'}</> })
+        break
+      }
+      case 'player_eliminated': {
+        const player = (d.player as string) || evt.player_id || ''
+        ledger.push({ tone: 'loss', big: true, coinIdx: -1, coinDelta: 0,
+          node: <>{who(player)} is <span className="lg-verb">eliminated</span> — out of the game</> })
+        break
+      }
+      case 'game_over': {
+        const w = (d.winner as string) || winnerId
+        ledger.push({ tone: 'win', big: true, coinIdx: -1, coinDelta: 0,
+          node: <>{who(w)} <span className="lg-verb">wins the match</span></> })
+        break
+      }
+    }
+  }
+  const current = ledger.length ? ledger[ledger.length - 1] : null
+  const WINDOW = 7
+  const shownStart = Math.max(0, ledger.length - WINDOW)
+  const shown = ledger.slice(shownStart)
 
   return (
     <div className="coup-visual">
@@ -308,65 +408,22 @@ function CoupVisual({ match, events }: { match: MatchDetail; events: MatchEvent[
             Turn {turn}
             {currentChain ? ` · ${getName(currentChain.actor)}'s turn` : ''}
           </span>
-          <div className="chain-phase">
-            {phases.flatMap((p, i) => {
-              const items = [
-                <span key={`ph-${p}`} className={`ph${currentChain?.phase === p ? ' on' : ''}`}>
-                  {phaseLabels[p]}
-                </span>,
-              ]
-              if (i < phases.length - 1) items.push(<span key={`dash-${i}`} className="dash" />)
-              return items
-            })}
-          </div>
+          <span className="coup-legend">income +1 · foreign aid +2 · tax +3 · coup −7 (removes an influence)</span>
         </div>
 
-        <div className="chain-hero">
-          <div className="chain-actors">
-            <span className="who">{currentChain ? getName(currentChain.actor) : 'awaiting'}</span>
-            {currentChain?.target ? (
-              <>
-                <span className="arrow">→</span>
-                <span className="verb">{humanVerb(currentChain.verb)}</span>
-                <span className="arrow">→</span>
-                <span className="who">{getName(currentChain.target)}</span>
-              </>
-            ) : currentChain ? (
-              <>
-                <span className="arrow">·</span>
-                <span className="verb">{humanVerb(currentChain.verb)}</span>
-              </>
-            ) : null}
+        {/* What just happened, in plain language — the focal point of each frame. */}
+        <div className={`coup-now coup-now--${current ? current.tone : 'info'}${current?.big ? ' is-big' : ''}`}>
+          <div className="coup-now-main">
+            {current ? current.node : <span className="coup-now-await">awaiting first move…</span>}
           </div>
-          {currentChain?.claim && (
-            <div className="chain-sub">
-              claims <RoleChip role={currentChain.claim} />
-            </div>
-          )}
-          {gameOver && winnerId && (
-            <div className="chain-sub" style={{ color: 'var(--color-terracotta-700)', marginTop: 12 }}>
-              <strong>{getName(winnerId)}</strong> wins
+          {current && current.coinDelta !== 0 && current.coinIdx >= 0 && (
+            <div className="coup-now-delta">
+              <span className="coin" />
+              {current.coinDelta > 0 ? '+' : '−'}{Math.abs(current.coinDelta)}
+              <span className="coup-now-arrow">→ {states[current.coinIdx].coins}</span>
             </div>
           )}
         </div>
-
-        {currentChain && currentChain.steps.length > 0 && (
-          <div className="chain-trail">
-            {currentChain.steps.map((s, k) => {
-              const cls = ['chain-step']
-              if (s.cur) cls.push('cur')
-              if (s.kind === 'resolved') cls.push('resolved')
-              if (s.kind === 'challenge') cls.push('challenge')
-              return (
-                <div key={k} className={cls.join(' ')}>
-                  <div className="n">{s.n}</div>
-                  <div className="body">{s.body}</div>
-                  <div className="tag">{s.kind}</div>
-                </div>
-              )
-            })}
-          </div>
-        )}
       </div>
 
       <div className="seats-zone">
@@ -375,10 +432,12 @@ function CoupVisual({ match, events }: { match: MatchDetail; events: MatchEvent[
             const s = states[i]
             const isActor = !!(currentChain && findIdx(currentChain.actor) === i)
             const isTarget = !!(currentChain && currentChain.target && findIdx(currentChain.target) === i)
+            const justCoin = !!(current && current.coinIdx === i && current.coinDelta !== 0)
             const cls = ['seat']
             if (isActor && s.alive) cls.push('acting')
             if (isTarget && s.alive) cls.push('target')
             if (!s.alive) cls.push('eliminated')
+            const toCoup = Math.max(0, 7 - s.coins)
             return (
               <div key={i} className={cls.join(' ')}>
                 <div className="seat-row-1">
@@ -386,11 +445,13 @@ function CoupVisual({ match, events }: { match: MatchDetail; events: MatchEvent[
                     <SeatAvatar player={p} />
                     <div className="seat-name-wrap">
                       <div className="seat-name">{p.agent_name || p.player_id}</div>
-                      <div className="seat-num">Seat {i + 1}</div>
+                      <div className="seat-num">
+                        {s.alive ? `${s.hidden} influence${s.hidden === 1 ? '' : 's'} left` : 'eliminated'}
+                      </div>
                     </div>
                   </div>
                   <span className="seat-flag">
-                    {!s.alive ? 'out' : isActor ? 'acting' : isTarget ? 'target' : 'in hand'}
+                    {!s.alive ? 'out' : isActor ? 'acting' : isTarget ? 'target' : 'in play'}
                   </span>
                 </div>
                 <div className="cards-row">
@@ -403,7 +464,8 @@ function CoupVisual({ match, events }: { match: MatchDetail; events: MatchEvent[
                       <div key={`r${j}`} className="inf-card face dead" data-role={rk}>
                         <div className="band" />
                         <div className="letter">{role.charAt(0).toUpperCase()}</div>
-                        <div className="role-name">{role}</div>
+                        <div className="role-name">{prettyRole(role)}</div>
+                        <div className="inf-lost">lost</div>
                       </div>
                     )
                   })}
@@ -412,17 +474,40 @@ function CoupVisual({ match, events }: { match: MatchDetail; events: MatchEvent[
                   <span className={`coins${s.coins >= 7 ? ' high' : ''}`}>
                     <span className="coin" />
                     {s.coins}
+                    {justCoin && current && (
+                      <span className={`coin-delta ${current.coinDelta > 0 ? 'up' : 'down'}`}>
+                        {current.coinDelta > 0 ? '+' : '−'}{Math.abs(current.coinDelta)}
+                      </span>
+                    )}
                   </span>
-                  <span className="act-line">
-                    {!s.alive
-                      ? 'eliminated'
-                      : isActor && currentChain
-                      ? `${humanVerb(currentChain.verb)}${currentChain.target ? ' → ' + getName(currentChain.target) : ''}`
-                      : isTarget
-                      ? 'targeted'
-                      : 'waiting'}
+                  <span className={`coin-hint${s.alive && s.coins >= 7 ? ' ready' : ''}`}>
+                    {!s.alive ? '' : s.coins >= 10 ? 'must coup' : s.coins >= 7 ? 'can coup' : `${toCoup} to coup`}
                   </span>
                 </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Accumulating move log — the current line is highlighted at the bottom. */}
+      <div className="coup-ledger">
+        <div className="coup-ledger-head">
+          <span>move log</span>
+          {shownStart > 0 && <span className="coup-ledger-earlier">+{shownStart} earlier</span>}
+        </div>
+        <div className="coup-ledger-rows">
+          {ledger.length === 0 && <div className="coup-ledger-row coup-ledger-row--info">no moves yet</div>}
+          {shown.map((l, k) => {
+            const idx = shownStart + k
+            const isCur = idx === ledger.length - 1
+            return (
+              <div
+                key={idx}
+                className={`coup-ledger-row coup-ledger-row--${l.tone}${l.big ? ' is-big' : ''}${isCur ? ' is-cur' : ''}`}
+              >
+                <span className="lg-n">{idx + 1}</span>
+                <span className="lg-body">{l.node}</span>
               </div>
             )
           })}

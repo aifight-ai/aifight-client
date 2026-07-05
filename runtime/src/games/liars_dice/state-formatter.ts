@@ -53,61 +53,73 @@ function buildStateBlock(input: LiarsDiceFormatterInput): string {
   const lines: string[] = [];
 
   const phase = typeof s.phase === "string" ? s.phase : "(unknown)";
+  const aliveCount = players.filter((p) => p.status !== "eliminated").length;
   if (typeof s.round === "number") {
-    lines.push(`Round ${s.round} | Phase: ${phase}`);
+    lines.push(`Liar's Dice — Round ${s.round} | ${aliveCount} players still in | Phase: ${phase}`);
   } else {
-    lines.push(`Phase: ${phase}`);
+    lines.push(`Liar's Dice — Phase: ${phase}`);
   }
 
-  if (typeof s.total_dice === "number") {
-    lines.push(`Total dice in play: ${s.total_dice}`);
-  }
-
+  // Your dice.
   if (Array.isArray(s.your_dice)) {
     const faces = s.your_dice.filter((f): f is number => typeof f === "number");
     const count =
       typeof s.your_dice_count === "number" ? s.your_dice_count : faces.length;
-    lines.push(`Your dice: [${faces.join(" ")}] (count: ${count})`);
+    lines.push(`You are ${yourPlayerId}. Your dice: [${faces.join(" ")}] (${count} dice)`);
   } else if (typeof s.your_dice_count === "number") {
-    lines.push(`Your dice: (eliminated or not visible) (count: ${s.your_dice_count})`);
+    lines.push(`You are ${yourPlayerId}. Your dice: (eliminated or not visible) (count: ${s.your_dice_count})`);
+  } else {
+    lines.push(`You are ${yourPlayerId}.`);
   }
 
-  const bid = s.current_bid;
-  if (bid && typeof bid === "object") {
-    const q = typeof bid.quantity === "number" ? bid.quantity : undefined;
-    const f = typeof bid.face === "number" ? bid.face : undefined;
-    const bidder = typeof bid.bidder === "string" ? bid.bidder : undefined;
-    if (q !== undefined && f !== undefined && bidder !== undefined) {
-      const bidderLabel = formatPlayerLabel(bidder, players, yourPlayerId);
-      lines.push(`Current bid: quantity=${q} face=${f} by ${bidderLabel}`);
-    } else {
-      lines.push(`Current bid: (incomplete bid data)`);
-    }
+  // Dice remaining per player (public), marking yourself.
+  if (players.length > 0) {
+    const parts = players.map((p) => {
+      const label = p.id === yourPlayerId ? `${p.id} (you)` : p.id;
+      if (p.status === "eliminated") return `${label} ELIMINATED`;
+      const dc = readNumberField(p.data, "dice_count");
+      return dc !== undefined ? `${label} ${dc}` : label;
+    });
+    lines.push(`Dice remaining: ${parts.join(" · ")}  (each player started with 5)`);
+  }
+  if (typeof s.total_dice === "number") {
+    lines.push(`Total dice on the table: ${s.total_dice}`);
+  }
+
+  // This round's full bidding ladder (not just the latest bid).
+  const ladder = Array.isArray(s.round_bids) ? s.round_bids : [];
+  if (ladder.length > 0) {
+    lines.push("");
+    lines.push("This round's bids:");
+    ladder.forEach((b, i) => {
+      const bidder = b && typeof b.bidder === "string" ? b.bidder : "(unknown)";
+      const q = b && typeof b.quantity === "number" ? b.quantity : "?";
+      const f = b && typeof b.face === "number" ? b.face : "?";
+      const label = bidder === yourPlayerId ? `${bidder} (you)` : bidder;
+      const marker = i === ladder.length - 1 ? "   ← current bid" : "";
+      lines.push(`  ${i + 1}. ${label}: ${q}×${f}${marker}`);
+    });
   } else {
-    lines.push(`Current bid: (none — you may bid any opening bid)`);
+    lines.push("");
+    lines.push("No bids yet this round — you make the opening bid.");
+  }
+
+  // Distilled cross-round history (outcomes only; no stale raw bids).
+  const log = Array.isArray(s.round_log) ? s.round_log : [];
+  if (log.length > 0) {
+    lines.push("");
+    lines.push("Earlier rounds:");
+    for (const line of log) {
+      if (typeof line === "string") lines.push(`  ${line}`);
+    }
   }
 
   if (typeof s.current_turn === "string" && s.current_turn.length > 0) {
+    lines.push("");
     lines.push(`Current turn: ${formatPlayerLabel(s.current_turn, players, yourPlayerId)}`);
   }
 
-  const opponents = players.filter((p) => p.id !== yourPlayerId);
-  if (opponents.length > 0) {
-    lines.push(`Opponents:`);
-    for (const p of opponents) {
-      lines.push(`  ${formatOpponentLine(p)}`);
-    }
-  }
-
   return lines.join("\n");
-}
-
-function formatOpponentLine(p: PlayerInfo): string {
-  const display = p.name ?? `Player ${p.id}`;
-  let line = `${display} (${p.id}): status=${p.status}`;
-  const diceCount = readNumberField(p.data, "dice_count");
-  if (diceCount !== undefined) line += ` | dice_count=${diceCount}`;
-  return line;
 }
 
 function formatPlayerLabel(

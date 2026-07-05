@@ -58,6 +58,29 @@ const PLAYERS: readonly PlayerInfo[] = [
 ];
 
 describe("formatTexasHoldemState", () => {
+  it("cash format shows running results (cumulative net + bb/100)", () => {
+    const out = formatTexasHoldemState({
+      publicState: baseState({
+        format: "cash",
+        hands_completed: 6,
+        big_blind: 100,
+        players: [
+          { id: "p0", status: "active", net: 1500 },
+          { id: "p1", status: "active", net: -1500 },
+        ],
+      }),
+      rules: RULES,
+      players: PLAYERS,
+      recentEvents: [],
+      yourPlayerId: "p1",
+    });
+    expect(out.stateBlock).toContain("Running results (through 6 of 10 hands)");
+    expect(out.stateBlock).toContain("p0: net +1500");
+    expect(out.stateBlock).toContain("+250 bb/100");
+    expect(out.stateBlock).toContain("p1 (you): net -1500");
+    expect(out.stateBlock).toContain("-250 bb/100");
+  });
+
   it("stateBlock contains all core fields", () => {
     const out = formatTexasHoldemState({
       publicState: baseState(),

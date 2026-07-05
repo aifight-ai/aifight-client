@@ -33,8 +33,10 @@ import { AvatarPicker } from "@aifight/ui";
 import { webOrigin } from "../webOrigin";
 import { useLiveStore } from "../liveStore";
 import { useLiveGames } from "../liveGames";
+import { setWatchReplayIntent } from "../watchIntent";
 import { gameLabel } from "../../shared/games";
 import { RatingChart, PerGameCards, AchievementShelf } from "./AgentProfileViz";
+import { StyleRadarCard } from "./StyleRadarCard";
 import type { AgentProfile } from "@aifight/api-types";
 import type { AgentPolicy, AgentProfileData, AgentStats, BridgeStatus, UsageOverview } from "../../shared/ipc";
 
@@ -660,10 +662,15 @@ interface SessionRow {
   result_label?: string;
   updated_at?: string;
   decision_count?: number;
+  /** Seats in the match (whole-match roster, runtime summary). */
+  player_count?: number;
+  /** Whole-match interaction count, every player's moves included. */
+  event_count?: number;
+  replay_url?: string;
 }
 
 function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refresh: () => void; onNavigate?: (view: string) => void }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const cfg = status.config!;
   const origin = webOrigin(cfg.baseUrl);
   const phase = status.phase;
@@ -772,12 +779,14 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   // When a match ends, refresh today's count, record, usage and recent list so
   // the dashboard reflects the just-finished game without a manual reload.
   const prevFinished = useRef(false);
+  const [radarRefresh, setRadarRefresh] = useState(0);
   useEffect(() => {
     if (live.match.finished && !prevFinished.current) {
       loadPolicy(false);
       loadProfile();
       loadUsage();
       loadSessions();
+      setRadarRefresh((n) => n + 1); // style radar re-pulls after each own match (§6.3)
     }
     prevFinished.current = live.match.finished;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1176,18 +1185,13 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
         </div>
       )}
 
-      {/* ── Charts row: [rating trend + per-game] (2/3) + auto-match & usage (1/3).
-             Per-game lives under the (shortened) chart so the left column fills
-             the space the trend card used to leave empty, instead of stretching. ── */}
+      {/* ── Main area (owner column order, 2026-07-02): one grid, two flex
+             columns. Left (2/3): per-game → rating trend → recent matches →
+             achievements. Right (1/3): style radar → auto-match → battle →
+             token usage. flex-1 sits on recent matches (left) and the battle
+             card (right) so both columns close on the same bottom edge. ── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <div className="space-y-4 lg:col-span-2">
-          <div className="app-card px-5 py-4">
-            <div className="mb-3 flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
-              <TrendingUp size={13} className="text-[var(--text-muted)]" />
-              {t("home.ratingTrend")}
-            </div>
-            <RatingChart history={history} />
-          </div>
+        <div className="flex flex-col gap-4 lg:col-span-2">
           {ratings.length > 0 && (
             <div className="app-card px-5 py-4">
               <div className="mb-3 flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
@@ -1197,9 +1201,91 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
               <PerGameCards ratings={ratings} />
             </div>
           )}
+          <div className="app-card px-5 py-4">
+            <div className="mb-3 flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
+              <TrendingUp size={13} className="text-[var(--text-muted)]" />
+              {t("home.ratingTrend")}
+            </div>
+            <RatingChart history={history} />
+          </div>
+
+          {/* Recent matches — a row click opens THAT match's replay in the
+              Watch tab (owner ruling: a click means "show me the details";
+              the History tab stays one click away via 查看全部). */}
+          <div className="app-card flex flex-1 flex-col px-5 py-4">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <span className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
+                <History size={13} className="text-[var(--text-muted)]" />
+                {t("home.recent.title")}
+              </span>
+              <button
+                onClick={() => onNavigate?.("history")}
+                className="text-[11.5px] text-[var(--text-muted)] hover:text-[var(--text)]"
+              >
+                {t("home.recent.viewAll")} →
+              </button>
+            </div>
+            {sessions === null ? (
+              <div className="flex flex-1 items-center justify-center py-3 text-[12px] text-[var(--text-faint)]">…</div>
+            ) : sessions.length === 0 ? (
+              <div className="flex flex-1 items-center justify-center py-3 text-[12px] text-[var(--text-faint)]">{t("home.recent.empty")}</div>
+            ) : (
+              <div className="divide-y divide-[var(--border)]">
+                {sessions.map((s) => (
+                  <button
+                    key={s.session_id}
+                    onClick={() => {
+                      setWatchReplayIntent({
+                        sessionId: s.session_id,
+                        game: s.game,
+                        resultLabel: s.result_label,
+                        replayUrl: s.replay_url,
+                      });
+                      onNavigate?.("watch");
+                    }}
+                    title={t("home.recent.openReplay")}
+                    className="flex w-full items-center justify-between gap-3 py-2.5 text-left transition-colors hover:bg-[var(--hover)]"
+                  >
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <ResultDot label={s.result_label} />
+                      <span className="text-[13px] text-[var(--text)]">{gameLabel(s.game ?? "")}</span>
+                      {s.result_label && <ResultChip label={s.result_label} t={t} />}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-3 font-mono text-[11px] text-[var(--text-muted)]">
+                      {typeof s.player_count === "number" && s.player_count > 1 && (
+                        <span>{t("home.recent.players", { n: s.player_count })}</span>
+                      )}
+                      {typeof s.event_count === "number" && s.event_count > 0 && (
+                        <span>{t("home.recent.interactions", { n: s.event_count })}</span>
+                      )}
+                      {typeof s.decision_count === "number" && (
+                        <span>{t("home.recent.decisions", { n: s.decision_count })}</span>
+                      )}
+                      <span>{fmtTimePoint(s.updated_at, i18n.language)}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Verified profile badges — anchors the column under match history;
+              renders an empty state for new agents. */}
+          <AchievementShelf achievements={achievements} />
         </div>
 
-        <div className="space-y-4">
+        <div className="flex flex-col gap-4">
+          {/* Battle-style radar (§6.3): self-hiding — old server / switch off /
+              fetch error render nothing (the column simply starts at auto-match). */}
+          <StyleRadarCard
+            games={games}
+            refreshSignal={radarRefresh}
+            onPlayCta={() => {
+              document.getElementById("play-quick-actions")?.scrollIntoView({ behavior: "smooth", block: "center" });
+            }}
+            t={t}
+          />
+
           {/* Auto-match control */}
           <div className="app-card px-5 py-4">
             <div className="mb-3 flex items-center justify-between gap-2">
@@ -1280,6 +1366,69 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
             )}
           </div>
 
+          {/* Quick actions: one game selector → play now / create challenge; then accept */}
+          <div id="play-quick-actions" className="app-card flex-1 space-y-4 px-5 py-4">
+            <div>
+              <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
+                <Swords size={13} className="text-[var(--text-muted)]" />
+                {t("play.actions.title")}
+              </div>
+              <GamePicker value={game} onChange={setGame} />
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Btn busy={busy === "match"} disabled={!connected || matchFlash} onClick={doRequest}>
+                  {t("play.match.btn")}
+                </Btn>
+                <Btn busy={busy === "challenge"} disabled={!connected} onClick={doChallenge}>
+                  {t("play.challenge.btn")}
+                </Btn>
+                {matchFlash && (
+                  <span className="flex items-center gap-1 text-[11px] font-medium text-emerald-500">
+                    <Check size={12} /> {t("play.match.queued")}
+                  </span>
+                )}
+              </div>
+              <div className="mt-2 space-y-0.5 text-[10.5px] leading-snug text-[var(--text-faint)]">
+                <div>· {t("play.match.hint")}</div>
+                <div>· {t("play.challenge.hint")}</div>
+              </div>
+              {challenges.length > 0 && (
+                <div className="mt-3 space-y-2 border-t border-[var(--border)] pt-3">
+                  {challenges.map((c) => (
+                    <div key={c.url}>
+                      <div className="mb-1 flex items-center gap-2 text-[11px]">
+                        <span className="font-medium text-[var(--text)]">{gameLabel(c.game)}</span>
+                        <span className="inline-flex items-center gap-1 font-mono uppercase tracking-[0.06em] text-[var(--accent-text)]">
+                          <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+                          {t("home.challengeWaiting")}
+                        </span>
+                      </div>
+                      <CopyRow text={c.url} />
+                    </div>
+                  ))}
+                  <p className="text-[10.5px] text-[var(--text-faint)]">{t("home.challengeAccepted")}</p>
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-[var(--border)] pt-3.5">
+              <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
+                <Inbox size={13} className="text-[var(--text-muted)]" />
+                {t("play.accept.title")}
+              </div>
+              <div className="flex w-full gap-2">
+                <input
+                  value={acceptUrl}
+                  onChange={(e) => setAcceptUrl(e.target.value)}
+                  placeholder={t("play.accept.placeholder")}
+                  className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-[13px] text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                />
+                <Btn busy={busy === "accept"} disabled={!connected || acceptUrl.trim() === ""} onClick={doAccept}>
+                  {t("play.accept.btn")}
+                </Btn>
+              </div>
+            </div>
+          </div>
+
           {/* Local token usage (§7A) */}
           <div className="app-card px-5 py-4">
             <div className="mb-2.5 flex items-center justify-between gap-2">
@@ -1330,119 +1479,6 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
         </div>
       </div>
 
-      {/* ── Match history (2/3) + quick actions (1/3) ── */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <div className="app-card px-5 py-4 lg:col-span-2">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <span className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
-              <History size={13} className="text-[var(--text-muted)]" />
-              {t("home.recent.title")}
-            </span>
-            <button
-              onClick={() => onNavigate?.("history")}
-              className="text-[11.5px] text-[var(--text-muted)] hover:text-[var(--text)]"
-            >
-              {t("home.recent.viewAll")} →
-            </button>
-          </div>
-          {sessions === null ? (
-            <div className="py-3 text-[12px] text-[var(--text-faint)]">…</div>
-          ) : sessions.length === 0 ? (
-            <div className="py-3 text-[12px] text-[var(--text-faint)]">{t("home.recent.empty")}</div>
-          ) : (
-            <div className="divide-y divide-[var(--border)]">
-              {sessions.map((s) => (
-                <button
-                  key={s.session_id}
-                  onClick={() => onNavigate?.("history")}
-                  className="flex w-full items-center justify-between gap-3 py-2.5 text-left transition-colors hover:bg-[var(--hover)]"
-                >
-                  <div className="flex min-w-0 items-center gap-2.5">
-                    <ResultDot label={s.result_label} />
-                    <span className="text-[13px] text-[var(--text)]">{gameLabel(s.game ?? "")}</span>
-                    {s.result_label && <ResultChip label={s.result_label} t={t} />}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-3 font-mono text-[11px] text-[var(--text-muted)]">
-                    {typeof s.decision_count === "number" && (
-                      <span>{t("home.recent.decisions", { n: s.decision_count })}</span>
-                    )}
-                    <span>{timeAgo(s.updated_at, t)}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Quick actions: one game selector → play now / create challenge; then accept */}
-        <div className="app-card space-y-4 px-5 py-4">
-          <div>
-            <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
-              <Swords size={13} className="text-[var(--text-muted)]" />
-              {t("play.actions.title")}
-            </div>
-            <GamePicker value={game} onChange={setGame} />
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Btn busy={busy === "match"} disabled={!connected || matchFlash} onClick={doRequest}>
-                {t("play.match.btn")}
-              </Btn>
-              <Btn busy={busy === "challenge"} disabled={!connected} onClick={doChallenge}>
-                {t("play.challenge.btn")}
-              </Btn>
-              {matchFlash && (
-                <span className="flex items-center gap-1 text-[11px] font-medium text-emerald-500">
-                  <Check size={12} /> {t("play.match.queued")}
-                </span>
-              )}
-            </div>
-            <div className="mt-2 space-y-0.5 text-[10.5px] leading-snug text-[var(--text-faint)]">
-              <div>· {t("play.match.hint")}</div>
-              <div>· {t("play.challenge.hint")}</div>
-            </div>
-            {challenges.length > 0 && (
-              <div className="mt-3 space-y-2 border-t border-[var(--border)] pt-3">
-                {challenges.map((c) => (
-                  <div key={c.url}>
-                    <div className="mb-1 flex items-center gap-2 text-[11px]">
-                      <span className="font-medium text-[var(--text)]">{gameLabel(c.game)}</span>
-                      <span className="inline-flex items-center gap-1 font-mono uppercase tracking-[0.06em] text-[var(--accent-text)]">
-                        <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
-                        {t("home.challengeWaiting")}
-                      </span>
-                    </div>
-                    <CopyRow text={c.url} />
-                  </div>
-                ))}
-                <p className="text-[10.5px] text-[var(--text-faint)]">{t("home.challengeAccepted")}</p>
-              </div>
-            )}
-          </div>
-
-          <div className="border-t border-[var(--border)] pt-3.5">
-            <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
-              <Inbox size={13} className="text-[var(--text-muted)]" />
-              {t("play.accept.title")}
-            </div>
-            <div className="flex w-full gap-2">
-              <input
-                value={acceptUrl}
-                onChange={(e) => setAcceptUrl(e.target.value)}
-                placeholder={t("play.accept.placeholder")}
-                className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-[13px] text-[var(--text)] outline-none focus:border-[var(--accent)]"
-              />
-              <Btn busy={busy === "accept"} disabled={!connected || acceptUrl.trim() === ""} onClick={doAccept}>
-                {t("play.accept.btn")}
-              </Btn>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Achievements (verified profile badges) — pinned to the bottom, below
-             match history, per the dashboard layout. Data is already in the
-             fetched profile; renders an empty state for new agents. ── */}
-      <AchievementShelf achievements={achievements} />
-
       {feedback !== null && <FeedbackBar feedback={feedback} onClaim={doClaim} />}
     </div>
   );
@@ -1480,15 +1516,18 @@ function FeedbackBar({ feedback, onClaim }: { feedback: NonNullable<Feedback>; o
   );
 }
 
-function timeAgo(iso: string | undefined, t: (k: string, o?: Record<string, unknown>) => string): string {
+/** Absolute time point for the recent-matches rows (owner ruling over the old
+ *  relative "2h ago"): today → HH:mm, this year → MM-DD HH:mm, else full date.
+ *  `now` is injectable for tests. */
+export function fmtTimePoint(iso: string | undefined, locale: string, now: Date = new Date()): string {
   if (iso === undefined) return "";
-  const ms = Date.now() - Date.parse(iso);
-  if (!Number.isFinite(ms) || ms < 0) return "";
-  const mins = Math.floor(ms / 60_000);
-  if (mins < 60) return t("home.recent.minAgo", { n: Math.max(1, mins) });
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return t("home.recent.hourAgo", { n: hours });
-  return t("home.recent.dayAgo", { n: Math.floor(hours / 24) });
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const time = d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", hour12: false });
+  if (d.toDateString() === now.toDateString()) return time;
+  const monthDay = d.toLocaleDateString(locale, { month: "2-digit", day: "2-digit" });
+  if (d.getFullYear() === now.getFullYear()) return `${monthDay} ${time}`;
+  return `${d.toLocaleDateString(locale, { year: "numeric", month: "2-digit", day: "2-digit" })} ${time}`;
 }
 
 function ResultDot({ label }: { label: string | undefined }) {

@@ -122,7 +122,9 @@ function blankForm(family: ProtocolFamily): FormState {
     model: "",
     baseURL: "",
     temperature: "",
-    maxTokens: "16000",
+    // AIFight is a reasoning arena, so default to generous output room; unified
+    // with the CLI wizard's 32000 default (D16). You pay for tokens used, not the cap.
+    maxTokens: "32000",
     stream: "auto",
     thinkingEnabled: true,
     effort: "",

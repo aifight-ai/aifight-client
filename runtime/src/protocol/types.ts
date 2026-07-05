@@ -503,6 +503,32 @@ export interface CoupState {
     block_challenge_result?: "success" | "fail";
   };
   /**
+   * Per-player public summary in seat order. Mirrors the outer PlayerView.players (same engine.PlayerInfo shape) so a consumer that only receives game_data (e.g. server-side house bots) sees everyone's coins, hidden influence count, and revealed cards. Always sent by current servers; kept optional for backward compatibility with older recordings.
+   */
+  players?: {
+    id: string;
+    /**
+     * Display name. Omitted when the engine has no name for the seat.
+     */
+    name?: string;
+    status: "alive" | "eliminated";
+    data?: {
+      coins?: number;
+      /**
+       * Count of face-down influence cards (values hidden).
+       */
+      hidden_cards?: number;
+      /**
+       * Face-up (lost) influence cards. Public.
+       */
+      revealed?: ("Duke" | "Assassin" | "Captain" | "Ambassador" | "Contessa")[];
+    };
+  }[];
+  /**
+   * **PRIVATE.** Your player ID. Cross-game canonical key (same as texas_holdem / liars_dice); matches server_game_start.data.your_player_id.
+   */
+  your_player_id?: string;
+  /**
    * **PRIVATE.** Your unrevealed (face-down) cards. 1-2 entries. Replaced by server after a successful-claim challenge shuffle-and-redraw.
    *
    * @maxItems 2
@@ -688,6 +714,21 @@ export interface LiarsDiceState {
     bidder: string;
   };
   /**
+   * This round's full bidding ladder in order, so the agent sees the whole escalation, not just the latest bid. Public info. Omitted when the round has no bids yet.
+   */
+  round_bids?: {
+    /**
+     * Player ID who made this bid.
+     */
+    bidder: string;
+    quantity: number;
+    face: number;
+  }[];
+  /**
+   * Distilled cross-round history: one human-readable line per completed round. Public info; never contains hidden dice values. Omitted before the first round completes.
+   */
+  round_log?: string[];
+  /**
    * Player ID currently on the action. Omitted when phase == 'done'.
    */
   current_turn?: string;
@@ -695,6 +736,22 @@ export interface LiarsDiceState {
    * Sum of dice_count across all alive players. Upper bound for any bid quantity. Omitted when phase == 'done'.
    */
   total_dice?: number;
+  /**
+   * Per-player public summary (id, status, dice count) in seat order. Mirrors the outer PlayerView.players so a consumer that only receives game_data (e.g. server-side house bots) still sees who is in and how many dice each holds. No hidden dice values. Always sent by current servers; kept optional for backward compatibility with older recordings.
+   */
+  players?: {
+    id: string;
+    status: "alive" | "eliminated";
+    dice_count: number;
+  }[];
+  /**
+   * **PRIVATE.** Your player ID. Legacy alias kept for backward compatibility; prefer your_player_id.
+   */
+  your_id?: string;
+  /**
+   * **PRIVATE.** Your player ID. Cross-game canonical key (same as texas_holdem / coup); matches server_game_start.data.your_player_id.
+   */
+  your_player_id?: string;
   /**
    * **PRIVATE.** Your current dice face values. Length equals your_dice_count. Omitted when recipient is eliminated or not in game.
    */
@@ -962,6 +1019,42 @@ export interface TexasHoldemState {
    * **PRIVATE.** Your player ID. Matches server_game_start.data.your_player_id.
    */
   your_player_id?: string;
+  /**
+   * Match economy. "cash" = stacks reset each hand, scored by cumulative net (bb/100). Current servers only send this for cash matches; absent = tournament.
+   */
+  format?: "cash" | "tournament";
+  /**
+   * Hands already completed (cumulative net reflects these; divisor for bb/100). Hand N in progress → N-1 completed; at phase 'done' the final hand is banked → N. Always sent by current servers; kept optional for backward compatibility with older recordings.
+   */
+  hands_completed?: number;
+  /**
+   * Per-hand reset baseline (cash format only).
+   */
+  start_chips?: number;
+  /**
+   * Per-player public summary in seat order: id, status, chips, bet, position; for cash also `invested` (this hand) and `net` (cumulative across hands). Always sent by current servers; kept optional for backward compatibility with older recordings.
+   */
+  players?: {
+    id: string;
+    /**
+     * Seat status, e.g. 'active', 'folded', 'allIn'.
+     */
+    status: string;
+    chips?: number;
+    bet?: number;
+    /**
+     * Position name (e.g. 'BTN', 'SB', 'BB', 'UTG', 'MP', 'CO').
+     */
+    position?: string;
+    /**
+     * Cash format only: chips invested this hand (start_chips − chips; may go negative in the brief window after the pot is paid out at hand end).
+     */
+    invested?: number;
+    /**
+     * Cash format only: cumulative net across completed hands. Can be negative.
+     */
+    net?: number;
+  }[];
   [k: string]: any;
 }
 

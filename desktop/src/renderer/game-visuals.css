@@ -1284,6 +1284,121 @@
   }
 }
 
+/* ── Coup readability layer ───────────────────────────────────────
+   A current-step banner ("what just happened"), per-seat coin deltas
+   plus a coup-distance hint, and an accumulating move log. Income-heavy
+   Coup games are otherwise near-static frame to frame; this surfaces the
+   small changes and makes the rare big moments pop. ──────────────── */
+.coup-legend {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--color-ink-5);
+}
+@media (max-width: 760px) { .coup-legend { display: none; } }
+
+.coup-now {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: clamp(6px, 1.2vh, 12px);
+  padding: clamp(10px, 1.8vh, 16px) clamp(14px, 2vw, 22px);
+  border-radius: 12px;
+  background: var(--color-warm);
+  border: 1px solid var(--color-border-1);
+  border-left: 4px solid var(--color-border-3);
+  transition: background 200ms ease, border-color 200ms ease;
+}
+.coup-now-main {
+  font-family: var(--font-serif);
+  font-size: clamp(19px, 3.2vh, 29px);
+  line-height: 1.15;
+  color: var(--color-ink-2);
+  text-align: center;
+}
+.coup-now .who { color: var(--color-ink-1); font-weight: 600; }
+.coup-now .lg-verb { font-style: italic; }
+.coup-now-await { color: var(--color-ink-5); font-style: italic; }
+.coup-now-delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: clamp(15px, 2.3vh, 21px);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--color-canvas);
+  border: 1px solid var(--color-border-2);
+  white-space: nowrap;
+}
+.coup-now-delta .coin {
+  width: 15px; height: 15px; border-radius: 999px;
+  background: #E5C770; border: 1px solid #B8860B;
+}
+.coup-now-arrow { font-size: 0.78em; color: var(--color-ink-4); }
+.coup-now--gain { border-left-color: #C8A24A; }
+.coup-now--gain .coup-now-delta { color: #8A6D1F; }
+.coup-now--loss { border-left-color: var(--color-err); background: rgba(166, 40, 40, 0.05); }
+.coup-now--loss .lg-verb { color: var(--color-err); font-style: normal; font-weight: 600; }
+.coup-now--win { border-left-color: var(--color-terracotta); background: var(--color-terracotta-50); }
+.coup-now--win .coup-now-main { color: var(--color-terracotta-700); }
+.coup-now--win .lg-verb { font-style: normal; font-weight: 700; }
+.coup-now--info { border-left-color: var(--color-ink-4); }
+[data-theme="dark"] .coup-now--loss { background: rgba(228, 117, 117, 0.08); }
+[data-theme="dark"] .coup-now--loss .lg-verb { color: var(--color-err); }
+[data-theme="dark"] .coup-now--win .coup-now-main { color: var(--color-terracotta); }
+
+.coin-delta { margin-left: 5px; font-size: 0.85em; font-weight: 700; font-variant-numeric: tabular-nums; }
+.coin-delta.up { color: #8A6D1F; }
+.coin-delta.down { color: var(--color-err); }
+[data-theme="dark"] .coin-delta.up { color: #D8B85C; }
+.coin-hint {
+  font-family: var(--font-mono);
+  font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--color-ink-5); white-space: nowrap;
+}
+.coin-hint.ready { color: var(--color-terracotta-700); font-weight: 600; }
+[data-theme="dark"] .coin-hint.ready { color: var(--color-terracotta); }
+.inf-card.face.dead { position: relative; }
+.inf-card.face.dead .inf-lost {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 8px; letter-spacing: 0.18em; text-transform: uppercase;
+  padding: 2px 0; color: #fff; background: rgba(166, 40, 40, 0.82);
+}
+
+.coup-ledger { margin: 0 auto; max-width: 760px; width: 100%; padding: 0 clamp(16px, 2vw, 22px) clamp(12px, 1.8vh, 18px); }
+.coup-ledger-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--color-ink-5);
+  padding: 6px 2px; border-bottom: 1px solid var(--color-border-1); margin-bottom: 6px;
+}
+.coup-ledger-earlier { color: var(--color-ink-6); }
+.coup-ledger-rows { display: flex; flex-direction: column; gap: 3px; }
+.coup-ledger-row {
+  display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; align-items: baseline;
+  padding: 4px 8px; border-radius: 6px;
+  font-family: var(--font-serif); font-size: clamp(12.5px, 1.7vh, 14px);
+  color: var(--color-ink-3);
+}
+.coup-ledger-row .lg-n { font-family: var(--font-mono); font-size: 10px; color: var(--color-ink-6); text-align: right; }
+.coup-ledger-row .who { color: var(--color-ink-1); font-weight: 600; }
+.coup-ledger-row .lg-verb { font-style: italic; }
+.coup-ledger-row.is-big { color: var(--color-ink-1); }
+.coup-ledger-row--loss.is-big .lg-verb { color: var(--color-err); font-style: normal; font-weight: 600; }
+.coup-ledger-row--win { color: var(--color-terracotta-700); }
+.coup-ledger-row--win .lg-verb { font-style: normal; font-weight: 700; }
+.coup-ledger-row.is-cur { background: var(--color-terracotta-50); box-shadow: inset 2px 0 0 var(--color-terracotta); }
+[data-theme="dark"] .coup-ledger-row.is-cur { background: rgba(255, 112, 10, 0.10); }
+[data-theme="dark"] .coup-ledger-row--win { color: var(--color-terracotta); }
+
 /* ─────────────────────────────────────────────────────────────
    Claude Design five-page adaptation (2026-04-22)
    Utilities used by HowToWin / Developer / Games / Leaderboard /

@@ -46,6 +46,7 @@ const api: AifightBridgeApi = {
   openLegal: (kind: "terms" | "privacy") => ipcRenderer.invoke(IPC.openLegal, kind),
   getAgentProfile: () => ipcRenderer.invoke(IPC.getProfile),
   getOwnProfileRaw: () => ipcRenderer.invoke(IPC.getProfileRaw),
+  getOwnRadar: (game?: string) => ipcRenderer.invoke(IPC.getOwnRadar, game),
   getAgentPolicy: () => ipcRenderer.invoke(IPC.getPolicy),
   setAgentPolicy: (patch: { maxGamesPerDay: number }) => ipcRenderer.invoke(IPC.setPolicy, patch),
   setAgentName: (patch: { name: string }) => ipcRenderer.invoke(IPC.setAgentName, patch),

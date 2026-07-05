@@ -23,6 +23,7 @@ import type { LLMConfig, LLMProfile, Protocol, ReasoningEffort } from "../../pro
 import { resolveAgentDir } from "../../profile/profile-loader.js";
 import { checkSecretStatus } from "../../profile/secret-ref.js";
 import { resolveModelCapabilities } from "../../llm/capabilities/validate-capabilities.js";
+import { buildLLMProfile } from "./config-shared.js";
 
 export interface OnboardProvider {
   /** Menu key, e.g. "1". */
@@ -62,7 +63,9 @@ export const ONBOARD_PROVIDERS: readonly OnboardProvider[] = [
     label: "GPT      (OpenAI Responses API)",
     protocol: "openai_responses",
     officialBaseURL: "https://api.openai.com/v1",
-    defaultModel: "gpt-4o",
+    // Cost-effective mainstream tier (not the flagship). Kept in sync with the
+    // desktop app's model presets and model-capabilities.json (D15).
+    defaultModel: "gpt-5.4",
     displayName: "GPT (OpenAI Responses)",
   },
   {
@@ -71,7 +74,7 @@ export const ONBOARD_PROVIDERS: readonly OnboardProvider[] = [
     label: "OpenAI Chat Completions  (DeepSeek / GLM / Minimax / Qwen / …)",
     protocol: "openai_chat_compat",
     officialBaseURL: undefined, // base URL is required for compat providers
-    defaultModel: "deepseek-chat",
+    defaultModel: "deepseek-v4-flash",
     displayName: "OpenAI-compatible provider",
   },
   {
@@ -80,7 +83,7 @@ export const ONBOARD_PROVIDERS: readonly OnboardProvider[] = [
     label: "Gemini   (Google)",
     protocol: "gemini_generate_content",
     officialBaseURL: "https://generativelanguage.googleapis.com/v1beta",
-    defaultModel: "gemini-2.0-flash",
+    defaultModel: "gemini-2.5-flash",
     displayName: "Gemini (Google)",
   },
 ] as const;
@@ -135,26 +138,23 @@ function profileFor(
   keyFilePath: string,
   settings: ModelSettings,
 ): LLMProfile {
-  const thinking: NonNullable<LLMProfile["thinking"]> = settings.thinkingEnabled
-    ? { enabled: true, mode: "always", ...(settings.effort ? { effort: settings.effort } : {}) }
-    : { enabled: false, mode: "never" };
-  return {
+  // Delegate to the shared builder (D1) so a wizard-configured profile is
+  // byte-identical to a `config add`-configured one. The wizard does not set
+  // verbosity/features, so those stay omitted here.
+  return buildLLMProfile({
     displayName: provider.displayName,
     protocol: provider.protocol,
     ...(baseURL ? { baseURL } : {}),
     apiKeyRef: { type: "file", path: keyFilePath },
     model,
-    request: {
-      temperature: settings.temperature,
+    settings: {
+      thinkingEnabled: settings.thinkingEnabled,
+      ...(settings.effort ? { effort: settings.effort } : {}),
       maxTokens: settings.maxTokens,
-      responseFormat: "json",
       stream: settings.stream,
+      temperature: settings.temperature,
     },
-    thinking,
-    timeouts: { requestMs: 30000, connectMs: 10000 },
-    retries: { maxAttempts: 2, backoffMs: 500 },
-    budgets: { maxCostUSDPerMatch: 1.0, maxOutputTokensPerDecision: 4096 },
-  };
+  });
 }
 
 async function readConfig(slug: string): Promise<LLMConfig | undefined> {
@@ -460,7 +460,10 @@ export async function onboardDirectLLM(opts: {
       // DEFAULT_CONFIG "claude-default" pointing at an unset env var) so the
       // user — and the desktop app — only see the profile that actually works.
       await pruneUnresolvableProfiles(slug);
-      env.stdout("  ✓ model responded.\n\n");
+      env.stdout("  ✓ model responded.\n");
+      env.stdout(
+        `  Tip: change any field later with one command — \`aifight config update ${provider.id} --model …\` (see \`aifight config --help\`).\n\n`,
+      );
       return "configured";
     }
 

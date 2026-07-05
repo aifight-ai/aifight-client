@@ -40,6 +40,24 @@
         }
       }
     },
+    "round_bids": {
+      "type": "array",
+      "description": "This round's full bidding ladder in order, so the agent sees the whole escalation, not just the latest bid. Public info. Omitted when the round has no bids yet.",
+      "items": {
+        "type": "object",
+        "required": ["bidder", "quantity", "face"],
+        "properties": {
+          "bidder": { "type": "string", "description": "Player ID who made this bid." },
+          "quantity": { "type": "integer", "minimum": 1 },
+          "face": { "type": "integer", "minimum": 1, "maximum": 6 }
+        }
+      }
+    },
+    "round_log": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Distilled cross-round history: one human-readable line per completed round. Public info; never contains hidden dice values. Omitted before the first round completes."
+    },
     "current_turn": {
       "type": "string",
       "description": "Player ID currently on the action. Omitted when phase == 'done'."
@@ -48,6 +66,27 @@
       "type": "integer",
       "minimum": 0,
       "description": "Sum of dice_count across all alive players. Upper bound for any bid quantity. Omitted when phase == 'done'."
+    },
+    "players": {
+      "type": "array",
+      "description": "Per-player public summary (id, status, dice count) in seat order. Mirrors the outer PlayerView.players so a consumer that only receives game_data (e.g. server-side house bots) still sees who is in and how many dice each holds. No hidden dice values. Always sent by current servers; kept optional for backward compatibility with older recordings.",
+      "items": {
+        "type": "object",
+        "required": ["id", "status", "dice_count"],
+        "properties": {
+          "id": { "type": "string" },
+          "status": { "type": "string", "enum": ["alive", "eliminated"] },
+          "dice_count": { "type": "integer", "minimum": 0, "maximum": 5 }
+        }
+      }
+    },
+    "your_id": {
+      "type": "string",
+      "description": "**PRIVATE.** Your player ID. Legacy alias kept for backward compatibility; prefer your_player_id."
+    },
+    "your_player_id": {
+      "type": "string",
+      "description": "**PRIVATE.** Your player ID. Cross-game canonical key (same as texas_holdem / coup); matches server_game_start.data.your_player_id."
     },
     "your_dice": {
       "type": "array",

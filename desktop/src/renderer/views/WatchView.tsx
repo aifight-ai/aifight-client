@@ -3,21 +3,40 @@
 // liveMatch.ts; onTrace for reasoning). Offline, it plays a fixture as a replay
 // with a synthesized trace stream, so the value is demoable without being online.
 //
-// This view only SELECTS the source (live match vs demo fixture) and the header
-// chrome; the board + strip + reasoning + transport live in CockpitPanel, shared
-// with the History replay so a past match looks exactly like a live one.
+// This view only SELECTS the source (dashboard replay intent > live match >
+// demo fixture) and the header chrome; the board + strip + reasoning +
+// transport live in CockpitPanel, shared with the History replay so a past
+// match looks exactly like a live one.
+//
+// Replay intent (owner ruling, 2026-07-02): a click on the dashboard's recent
+// matches lands HERE with that session pre-loaded as a replay — parked at the
+// first frame, playback only on the user's explicit ▶. Closing it falls back
+// to live/demo. 🔒 Replays inherit the cockpit's information hiding
+// (sessionReplay folds only the frames this agent ever received).
 
-import { useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Loader2, X } from "lucide-react";
 
 import { FIXTURES, FIXTURE_GAMES } from "../fixtures";
 import { synthesizeTraces } from "../demoMatch";
-import { type MatchOutcome } from "../liveMatch";
+import { emptyLiveMatch, type MatchOutcome } from "../liveMatch";
 import { useLiveStore } from "../liveStore";
-import { useBridgeStatus } from "../useBridge";
+import { cliRun, useBridgeStatus } from "../useBridge";
+import { buildReplayFromExport, type SessionReplay } from "../sessionReplay";
+import { consumeWatchReplayIntent, type WatchReplayIntent } from "../watchIntent";
 import { gameLabel } from "../../shared/games";
 import { CockpitPanel } from "./CockpitPanel";
+
+/** A dashboard-opened replay: loading → ready | unavailable. */
+type ReplayState =
+  | { kind: "loading"; intent: WatchReplayIntent }
+  | { kind: "ready"; intent: WatchReplayIntent; replay: SessionReplay }
+  | { kind: "unavailable"; intent: WatchReplayIntent };
+
+function isFixtureGame(g: string | undefined): g is (typeof FIXTURE_GAMES)[number] {
+  return g !== undefined && (FIXTURE_GAMES as readonly string[]).includes(g);
+}
 
 /** Build the replay origin from the bridge's configured base URL (ws→http). */
 function replayOrigin(baseUrl: string | undefined): string {
@@ -47,6 +66,56 @@ export function WatchView() {
   const liveMatch = live.match;
   const liveTraces = live.traces;
   const [demoGame, setDemoGame] = useState<(typeof FIXTURE_GAMES)[number]>("texas_holdem");
+  const [replay, setReplay] = useState<ReplayState | null>(null);
+
+  // Dashboard handoff: consume the (single-shot) replay intent on mount and
+  // load that session's stored frames. In the browser ?demo preview there is
+  // no local store — the game's fixture stands in as the replay instead.
+  useEffect(() => {
+    const intent = consumeWatchReplayIntent();
+    if (intent === null) return;
+    if (window.aifight?.platform === "demo") {
+      if (isFixtureGame(intent.game)) {
+        const fix = FIXTURES[intent.game];
+        setReplay({
+          kind: "ready",
+          intent,
+          replay: {
+            state: {
+              ...emptyLiveMatch(),
+              sessionId: intent.sessionId,
+              game: intent.game,
+              match: fix.match,
+              events: fix.events,
+              ownerPlayerId: fix.ownerPlayerId,
+              ownerPrivate: fix.ownerPrivate,
+              finished: true,
+            },
+            traces: synthesizeTraces(fix.match, fix.events, fix.ownerPlayerId),
+          },
+        });
+      }
+      return;
+    }
+    setReplay({ kind: "loading", intent });
+    void cliRun(["sessions", "export", intent.sessionId]).then((r) => {
+      if (r.exitCode !== 0 || r.error !== undefined || r.json === undefined) {
+        setReplay({ kind: "unavailable", intent });
+        return;
+      }
+      const built = buildReplayFromExport(r.json);
+      if (built.state.match === null || built.state.game === null) {
+        setReplay({ kind: "unavailable", intent });
+        return;
+      }
+      setReplay({ kind: "ready", intent, replay: built });
+    });
+  }, []);
+
+  // An explicit click outranks live/demo until the user closes it.
+  if (replay !== null) {
+    return <ReplayPane replay={replay} onClose={() => setReplay(null)} />;
+  }
 
   const isLive = liveMatch.sessionId !== null && liveMatch.match !== null;
 
@@ -140,6 +209,91 @@ export function WatchView() {
           headerLeft={headerLeft}
         />
       </div>
+    </div>
+  );
+}
+
+/** A dashboard-opened past match: close chrome + loading / unavailable /
+ *  CockpitPanel replay parked at frame 0 (▶ is the user's call). */
+function ReplayPane({ replay, onClose }: { replay: ReplayState; onClose: () => void }) {
+  const { t } = useTranslation();
+  const intent = replay.intent;
+
+  const closeBtn = (
+    <button
+      onClick={onClose}
+      className="flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-[12px] text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
+    >
+      <X size={14} />
+      {t("watch.closeReplay")}
+    </button>
+  );
+
+  const centered = (body: ReactNode) => (
+    <div className="flex h-full flex-col gap-3">
+      <div>{closeBtn}</div>
+      <div className="flex flex-1 items-center justify-center">
+        <div className="flex max-w-md items-center gap-2 text-center text-[13px] text-[var(--text-muted)]">{body}</div>
+      </div>
+    </div>
+  );
+
+  if (replay.kind === "loading") {
+    return centered(
+      <>
+        <Loader2 size={15} className="animate-spin" />
+        {t("watch.replayLoading")}
+      </>,
+    );
+  }
+  if (replay.kind === "unavailable") {
+    return centered(t("history.notRenderable"));
+  }
+
+  const { state, traces } = replay.replay;
+  if (state.game === null || state.match === null) {
+    return centered(t("history.notRenderable"));
+  }
+
+  const headerLeft = (
+    <div className="flex flex-wrap items-center gap-2.5">
+      {closeBtn}
+      <span className="text-[13px] font-medium text-[var(--text)]">{gameLabel(state.game)}</span>
+      {intent.resultLabel !== undefined && intent.resultLabel !== "" && (
+        <span className="rounded-md bg-[var(--surface-2)] px-2 py-0.5 text-[11px] text-[var(--text-muted)]">
+          {intent.resultLabel}
+        </span>
+      )}
+      {intent.replayUrl !== undefined && intent.replayUrl !== "" && (
+        <a
+          href={intent.replayUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-1 text-[12px] text-[var(--text-muted)] hover:text-[var(--text)]"
+        >
+          <ExternalLink size={13} />
+          {t("cockpit.openReplay")}
+        </a>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="h-full">
+      <CockpitPanel
+        key={`replay:${intent.sessionId}`}
+        game={state.game}
+        match={state.match}
+        events={state.events}
+        ownerPlayerId={state.ownerPlayerId ?? ""}
+        ownerPrivate={state.ownerPrivate}
+        traces={traces.slice()}
+        isLive={false}
+        badge="replay"
+        note={t("history.replayNote")}
+        initialStep={0}
+        headerLeft={headerLeft}
+      />
     </div>
   );
 }

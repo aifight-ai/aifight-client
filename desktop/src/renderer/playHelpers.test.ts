@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { CAP_CONFIRM_THRESHOLD, capNeedsConfirm, divisionOf, formatTokens } from "./views/PlayView";
+import { CAP_CONFIRM_THRESHOLD, capNeedsConfirm, divisionOf, fmtTimePoint, formatTokens } from "./views/PlayView";
 
 describe("capNeedsConfirm", () => {
   it("threshold is 10 (change deliberately, with the CLI mirror)", () => {
@@ -41,5 +41,21 @@ describe("divisionOf", () => {
     expect(divisionOf(1700, 20)).toBe("diamond");
     expect(divisionOf(1800, 20)).toBe("master");
     expect(divisionOf(1950, 20)).toBe("champion");
+  });
+});
+
+describe("fmtTimePoint", () => {
+  const now = new Date("2026-07-02T20:00:00");
+  it("same day → time only; same year → MM-DD + time; else full date", () => {
+    expect(fmtTimePoint("2026-07-02T14:35:00", "en", now)).toBe("14:35");
+    const juneFirst = fmtTimePoint("2026-06-01T09:05:00", "en", now);
+    expect(juneFirst).toContain("09:05");
+    expect(juneFirst).toMatch(/06|01/); // month-day present, locale-ordered
+    expect(juneFirst).not.toContain("2026");
+    expect(fmtTimePoint("2025-12-31T23:59:00", "en", now)).toContain("2025");
+  });
+  it("tolerates missing / broken timestamps", () => {
+    expect(fmtTimePoint(undefined, "en", now)).toBe("");
+    expect(fmtTimePoint("not-a-date", "en", now)).toBe("");
   });
 });

@@ -116,6 +116,27 @@ function buildStateBlock(input: TexasHoldemFormatterInput): string {
     }
   }
 
+  // Cash-format running results across completed hands — the aggregate the match
+  // is scored on (cumulative net + bb/100). Stacks reset each hand, so this
+  // cross-hand net matters more than the current-hand chip count.
+  if (s.format === "cash" && Array.isArray(s.players)) {
+    const handsDone = typeof s.hands_completed === "number" ? s.hands_completed : 0;
+    const maxHands = typeof s.max_hands === "number" ? s.max_hands : 0;
+    const bb = typeof s.big_blind === "number" && s.big_blind > 0 ? s.big_blind : 1;
+    const sign = (n: number, dp = 0): string => `${n >= 0 ? "+" : ""}${n.toFixed(dp)}`;
+    lines.push(
+      `Running results (through ${handsDone} of ${maxHands} hands) — cumulative net, scored as bb/100:`,
+    );
+    for (const p of s.players) {
+      const id = typeof p?.id === "string" ? p.id : "?";
+      const net = typeof p?.net === "number" ? p.net : 0;
+      const label = id === yourPlayerId ? `${id} (you)` : id;
+      const netBB = net / bb;
+      const bb100 = handsDone > 0 ? (netBB / handsDone) * 100 : 0;
+      lines.push(`  ${label}: net ${sign(net)} (${sign(netBB, 1)} BB, ${sign(bb100, 0)} bb/100)`);
+    }
+  }
+
   return lines.join("\n");
 }
 

@@ -54,6 +54,16 @@ import { runInteractiveMenu } from "./commands/menu";
 import { createOnboardIO } from "./commands/onboard-io";
 import { readBridgeConfig } from "../bridge/config";
 import type { BridgeServiceDeps } from "../bridge/service";
+import { suggestClosest, CONFIG_EXAMPLES } from "./commands/config-shared";
+
+// Every top-level command name, for the did-you-mean suggester (D14). Keep in
+// sync with the dispatch switch below.
+const KNOWN_COMMANDS: readonly string[] = [
+  "version", "doctor", "setup", "connect", "start", "run", "status",
+  "update", "service", "sessions", "strategy", "uninstall", "set", "rename",
+  "challenge", "accept", "config", "stats", "prices", "record", "review",
+  "accept-terms",
+];
 
 // ── Public entry ─────────────────────────────────────────────────────
 
@@ -104,6 +114,23 @@ export async function run(
     { name: "profile", type: "string" },
     { name: "env", type: "string" },
     { name: "file", type: "string" },
+    // `aifight config add|update` flags (headless LLM profile configuration).
+    // The raw key never appears here — only --env/--file (indirection) or
+    // --key-stdin (read once from stdin, stored 0600). See config-shared.ts.
+    { name: "protocol", type: "string" },
+    { name: "base-url", type: "string" },
+    { name: "model", type: "string" },
+    { name: "display-name", type: "string" },
+    { name: "max-tokens", type: "number" },
+    { name: "stream", type: "string" },
+    { name: "thinking", type: "string" },
+    { name: "effort", type: "string" },
+    { name: "temperature", type: "number" },
+    { name: "verbosity", type: "string" },
+    { name: "feature", type: "string", repeatable: true },
+    { name: "key-stdin", type: "boolean" },
+    { name: "use", type: "boolean" },
+    { name: "no-test", type: "boolean" },
     // `aifight stats` / `aifight prices` flags (§7A local usage + cost).
     { name: "days", type: "number" },
     { name: "by-model", type: "boolean" },
@@ -242,8 +269,15 @@ async function dispatch(
     case "accept-terms":
       return runAcceptTerms(subArgs, env);
 
-    default:
-      throw new UsageError(`unknown command '${cmd}'`);
+    default: {
+      const guess = suggestClosest(cmd, KNOWN_COMMANDS);
+      throw new UsageError(
+        `unknown command '${cmd}'`,
+        guess !== undefined
+          ? `Did you mean '${guess}'? Run \`aifight --help\` for the full command list.`
+          : "Run `aifight --help` for the full command list.",
+      );
+    }
   }
 }
 
@@ -267,6 +301,7 @@ function globalUsage(): string {
     "First run (set up this machine):",
     "  aifight setup                     Guided setup: create your agent, connect & test your LLM, claim",
     "  aifight config                    Set up & test your LLM, daily matches, claim, style (interactive)",
+    "  aifight config add <profile> …    Headless: configure an LLM with flags (see `aifight config --help`)",
     "  aifight connect <PAIRING_CODE>    Authorize this machine for an existing claimed agent",
     "",
     "Play:",
@@ -491,6 +526,21 @@ function commandUsage(positional: readonly string[]): string | undefined {
         "Usage: aifight config",
         "         Interactive setup on a terminal: pick a provider, paste your LLM API key,",
         "         test it, set daily matches, show your claim URL, and find your style files.",
+        "",
+        "  Headless (no prompts) — configure a profile with flags:",
+        "       aifight config add <profile> --protocol <claude|gpt|compat|gemini> \\",
+        "           (--env NAME | --file PATH | --key-stdin) [--base-url URL] [--model NAME]",
+        "           [--display-name S] [--max-tokens N] [--stream auto|always|never]",
+        "           [--thinking on|off] [--effort LEVEL] [--temperature T]",
+        "           [--verbosity low|medium|high] [--feature k=on|off …] [--use] [--no-test]",
+        "         compat (DeepSeek/GLM/Qwen/…) requires --base-url and --model; official",
+        "         providers default both. Auto-tests after saving unless --no-test.",
+        "       aifight config update <profile> [same options; not --protocol]  change fields",
+        "       aifight config models [profile]                         list the provider's models",
+        "       aifight config remove <profile> [--yes]                 delete a profile",
+        "       aifight config clear-key <profile>                      delete a stored key file",
+        "",
+        "  Inspect / route / manage:",
         "       aifight config test [agent-slug] [--profile <name>]    re-test a saved profile",
         "       aifight config show [agent-slug]                        print config (key described, never shown)",
         "       aifight config explain [agent-slug] [--profile <name>]  field-by-field guide for your model",
@@ -501,8 +551,10 @@ function commandUsage(positional: readonly string[]): string | undefined {
         "       aifight config init [agent-slug]                        advanced: scaffold the config files only",
         "  Direct-LLM mode: play with your own LLM API key (Claude / GPT / DeepSeek / Gemini).",
         "  config.json lives under ~/.aifight/agents/<slug>/ and is shared with the desktop app.",
-        "  Your key is read only when you paste it or point --env/--file at it — nothing is auto-detected.",
-        "  set-key never takes the raw key on the command line.",
+        "  Your key is read only when you paste it or point --env/--file/--key-stdin at it — nothing is auto-detected.",
+        "  add/update/set-key never take the raw key on the command line.",
+        "",
+        ...CONFIG_EXAMPLES,
       ].join("\n");
     default:
       return undefined;

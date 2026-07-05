@@ -9,6 +9,7 @@ import type {
   AgentPolicy,
   AgentProfileData,
   BridgeStatus,
+  HexagonData,
   CliRunResult,
   ConfigMutResult,
   ConfigView,
@@ -126,6 +127,11 @@ export async function getOwnProfileRaw(): Promise<Record<string, unknown> | null
   const api = window.aifight;
   if (api === undefined) return null;
   return api.getOwnProfileRaw();
+}
+export async function getOwnRadar(game?: string): Promise<HexagonData | null> {
+  const api = window.aifight;
+  if (api === undefined) return null;
+  return api.getOwnRadar(game);
 }
 export async function getAgentPolicy(): Promise<AgentPolicy | null> {
   const api = window.aifight;

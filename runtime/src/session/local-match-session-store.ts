@@ -35,6 +35,16 @@ export interface LocalMatchSessionSummary {
   readonly real_match_id?: string;
   readonly replay_url?: string;
   readonly result_label?: string;
+  /** Seats in the match (game_start roster; confirmed by game_over identities). */
+  readonly player_count?: number;
+  /**
+   * Distinct engine events observed (seq-deduped across action_requests, the
+   * same fold the cockpit replay uses) — the whole-match interaction count,
+   * every player's moves included, and the local replay's step count.
+   */
+  readonly event_count?: number;
+  /** High-water event seq backing the event_count dedupe. */
+  readonly event_seq_max?: number;
   readonly inbound_count: number;
   readonly outbound_count: number;
   readonly decision_count: number;
@@ -88,6 +98,7 @@ export class LocalMatchSessionStore {
         game: msg.data.game,
         mode: readMode(msg.data),
         playerId: msg.data.your_player_id,
+        playerCount: Array.isArray(msg.data.players) ? msg.data.players.length : undefined,
       });
     }
 
@@ -104,6 +115,9 @@ export class LocalMatchSessionStore {
       inbound_count: summary.inbound_count + 1,
       updated_at: now,
     };
+    if (message.type === "action_request") {
+      next = applyEventProgress(next, (message as MsgActionRequest).data);
+    }
     if (message.type === "game_state") {
       const msg = message as MsgGameState;
       next = {
@@ -228,6 +242,7 @@ export class LocalMatchSessionStore {
       readonly game?: string;
       readonly mode?: string;
       readonly playerId?: string;
+      readonly playerCount?: number;
     },
   ): LocalMatchSessionSummary {
     const dir = this.#sessionDir(config.agentId, sessionId);
@@ -240,6 +255,7 @@ export class LocalMatchSessionStore {
         game: opts.game ?? existing.game,
         mode: opts.mode ?? existing.mode,
         player_id: opts.playerId ?? existing.player_id,
+        ...(opts.playerCount !== undefined ? { player_count: opts.playerCount } : {}),
         updated_at: opts.now,
       };
       this.#writeSummary(merged);
@@ -254,6 +270,7 @@ export class LocalMatchSessionStore {
       ...(opts.game !== undefined ? { game: opts.game } : {}),
       ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
       ...(opts.playerId !== undefined ? { player_id: opts.playerId } : {}),
+      ...(opts.playerCount !== undefined ? { player_count: opts.playerCount } : {}),
       started_at: opts.now,
       updated_at: opts.now,
       inbound_count: 0,
@@ -272,6 +289,7 @@ export class LocalMatchSessionStore {
     gameOver: MsgGameOver,
     now: string,
   ): LocalMatchSessionSummary {
+    const roster = Array.isArray(gameOver.data.players) ? gameOver.data.players.length : 0;
     return {
       ...summary,
       status: "completed",
@@ -281,6 +299,9 @@ export class LocalMatchSessionStore {
       ...(gameOver.data.replay_url !== undefined
         ? { replay_url: fullReplayURL(config.baseUrl, gameOver.data.replay_url) }
         : {}),
+      // game_over discloses the full real roster — authoritative over the
+      // (possibly missed, e.g. mid-match reconnect) game_start count.
+      ...(roster > 0 ? { player_count: roster } : {}),
       result_label: resultLabel(config.agentId, gameOver),
     };
   }
@@ -342,8 +363,15 @@ export class LocalMatchSessionStore {
       }
       for (const sessionDir of sessions) {
         const dir = path.join(sessionsRoot, sessionDir);
-        const summary = readSummary(path.join(dir, "session.json"));
-        if (summary) out.push({ ...summary, path: dir });
+        let summary = readSummary(path.join(dir, "session.json"));
+        if (!summary) continue;
+        if (
+          summary.status === "completed" &&
+          (summary.event_count === undefined || summary.player_count === undefined)
+        ) {
+          summary = backfillWholeMatchCounts(dir, summary);
+        }
+        out.push({ ...summary, path: dir });
       }
     }
     return out;
@@ -367,6 +395,85 @@ function sessionIdFromServerMessage(message: ServerMessageEnvelope): string | nu
   if (message.type === "action_request") return (message as MsgActionRequest).data.match_id;
   if (message.type === "game_over") return (message as MsgGameOver).data.session_id;
   return null;
+}
+
+/**
+ * Fold one action_request's event payload into the summary's whole-match
+ * interaction counters. Mirrors the cockpit replay's dedupe exactly: events
+ * count once by monotonic `seq` (overlapping deliveries skip), and a
+ * reconnect's `event_history` — the full filtered log — resets the fold.
+ */
+function applyEventProgress(
+  summary: LocalMatchSessionSummary,
+  data: MsgActionRequest["data"] | undefined,
+): LocalMatchSessionSummary {
+  if (!data || typeof data !== "object") return summary;
+  let count = summary.event_count ?? 0;
+  let max = summary.event_seq_max ?? -1;
+  const history =
+    data.is_reconnect === true && Array.isArray(data.event_history) && data.event_history.length > 0
+      ? data.event_history
+      : null;
+  if (history) {
+    count = history.length;
+    max = -1;
+    for (const e of history) {
+      const seq = (e as { seq?: unknown })?.seq;
+      if (typeof seq === "number" && seq > max) max = seq;
+    }
+  } else {
+    for (const e of data.new_events ?? []) {
+      const seq = (e as { seq?: unknown })?.seq;
+      if (typeof seq === "number") {
+        if (seq <= max) continue;
+        max = seq;
+        count += 1;
+      } else {
+        count += 1;
+      }
+    }
+  }
+  if (count === (summary.event_count ?? 0) && max === (summary.event_seq_max ?? -1)) return summary;
+  return { ...summary, event_count: count, event_seq_max: max };
+}
+
+/**
+ * One-shot self-healing migration for sessions recorded before the whole-match
+ * counters existed: derive player_count / event_count from the stored inbound
+ * frames (the same fold live recording uses) and persist them back into the
+ * SCANNED session.json, so the cost is paid once per legacy session.
+ */
+function backfillWholeMatchCounts(
+  dir: string,
+  summary: LocalMatchSessionSummary,
+): LocalMatchSessionSummary {
+  let next = summary;
+  try {
+    for (const rec of readJSONLines(path.join(dir, "inbound.jsonl"))) {
+      const msg = (rec as { message?: unknown })?.message;
+      if (!msg || typeof msg !== "object") continue;
+      const type = (msg as { type?: unknown }).type;
+      if (type === "game_start" || type === "game_over") {
+        const players = ((msg as { data?: { players?: unknown } }).data ?? {}).players;
+        if (Array.isArray(players) && players.length > 0) {
+          next = { ...next, player_count: players.length };
+        }
+      } else if (type === "action_request") {
+        next = applyEventProgress(next, (msg as MsgActionRequest).data);
+      }
+    }
+  } catch {
+    // Best effort — a broken frame log still gets the sentinel below.
+  }
+  if (next.event_count === undefined) {
+    next = { ...next, event_count: 0, event_seq_max: -1 };
+  }
+  try {
+    writeJSONFile(path.join(dir, "session.json"), next);
+  } catch {
+    // Best effort — an unwritable store just re-derives next time.
+  }
+  return next;
 }
 
 function summarizeActionRequest(actionRequest: MsgActionRequest): Record<string, unknown> {
@@ -498,6 +605,9 @@ function readSummary(file: string): LocalMatchSessionSummary | null {
     ...(typeof summary.real_match_id === "string" ? { real_match_id: summary.real_match_id } : {}),
     ...(typeof summary.replay_url === "string" ? { replay_url: summary.replay_url } : {}),
     ...(typeof summary.result_label === "string" ? { result_label: summary.result_label } : {}),
+    ...(typeof summary.player_count === "number" ? { player_count: summary.player_count } : {}),
+    ...(typeof summary.event_count === "number" ? { event_count: summary.event_count } : {}),
+    ...(typeof summary.event_seq_max === "number" ? { event_seq_max: summary.event_seq_max } : {}),
     inbound_count: typeof summary.inbound_count === "number" ? summary.inbound_count : 0,
     outbound_count: typeof summary.outbound_count === "number" ? summary.outbound_count : 0,
     decision_count: typeof summary.decision_count === "number" ? summary.decision_count : 0,

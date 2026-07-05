@@ -93,6 +93,50 @@
     "your_player_id": {
       "type": "string",
       "description": "**PRIVATE.** Your player ID. Matches server_game_start.data.your_player_id."
+    },
+    "format": {
+      "type": "string",
+      "enum": ["cash", "tournament"],
+      "description": "Match economy. \"cash\" = stacks reset each hand, scored by cumulative net (bb/100). Current servers only send this for cash matches; absent = tournament."
+    },
+    "hands_completed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Hands already completed (cumulative net reflects these; divisor for bb/100). Hand N in progress → N-1 completed; at phase 'done' the final hand is banked → N. Always sent by current servers; kept optional for backward compatibility with older recordings."
+    },
+    "start_chips": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Per-hand reset baseline (cash format only)."
+    },
+    "players": {
+      "type": "array",
+      "description": "Per-player public summary in seat order: id, status, chips, bet, position; for cash also `invested` (this hand) and `net` (cumulative across hands). Always sent by current servers; kept optional for backward compatibility with older recordings.",
+      "items": {
+        "type": "object",
+        "required": ["id", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "status": {
+            "type": "string",
+            "description": "Seat status, e.g. 'active', 'folded', 'allIn'."
+          },
+          "chips": { "type": "integer", "minimum": 0 },
+          "bet": { "type": "integer", "minimum": 0 },
+          "position": {
+            "type": "string",
+            "description": "Position name (e.g. 'BTN', 'SB', 'BB', 'UTG', 'MP', 'CO')."
+          },
+          "invested": {
+            "type": "integer",
+            "description": "Cash format only: chips invested this hand (start_chips − chips; may go negative in the brief window after the pot is paid out at hand end)."
+          },
+          "net": {
+            "type": "integer",
+            "description": "Cash format only: cumulative net across completed hands. Can be negative."
+          }
+        }
+      }
     }
   }
 }

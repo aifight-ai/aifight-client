@@ -40,13 +40,19 @@ export interface CockpitPanelProps {
   readonly emptyTraceHint?: string;
   /** Left side of the control row (game switcher / live status / session label). */
   readonly headerLeft: ReactNode;
+  /**
+   * Initial transport position; defaults to the tip (events.length, the final
+   * board). A dashboard-opened replay passes 0 so it waits at the first frame
+   * for the user to press play — loaded, never auto-started.
+   */
+  readonly initialStep?: number;
 }
 
 export function CockpitPanel(props: CockpitPanelProps) {
   const { t } = useTranslation();
   const { game, match, events, ownerPlayerId, ownerPrivate, traces, isLive, badge, note, emptyTraceHint, headerLeft } = props;
 
-  const [step, setStep] = useState(events.length);
+  const [step, setStep] = useState(props.initialStep ?? events.length);
   const [playing, setPlaying] = useState(false);
   const [following, setFollowing] = useState(true);
 

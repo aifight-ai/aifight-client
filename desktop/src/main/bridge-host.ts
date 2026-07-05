@@ -37,6 +37,7 @@ import type {
   BridgeStatus,
   ConnectionHealth,
   EventsData,
+  HexagonData,
   LeaderboardData,
   LeaderboardScope,
 } from "../shared/ipc";
@@ -248,6 +249,32 @@ export class BridgeHost {
       });
       if (!res.ok) return null;
       return (await res.json()) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The OWN agent's ability-hexagon radar (render contract §6.0) via the agent
+   * key: GET /api/agents/me/radar[/{game}] — self-view, community track, visible
+   * regardless of claim state. Null on any error, non-OK status (an old server
+   * 404s the route), or unconfigured bridge; the {"enabled":false} switch-off
+   * answer is returned verbatim. Never throws — the card simply hides.
+   */
+  async getOwnRadar(game?: string): Promise<HexagonData | null> {
+    const path = game
+      ? `/api/agents/me/radar/${encodeURIComponent(game)}`
+      : "/api/agents/me/radar";
+    const ep = this.#meEndpoint(path);
+    if (ep === null) return null;
+    try {
+      const res = await fetch(ep.url, {
+        headers: { "X-API-Key": ep.apiKey },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) return null;
+      const body = (await res.json()) as HexagonData;
+      return typeof body?.enabled === "boolean" ? body : null;
     } catch {
       return null;
     }

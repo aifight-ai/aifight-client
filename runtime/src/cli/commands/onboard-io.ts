@@ -82,7 +82,7 @@ function readHidden(env: HandlerEnv, question: string): Promise<string> {
   });
 }
 
-async function discoverModels(
+export async function discoverModels(
   env: HandlerEnv,
   input: { protocol: Protocol; baseURL: string; apiKey: string },
 ): Promise<string[] | null> {

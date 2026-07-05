@@ -25,6 +25,17 @@ import { runConfigValidate } from "./config-validate.js";
 import { runConfigProbe } from "./config-probe.js";
 import { createOnboardIO } from "./onboard-io.js";
 import { onboardDirectLLM, type OnboardIO } from "./onboard-llm.js";
+import { suggestClosest, CONFIG_EXAMPLES } from "./config-shared.js";
+import { runConfigAdd, runConfigUpdate } from "./config-edit.js";
+import { runConfigModels } from "./config-models.js";
+import { runConfigRemove, runConfigClearKey } from "./config-manage.js";
+
+// Every config subcommand, for the did-you-mean suggester (D14). Keep in sync
+// with the dispatch switch in runConfig.
+const KNOWN_CONFIG_SUBS: readonly string[] = [
+  "init", "validate", "test", "probe", "show", "explain", "set-key",
+  "route", "use", "review", "add", "update", "models", "remove", "clear-key",
+];
 import { runBridgeSet } from "./bridge-set.js";
 import { readBridgeConfig } from "../../bridge/config.js";
 import { resolveAgentDir } from "../../profile/profile-loader.js";
@@ -38,6 +49,11 @@ import {
 
 const USAGE = [
   "usage: aifight config                                  interactive setup (LLM key, daily, claim, style)",
+  "       aifight config add <profile> --protocol <claude|gpt|compat|gemini> (--env N|--file P|--key-stdin) [options]",
+  "       aifight config update <profile> [--model N] [--base-url URL] [--stream …] [--max-tokens N] [options]",
+  "       aifight config models [profile] [agent-slug]   list the models a profile's provider exposes",
+  "       aifight config remove <profile> [--yes] [agent-slug]",
+  "       aifight config clear-key <profile> [agent-slug]",
   "       aifight config test [agent-slug] [--profile <name>]",
   "       aifight config show [agent-slug]",
   "       aifight config explain [agent-slug] [--profile <name>]",
@@ -48,7 +64,9 @@ const USAGE = [
   "       aifight config validate [agent-slug]",
   "       aifight config init [agent-slug]                advanced: scaffold config files non-interactively",
   "  Configure direct-LLM mode. Your key is read only when you paste it or point",
-  "  --env/--file at it — nothing is auto-detected. The raw key never goes in argv.",
+  "  --env/--file/--key-stdin at it — nothing is auto-detected. The raw key never goes in argv.",
+  "",
+  ...CONFIG_EXAMPLES,
 ].join("\n");
 
 export async function runConfig(args: HandlerArgs, env: HandlerEnv): Promise<number> {
@@ -66,6 +84,16 @@ export async function runConfig(args: HandlerArgs, env: HandlerEnv): Promise<num
   switch (sub) {
     case "init":
       return runConfigInit(rest, env);
+    case "add":
+      return runConfigAdd(rest, env);
+    case "update":
+      return runConfigUpdate(rest, env);
+    case "remove":
+      return runConfigRemove(rest, env);
+    case "clear-key":
+      return runConfigClearKey(rest, env);
+    case "models":
+      return runConfigModels(rest, env);
     case "validate":
       return runConfigValidate(rest, env);
     case "test":
@@ -83,8 +111,13 @@ export async function runConfig(args: HandlerArgs, env: HandlerEnv): Promise<num
       return runConfigUse(rest, env);
     case "review":
       return runConfigReview(rest, env);
-    default:
-      throw new UsageError(`unknown config subcommand '${sub}'`, USAGE);
+    default: {
+      const guess = suggestClosest(sub, KNOWN_CONFIG_SUBS);
+      throw new UsageError(
+        `unknown config subcommand '${sub}'`,
+        guess !== undefined ? `Did you mean 'config ${guess}'?\n${USAGE}` : USAGE,
+      );
+    }
   }
 }
 
@@ -176,7 +209,7 @@ function showClaim(env: HandlerEnv): void {
     env.stdout("  No claim URL on file (this agent may already be claimed). Manage it in the Dashboard.\n");
     return;
   }
-  env.stdout("\n  Open this link to claim your agent and set its official public name:\n");
+  env.stdout("\n  Open this link to claim your agent — claiming unlocks play; rename any time with `aifight rename`:\n");
   env.stdout(`  ${config.claimUrl}\n`);
 }
 

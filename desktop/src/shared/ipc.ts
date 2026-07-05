@@ -437,6 +437,23 @@ export interface UsageOverview {
   readonly hasPrices: boolean;
 }
 
+// ── Ability hexagon self-view (render contract §6.0) ─────────────────────────
+// GET /api/agents/me/radar[/{game}] via the agent key: the agent's own
+// behavior radar, community track, visible regardless of claim state. The
+// server answers {"enabled":false} while the display switch is off; an old
+// server 404s — both collapse to "hide the card" in the renderer.
+export interface HexagonData {
+  readonly enabled: boolean;
+  readonly board?: string;
+  readonly game?: string;
+  /** 0-100 per axis; null below the sample gate ("still dark"). */
+  readonly dimensions?: Readonly<Record<string, number | null>>;
+  /** Per-axis sample denominators (powers the "N more to light up" copy). */
+  readonly samples?: Readonly<Record<string, number>>;
+  /** Lit rate-axes' core rates (bluff success / pressure share / call-out hit). */
+  readonly rates?: Readonly<Record<string, number>>;
+}
+
 // ── Auto-update (electron-updater) ───────────────────────────────────────────
 // The updater's lifecycle, flattened into one status the renderer renders in
 // Settings → About. Only live in packaged builds with a publish feed; in dev a
@@ -461,6 +478,7 @@ export const IPC = {
   getConnection: "bridge:get-connection",
   getProfile: "bridge:get-profile",
   getProfileRaw: "bridge:get-profile-raw",
+  getOwnRadar: "bridge:get-own-radar",
   getPolicy: "bridge:get-policy",
   setPolicy: "bridge:set-policy",
   setAgentName: "bridge:set-agent-name",
@@ -521,7 +539,7 @@ export interface AifightBridgeApi {
   getLiveGames(): Promise<readonly string[]>;
   /** Live connection-health for the diagnostics panel (uptime / last activity / reconnects). */
   getConnectionHealth(): Promise<ConnectionHealth>;
-  /** Open this agent's claim page in the browser (to claim it + set a public name). */
+  /** Open this agent's claim page in the browser (claiming unlocks play; rename any time). */
   openClaim(): Promise<{ ok: boolean }>;
   /** Open the owner Dashboard in the system browser already logged in (passwordless
    * SSO via a one-time agent-key handoff token). Falls back to the bare dashboard
@@ -539,6 +557,10 @@ export interface AifightBridgeApi {
    * ranking, …) for the rich home view. Returned verbatim (renderer casts to the
    * @aifight/api-types AgentProfile). Null when unclaimed / on error. No auth. */
   getOwnProfileRaw(): Promise<Record<string, unknown> | null>;
+  /** The OWN agent's ability-hexagon radar via the agent key (self-view, community
+   * track, claim-independent). game "" = cross-game. Null on error / old server;
+   * {"enabled":false} when the display switch is off — both hide the card. */
+  getOwnRadar(game?: string): Promise<HexagonData | null>;
   /** Read the agent's current rate policy from the server (source of truth). Null on error. */
   getAgentPolicy(): Promise<AgentPolicy | null>;
   /** Write the daily auto-match cap to the server (last-write-wins). The desktop's

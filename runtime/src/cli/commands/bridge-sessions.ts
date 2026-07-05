@@ -107,6 +107,8 @@ function formatSessionDetail(item: LocalMatchSessionListItem): string {
     `Outbound actions: ${item.final_action_count}`,
     `Path: ${item.path}`,
   ];
+  if (typeof item.player_count === "number") lines.splice(4, 0, `Players: ${item.player_count}`);
+  if (typeof item.event_count === "number") lines.splice(lines.length - 1, 0, `Match events: ${item.event_count}`);
   if (item.real_match_id) lines.splice(1, 0, `Match: ${item.real_match_id}`);
   if (item.result_label) lines.push(`Result: ${item.result_label}`);
   if (item.replay_url) lines.push(`Replay: ${item.replay_url}`);

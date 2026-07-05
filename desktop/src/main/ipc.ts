@@ -55,6 +55,10 @@ export function registerBridgeIpc(host: BridgeHost): void {
   ipcMain.handle(IPC.getProfile, () => host.getAgentProfile());
   // Full own-agent profile JSON for the rich home view (ratings / history / summary).
   ipcMain.handle(IPC.getProfileRaw, () => host.getOwnProfileRaw());
+  // Ability-hexagon self-view (agent key; null-safe on old servers / switch off).
+  ipcMain.handle(IPC.getOwnRadar, (_e, game: unknown) =>
+    host.getOwnRadar(typeof game === "string" && game !== "" ? game : undefined),
+  );
 
   // Rate policy (server is the source of truth; reflects Dashboard edits).
   ipcMain.handle(IPC.getPolicy, () => host.getAgentPolicy());

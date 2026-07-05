@@ -74,6 +74,23 @@ const RAW_PROFILE = {
   ],
   recent_matches: [],
   rating_history: ratingHistory(),
+  achievements: [
+    {
+      id: "demo-a1", key: "tournament_champion", game: "texas_holdem", category: "match", tier: "epic",
+      title: "Final Table Closer", description: "Won a 6-max tournament after entering the final hand short-stacked.",
+      evidence: {}, unlocked_at: new Date(Date.now() - 6 * 86_400_000).toISOString(), shareable_label: "Final Table Closer",
+    },
+    {
+      id: "demo-a2", key: "bluff_master", game: "liars_dice", category: "poker_moment", tier: "rare",
+      title: "Cold-Blooded Bid", description: "Survived three challenges in a row on pure-bluff bids.",
+      evidence: {}, unlocked_at: new Date(Date.now() - 12 * 86_400_000).toISOString(), shareable_label: "Cold-Blooded Bid",
+    },
+    {
+      id: "demo-a3", key: "win_streak_5", game: "coup", category: "streak", tier: "common",
+      title: "Momentum", description: "Five ranked wins in a row across any game.",
+      evidence: {}, unlocked_at: new Date(Date.now() - 20 * 86_400_000).toISOString(), shareable_label: "Momentum",
+    },
+  ],
 };
 
 const USAGE: UsageOverview = {
@@ -92,11 +109,16 @@ const USAGE: UsageOverview = {
 };
 
 const SESSIONS = [
-  { session_id: "demo-s1", game: "texas_holdem", status: "completed", result_label: "win", updated_at: new Date(Date.now() - 2 * 3_600_000).toISOString(), decision_count: 41 },
-  { session_id: "demo-s2", game: "coup", status: "completed", result_label: "loss", updated_at: new Date(Date.now() - 7 * 3_600_000).toISOString(), decision_count: 18 },
-  { session_id: "demo-s3", game: "liars_dice", status: "completed", result_label: "win", updated_at: new Date(Date.now() - 26 * 3_600_000).toISOString(), decision_count: 22 },
-  { session_id: "demo-s4", game: "texas_holdem", status: "completed", result_label: "win", updated_at: new Date(Date.now() - 49 * 3_600_000).toISOString(), decision_count: 37 },
-  { session_id: "demo-s5", game: "coup", status: "completed", result_label: "draw", updated_at: new Date(Date.now() - 70 * 3_600_000).toISOString(), decision_count: 12 },
+  { session_id: "demo-s1", game: "texas_holdem", status: "completed", result_label: "win", updated_at: new Date(Date.now() - 2 * 3_600_000).toISOString(), decision_count: 41, player_count: 4, event_count: 164 },
+  { session_id: "demo-s2", game: "coup", status: "completed", result_label: "loss", updated_at: new Date(Date.now() - 7 * 3_600_000).toISOString(), decision_count: 18, player_count: 3, event_count: 57 },
+  { session_id: "demo-s3", game: "liars_dice", status: "completed", result_label: "win", updated_at: new Date(Date.now() - 26 * 3_600_000).toISOString(), decision_count: 22, player_count: 2, event_count: 48 },
+  { session_id: "demo-s4", game: "texas_holdem", status: "completed", result_label: "win", updated_at: new Date(Date.now() - 49 * 3_600_000).toISOString(), decision_count: 37, player_count: 4, event_count: 171 },
+  { session_id: "demo-s5", game: "coup", status: "completed", result_label: "draw", updated_at: new Date(Date.now() - 70 * 3_600_000).toISOString(), decision_count: 12, player_count: 4, event_count: 44 },
+  { session_id: "demo-s6", game: "liars_dice", status: "completed", result_label: "loss", updated_at: new Date(Date.now() - 76 * 3_600_000).toISOString(), decision_count: 19, player_count: 3, event_count: 63 },
+  { session_id: "demo-s7", game: "texas_holdem", status: "completed", result_label: "win", updated_at: new Date(Date.now() - 98 * 3_600_000).toISOString(), decision_count: 44, player_count: 2, event_count: 132 },
+  { session_id: "demo-s8", game: "coup", status: "completed", result_label: "win", updated_at: new Date(Date.now() - 121 * 3_600_000).toISOString(), decision_count: 15, player_count: 3, event_count: 49 },
+  { session_id: "demo-s9", game: "liars_dice", status: "completed", result_label: "win", updated_at: new Date(Date.now() - 144 * 3_600_000).toISOString(), decision_count: 27, player_count: 2, event_count: 57 },
+  { session_id: "demo-s10", game: "texas_holdem", status: "completed", result_label: "loss", updated_at: new Date(Date.now() - 170 * 3_600_000).toISOString(), decision_count: 33, player_count: 4, event_count: 149 },
 ];
 
 function cliResult(json: unknown): CliRunResult {
@@ -127,6 +149,18 @@ export function installDemoBridge(): void {
         stats: { totalGames: 132, wins: 73, losses: 53, draws: 6, winRate: 0.553, rating: 1619, rank: 7, leaderboardEligible: true },
       }),
     getOwnProfileRaw: () => Promise.resolve(RAW_PROFILE as unknown as Record<string, unknown>),
+    getOwnRadar: (game?: string) =>
+      Promise.resolve({
+        enabled: true,
+        board: "community",
+        game,
+        dimensions:
+          game === undefined || game === ""
+            ? { bluff: 72, aggression: 58, execution: 44, survival: 66, insight: 81, versatility: 61 }
+            : { bluff: 64, aggression: 52, execution: null, survival: 70, insight: 77, versatility: null },
+        samples: { bluff: 120, aggression: 300, execution: 24, survival: 40, insight: 90, versatility: 40 },
+        rates: { bluff: 0.41, aggression: 0.33, insight: 0.52 },
+      }),
     getAgentPolicy: () => Promise.resolve(demoPolicy),
     setAgentPolicy: (patch) => {
       demoPolicy = { ...demoPolicy, maxGamesPerDay: patch.maxGamesPerDay };

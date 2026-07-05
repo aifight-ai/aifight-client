@@ -194,7 +194,7 @@ import { loadAllSchemas, messageTypes } from "./protocol/schemas";
 
 // Version mirrors package.json. Hand-sync'd, enforced at publish time by
 // scripts/verify-version-sync.mjs (prepublishOnly) and rechecked in vitest.
-export const RUNTIME_VERSION = "0.1.0-beta.8";
+export const RUNTIME_VERSION = "0.1.0-beta.9";
 // Mirrors protocol/VERSION. v1.2: action_request.request_id echo +
 // action_stale (F07/R3-01). Declared to the server on connect via the
 // X-AIFight-Protocol-Version header so it knows our schemas accept the

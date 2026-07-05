@@ -34,6 +34,10 @@ function baseState(over: Partial<LiarsDiceState> = {}): LiarsDiceState {
     total_dice: 9,
     your_dice: [3, 4, 5, 5],
     your_dice_count: 4,
+    round_bids: [
+      { bidder: "p1", quantity: 3, face: 5 },
+      { bidder: "p0", quantity: 4, face: 5 },
+    ],
     ...over,
   };
 }
@@ -52,22 +56,45 @@ describe("formatLiarsDiceState", () => {
       recentEvents: [],
       yourPlayerId: "p1",
     });
-    expect(out.stateBlock).toContain("Round 2 | Phase: bidding");
-    expect(out.stateBlock).toContain("Total dice in play: 9");
-    expect(out.stateBlock).toContain("Your dice: [3 4 5 5] (count: 4)");
-    expect(out.stateBlock).toContain("Current bid: quantity=4 face=5 by Player 1 (p0)");
+    expect(out.stateBlock).toContain("Liar's Dice — Round 2 | 2 players still in | Phase: bidding");
+    expect(out.stateBlock).toContain("Total dice on the table: 9");
+    expect(out.stateBlock).toContain("You are p1. Your dice: [3 4 5 5] (4 dice)");
+    expect(out.stateBlock).toContain("Dice remaining: p0 5 · p1 (you) 4");
     expect(out.stateBlock).toContain("Current turn: you (p1)");
   });
 
-  it("Current bid: (none) when current_bid is missing", () => {
+  it("renders the round bidding ladder and cross-round log", () => {
     const out = formatLiarsDiceState({
-      publicState: baseState({ current_bid: undefined }),
+      publicState: baseState({
+        round_bids: [
+          { bidder: "p0", quantity: 3, face: 5 },
+          { bidder: "p1", quantity: 3, face: 6 },
+          { bidder: "p0", quantity: 4, face: 5 },
+        ],
+        round_log: ["Round 1: p1 challenged p0's 5×3 — bluff caught; p0 lost a die"],
+      }),
       rules: RULES,
       players: PLAYERS,
       recentEvents: [],
       yourPlayerId: "p1",
     });
-    expect(out.stateBlock).toContain("Current bid: (none — you may bid any opening bid)");
+    expect(out.stateBlock).toContain("This round's bids:");
+    expect(out.stateBlock).toContain("1. p0: 3×5");
+    expect(out.stateBlock).toContain("2. p1 (you): 3×6");
+    expect(out.stateBlock).toContain("3. p0: 4×5   ← current bid");
+    expect(out.stateBlock).toContain("Earlier rounds:");
+    expect(out.stateBlock).toContain("Round 1: p1 challenged p0");
+  });
+
+  it("no bids yet → opening-bid line", () => {
+    const out = formatLiarsDiceState({
+      publicState: baseState({ current_bid: undefined, round_bids: [] }),
+      rules: RULES,
+      players: PLAYERS,
+      recentEvents: [],
+      yourPlayerId: "p1",
+    });
+    expect(out.stateBlock).toContain("No bids yet this round — you make the opening bid.");
   });
 
   it("eliminated player → your_dice undefined falls back to count line", () => {
@@ -78,7 +105,7 @@ describe("formatLiarsDiceState", () => {
       recentEvents: [],
       yourPlayerId: "p1",
     });
-    expect(out.stateBlock).toContain("Your dice: (eliminated or not visible) (count: 0)");
+    expect(out.stateBlock).toContain("You are p1. Your dice: (eliminated or not visible) (count: 0)");
   });
 
   it("recentEventsBlock renders 6 event templates", () => {
@@ -165,12 +192,12 @@ describe("formatLiarsDiceState", () => {
     expect(out.stateBlock).not.toContain("ones are NOT wild");
   });
 
-  it("Opponents render with PlayerInfo.data shape guard", () => {
+  it("dice-remaining line marks self and guards missing/bad dice_count", () => {
     const players: PlayerInfo[] = [
       { id: "p0", name: "Player 1", status: "active", data: { dice_count: 5 } }, // (a) full
-      { id: "p1", name: "Player 2", status: "active" }, // (we are this player; excluded)
+      { id: "p1", name: "Player 2", status: "active" }, // (self; no data)
       { id: "p2", name: "Player 3", status: "active" }, // (b) data missing
-      { id: "p3", name: "Player 4", status: "eliminated", data: { dice_count: "bad" } as unknown as Record<string, unknown> }, // (c) wrong type
+      { id: "p3", name: "Player 4", status: "eliminated", data: { dice_count: "bad" } as unknown as Record<string, unknown> }, // (c) wrong type + out
     ];
     const out = formatLiarsDiceState({
       publicState: baseState(),
@@ -179,12 +206,10 @@ describe("formatLiarsDiceState", () => {
       recentEvents: [],
       yourPlayerId: "p1",
     });
-    expect(out.stateBlock).toContain("Player 1 (p0): status=active | dice_count=5");
-    expect(out.stateBlock).not.toContain("Player 2 (p1):"); // self excluded
-    expect(out.stateBlock).toContain("Player 3 (p2): status=active");
-    expect(out.stateBlock).not.toContain("Player 3 (p2): status=active |");
-    expect(out.stateBlock).toContain("Player 4 (p3): status=eliminated");
-    expect(out.stateBlock).not.toContain("dice_count=bad");
+    expect(out.stateBlock).toContain("p0 5");
+    expect(out.stateBlock).toContain("p1 (you)"); // self marked
+    expect(out.stateBlock).toContain("p3 ELIMINATED");
+    expect(out.stateBlock).not.toContain("bad"); // wrong-type dice_count never leaks
   });
 
   it("empty recentEvents → placeholder string", () => {
@@ -218,6 +243,6 @@ describe("formatLiarsDiceState", () => {
       recentEvents: [],
       yourPlayerId: "p1",
     });
-    expect(out.stateBlock).not.toContain("Total dice in play:");
+    expect(out.stateBlock).not.toContain("Total dice on the table:");
   });
 });

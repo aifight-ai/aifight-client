@@ -20,6 +20,13 @@ export interface FlagSpec {
   readonly type: "string" | "number" | "boolean";
   readonly required?: boolean;
   readonly default?: FlagValue;
+  /**
+   * When true, repeated occurrences of this string flag accumulate into a
+   * single comma-joined value instead of last-wins. Used by `--feature`
+   * (`--feature a=on --feature b=off` → "a=on,b=off"). The consuming handler
+   * splits on comma. Only meaningful for `type: "string"`.
+   */
+  readonly repeatable?: boolean;
 }
 
 export interface ParsedArgv {
@@ -125,7 +132,14 @@ export function parseArgs(
         continue;
       }
 
-      flags[name] = value;
+      // Repeatable string flags accumulate (comma-joined) instead of last-wins,
+      // so `--feature a=on --feature b=off` yields "a=on,b=off". Non-repeatable
+      // flags keep last-wins.
+      if (s.repeatable && typeof flags[name] === "string") {
+        flags[name] = `${flags[name] as string},${value}`;
+      } else {
+        flags[name] = value;
+      }
       continue;
     }
 
