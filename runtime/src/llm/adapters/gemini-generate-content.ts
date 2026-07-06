@@ -24,6 +24,8 @@ import type {
   CanonicalReasoningConfig,
 } from "./types.js";
 import { AdapterError } from "./types.js";
+import { looksLikeTokenLimit, computeTruncated } from "./token-limit.js";
+import { parseRetryAfterMs, isContentFilterReason } from "./error-class.js";
 
 const PROTOCOL = "gemini_generate_content" as const;
 const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
@@ -140,7 +142,7 @@ async function generateDecision(
       httpStatusToKind(response.status),
       PROTOCOL,
       `Gemini returned HTTP ${response.status}`,
-      { cause: rawBody, retryable: isRetryableStatus(response.status) },
+      { cause: rawBody, retryable: isRetryableStatus(response.status), tokenLimit: looksLikeTokenLimit(rawBody), status: response.status, retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")) },
     );
   }
 
@@ -152,17 +154,68 @@ async function generateDecision(
     throw new AdapterError("invalid_response", PROTOCOL, "response body is not valid JSON", { cause });
   }
 
+  const stopReason = extractGeminiFinish(parsed);
+  const block = geminiBlockReason(parsed);
+  if (block !== null) {
+    throw new AdapterError("content_filter", PROTOCOL, `Gemini blocked the response (${block})`);
+  }
   const text = extractText(parsed);
   if (text === null) {
     throw new AdapterError(
       "invalid_response",
       PROTOCOL,
       "response missing candidates[0].content.parts[].text",
+      { tokenLimit: stopReason === "max_tokens" },
     );
   }
 
   const usage = extractUsage(parsed);
-  return { text, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, latencyMs, raw: parsed };
+  const truncated = computeTruncated(stopReason, text, undefined);
+  return {
+    text,
+    ...(stopReason ? { stopReason } : {}),
+    ...(truncated ? { truncated: true } : {}),
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    latencyMs,
+    raw: parsed,
+  };
+}
+
+/** Content-filter signal on a Gemini payload: a top-level
+ *  promptFeedback.blockReason (any value = blocked prompt), or a safety-class
+ *  candidates[0].finishReason. Returns the reason string, else null. */
+function geminiBlockReason(parsed: unknown): string | null {
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const obj = parsed as Record<string, unknown>;
+  const pf = obj["promptFeedback"];
+  if (typeof pf === "object" && pf !== null) {
+    const br = (pf as Record<string, unknown>)["blockReason"];
+    if (typeof br === "string" && br !== "") return br;
+  }
+  const candidates = obj["candidates"];
+  if (Array.isArray(candidates) && candidates.length > 0) {
+    const first = candidates[0];
+    if (typeof first === "object" && first !== null) {
+      const fr = (first as Record<string, unknown>)["finishReason"];
+      if (isContentFilterReason(fr)) return typeof fr === "string" ? fr : "SAFETY";
+    }
+  }
+  return null;
+}
+
+/** Gemini candidates[0].finishReason → normalized stopReason. */
+function extractGeminiFinish(parsed: unknown): "stop" | "max_tokens" | "other" | undefined {
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const candidates = (parsed as Record<string, unknown>)["candidates"];
+  if (!Array.isArray(candidates) || candidates.length === 0) return undefined;
+  const first = candidates[0];
+  if (typeof first !== "object" || first === null) return undefined;
+  const fr = (first as Record<string, unknown>)["finishReason"];
+  if (typeof fr !== "string" || fr === "") return undefined;
+  if (fr === "MAX_TOKENS") return "max_tokens";
+  if (fr === "STOP") return "stop";
+  return "other";
 }
 
 function estimateUsage(output: DecisionOutput, profile: LLMProfile): UsageRecord {

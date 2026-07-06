@@ -75,6 +75,19 @@ export interface DecisionInput {
 export interface DecisionOutput {
   /** Raw text response from the model */
   readonly text: string;
+  /**
+   * Normalized stop signal. Only set when positively identified from the wire
+   * response; ABSENT (undefined) when the provider omitted the field (e.g. some
+   * OpenAI-compatible endpoints). Never guessed.
+   */
+  readonly stopReason?: "stop" | "max_tokens" | "other";
+  /**
+   * True when the output was cut short by the token limit — either
+   * stopReason === "max_tokens", or empty text while reasoning tokens were
+   * consumed (thinking ate the entire budget). Drives the "raise max tokens"
+   * recommendation surfaced in the app cockpit and CLI.
+   */
+  readonly truncated?: boolean;
   /** Input tokens used */
   readonly inputTokens?: number;
   /** Output tokens used (includes reasoning tokens for some providers) */
@@ -118,6 +131,8 @@ export interface ProbeResult {
   readonly protocol: string;
   /** Whether the model returned valid JSON when asked */
   readonly jsonValid?: boolean;
+  /** Whether the probe response was cut short by the token limit. */
+  readonly truncated?: boolean;
 }
 
 // ─── Validation result ──────────────────────────────────────────────
@@ -202,6 +217,7 @@ export type AdapterErrorKind =
   | "invalid_response"  // response not parseable
   | "unsupported"       // feature not supported by this adapter
   | "budget_exceeded"   // cost cap hit
+  | "content_filter"    // model's own output was blocked by a safety filter
   | "unknown";
 
 export class AdapterError extends Error {
@@ -209,18 +225,34 @@ export class AdapterError extends Error {
   readonly kind: AdapterErrorKind;
   readonly protocol: string;
   readonly retryable: boolean;
+  /**
+   * True when a 4xx (usually 400) was positively identified as a max_tokens /
+   * reasoning-budget / context-limit problem via response-body heuristics.
+   * Kept as a flag rather than a new AdapterErrorKind so existing retryable /
+   * switch logic is untouched. Drives the same "raise max tokens" surfacing as
+   * DecisionOutput.truncated.
+   */
+  readonly tokenLimit: boolean;
+  /** Numeric HTTP status when this came from an HTTP response (else undefined).
+   *  Kept for messaging/telemetry — the retry decision uses `kind`, not this. */
+  readonly status?: number;
+  /** Provider-advised wait before retrying, in ms, parsed from `Retry-After`. */
+  readonly retryAfterMs?: number;
   override readonly cause: unknown;
 
   constructor(
     kind: AdapterErrorKind,
     protocol: string,
     message: string,
-    opts?: { retryable?: boolean; cause?: unknown },
+    opts?: { retryable?: boolean; cause?: unknown; tokenLimit?: boolean; status?: number; retryAfterMs?: number },
   ) {
     super(message);
     this.kind = kind;
     this.protocol = protocol;
     this.retryable = opts?.retryable ?? isRetryableKind(kind);
+    this.tokenLimit = opts?.tokenLimit ?? false;
+    if (opts?.status !== undefined) this.status = opts.status;
+    if (opts?.retryAfterMs !== undefined) this.retryAfterMs = opts.retryAfterMs;
     this.cause = opts?.cause;
   }
 }

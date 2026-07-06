@@ -21,6 +21,8 @@ import type {
   CanonicalReasoningConfig,
 } from "./types.js";
 import { AdapterError } from "./types.js";
+import { looksLikeTokenLimit, computeTruncated } from "./token-limit.js";
+import { parseRetryAfterMs, isContentFilterReason } from "./error-class.js";
 
 const PROTOCOL = "anthropic_messages" as const;
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -229,7 +231,7 @@ async function callAPI(
       kind,
       PROTOCOL,
       `Anthropic API error ${response.status}: ${text}`,
-      { retryable },
+      { retryable, tokenLimit: looksLikeTokenLimit(text), status: response.status, retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")) },
     );
   }
 
@@ -256,10 +258,19 @@ function httpStatusToKind(status: number): import("./types.js").AdapterErrorKind
 
 // ─── Response parser ─────────────────────────────────────────────────
 
+/** Anthropic stop_reason → normalized stopReason. null/absent → undefined. */
+function normalizeAnthropicStop(reason: string | null): "stop" | "max_tokens" | "other" | undefined {
+  if (reason === null || reason === undefined) return undefined;
+  if (reason === "max_tokens") return "max_tokens";
+  if (reason === "end_turn" || reason === "stop_sequence") return "stop";
+  return "other";
+}
+
 function parseResponse(raw: AnthropicResponse): {
   text: string;
   reasoningSummary?: string;
   reasoningTokens?: number;
+  stopReason?: "stop" | "max_tokens" | "other";
 } {
   let text = "";
   let reasoningSummary: string | undefined;
@@ -275,15 +286,25 @@ function parseResponse(raw: AnthropicResponse): {
     }
   }
 
+  const stopReason = normalizeAnthropicStop(raw.stop_reason);
+
+  if (isContentFilterReason(raw.stop_reason)) {
+    throw new AdapterError("content_filter", PROTOCOL, "Anthropic declined the request (stop_reason: refusal)");
+  }
+
   if (!text) {
+    // Empty text almost always means extended thinking consumed the whole
+    // budget (stop_reason "max_tokens"). Carry that as tokenLimit so the runtime
+    // classifies it as a truncation, not a mystery invalid_response.
     throw new AdapterError(
       "invalid_response",
       PROTOCOL,
       "No text block found in Anthropic response",
+      { tokenLimit: stopReason === "max_tokens" },
     );
   }
 
-  return { text: text.trim(), reasoningSummary };
+  return { text: text.trim(), reasoningSummary, ...(stopReason ? { stopReason } : {}) };
 }
 
 // ─── Approximate pricing (USD per 1M tokens, as of 2025-Q3) ─────────
@@ -407,16 +428,19 @@ export function createAnthropicMessagesAdapter(): LLMAdapter {
       const raw = await callAPI(url, profile.apiKey, body, input.signal);
       const latencyMs = Date.now() - start;
 
-      const { text, reasoningSummary } = parseResponse(raw);
+      const { text, reasoningSummary, stopReason } = parseResponse(raw);
 
       const usage = raw.usage ?? {};
       const inputTokens = usage.input_tokens;
       const outputTokens = usage.output_tokens;
       const cachedTokens =
         (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) || undefined;
+      const truncated = computeTruncated(stopReason, text, undefined);
 
       return {
         text,
+        ...(stopReason ? { stopReason } : {}),
+        ...(truncated ? { truncated: true } : {}),
         inputTokens,
         outputTokens,
         cachedTokens,

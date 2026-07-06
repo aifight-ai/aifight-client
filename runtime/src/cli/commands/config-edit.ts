@@ -28,7 +28,7 @@ import {
   type ReasoningEffort,
   type SecretRef,
 } from "../../profile/config-schema.js";
-import { resolveModelCapabilities } from "../../llm/capabilities/validate-capabilities.js";
+import { resolveModelCapabilities, recommendMaxTokens } from "../../llm/capabilities/validate-capabilities.js";
 import { storeSecretFile, describeRef, checkSecretStatus } from "../../profile/secret-ref.js";
 import { resolveAndProbe } from "./config-probe.js";
 import { ONBOARD_PROVIDERS } from "./onboard-llm.js";
@@ -98,16 +98,18 @@ export async function runConfigAdd(args: HandlerArgs, env: HandlerEnv): Promise<
   const apiKeyRef = await resolveKeyRef({ slug, profileId, args, env });
 
   // ── settings (D5 defaults + capability-aware validation) ──
-  const settings = resolveProfileSettings(protocol, model, args.flags, undefined);
+  const resolvedSettings = resolveProfileSettings(protocol, model, args.flags, undefined);
+  // ── D4: reconcile maxTokens with reasoning effort ──
+  const rec = applyEffortTokenRecommendation(resolvedSettings, protocol, model, numberFlag(args.flags, "max-tokens"));
 
   const displayName = stringFlag(args.flags, "display-name") ?? defaultDisplayName(protocol);
-  const profile = buildLLMProfile({ displayName, protocol, ...(baseURL ? { baseURL } : {}), apiKeyRef, model, settings });
+  const profile = buildLLMProfile({ displayName, protocol, ...(baseURL ? { baseURL } : {}), apiKeyRef, model, settings: rec.settings });
 
   // ── merge + D8 active selection ──
   const setActive = boolFlag(args.flags, "use") || (await shouldBecomeActive(existing));
   const config = mergeProfile(existing, profileId, profile, setActive);
 
-  return finishEdit({ slug, profileId, config, action: "add", setActive, args, env });
+  return finishEdit({ slug, profileId, config, action: "add", setActive, args, env, ...(rec.note ? { notes: [rec.note] } : {}) });
 }
 
 // ─── update ──────────────────────────────────────────────────────────
@@ -172,16 +174,18 @@ export async function runConfigUpdate(args: HandlerArgs, env: HandlerEnv): Promi
   // settings: start from the current profile, override with passed flags.
   const base = settingsFromProfile(current);
   const settings = resolveProfileSettings(protocol, newModel, args.flags, base);
+  // D4: reconcile maxTokens with reasoning effort (explicit iff --max-tokens this call).
+  const rec = applyEffortTokenRecommendation(settings, protocol, newModel, numberFlag(args.flags, "max-tokens"));
 
   const displayName = stringFlag(args.flags, "display-name") ?? current.displayName ?? defaultDisplayName(protocol);
-  const profile = buildLLMProfile({ displayName, protocol, ...(newBaseURL ? { baseURL: newBaseURL } : {}), apiKeyRef, model: newModel, settings });
+  const profile = buildLLMProfile({ displayName, protocol, ...(newBaseURL ? { baseURL: newBaseURL } : {}), apiKeyRef, model: newModel, settings: rec.settings });
 
   const setActive = boolFlag(args.flags, "use");
   const config = mergeProfile(existing, profileId, profile, setActive);
 
   // D7: re-test only when something connectivity-relevant changed.
   const changed = keySourceGiven || newModel !== current.model || newBaseURL !== current.baseURL;
-  return finishEdit({ slug, profileId, config, action: "update", setActive, args, env, skipTest: !changed });
+  return finishEdit({ slug, profileId, config, action: "update", setActive, args, env, skipTest: !changed, ...(rec.note ? { notes: [rec.note] } : {}) });
 }
 
 /** Extract the editable settings from a stored profile (for update's base). */
@@ -481,6 +485,42 @@ export function resolveProfileSettings(
   };
 }
 
+/**
+ * D3/D4: after settings are resolved, reconcile maxTokens with the chosen
+ * reasoning effort. When effort is high/xhigh/max and maxTokens is below the
+ * recommended value (the model ceiling), either auto-raise it (no explicit
+ * --max-tokens was given) or keep the user's explicit value and warn. Never
+ * silently truncates. Returns possibly-adjusted settings + an optional note.
+ */
+export function applyEffortTokenRecommendation(
+  settings: ProfileBuildSettings,
+  protocol: Protocol,
+  model: string,
+  explicitMaxTokens: number | undefined,
+): { settings: ProfileBuildSettings; note?: string } {
+  const rec = recommendMaxTokens({
+    protocol,
+    model,
+    ...(settings.effort ? { effort: settings.effort } : {}),
+    thinkingEnabled: settings.thinkingEnabled,
+  });
+  if (!rec || settings.maxTokens >= rec.recommended) return { settings };
+
+  const tier = settings.effort ?? "high";
+  if (explicitMaxTokens === undefined) {
+    // No explicit --max-tokens: auto-raise (you pay for tokens used, not the cap).
+    return {
+      settings: { ...settings, maxTokens: rec.recommended },
+      note: `max tokens auto-raised to ${rec.recommended} for ${tier} reasoning effort${rec.ceilingKnown ? " (the model's ceiling)" : ""} — you pay for tokens used, not the cap. Override with --max-tokens.`,
+    };
+  }
+  // Explicit value below the recommendation: respect it, but warn.
+  return {
+    settings,
+    note: `warning: max tokens ${settings.maxTokens} is below the recommended ${rec.recommended} for ${tier} reasoning effort on ${model} — the model may be truncated mid-thought. Consider --max-tokens ${rec.recommended}.`,
+  };
+}
+
 /** Merge a profile into a config (creating a base config if none exists). */
 export function mergeProfile(
   existing: LLMConfig | undefined,
@@ -527,6 +567,8 @@ export async function finishEdit(input: {
   /** When true, skip the auto-test even without --no-test (update: nothing
    *  connectivity-relevant changed). */
   skipTest?: boolean;
+  /** Advisory notes (e.g. the D4 maxTokens auto-raise / warning) to surface. */
+  notes?: readonly string[];
 }): Promise<number> {
   const { slug, profileId, config, action, args, env } = input;
   await writeValidatedConfig(slug, config);
@@ -534,6 +576,7 @@ export async function finishEdit(input: {
   const profile = config.profiles[profileId]!;
   const active = config.activeProfile === profileId;
   const noTest = boolFlag(args.flags, "no-test") || input.skipTest === true;
+  const notes = input.notes ?? [];
 
   if (!args.jsonMode) {
     env.stdout(
@@ -550,6 +593,7 @@ export async function finishEdit(input: {
         `  note    : "${profile.model}" isn't in the built-in model list yet — that's fine, the ${profile.protocol} protocol still runs it. Its reasoning options just can't be pre-checked; the test confirms it works.\n`,
       );
     }
+    for (const n of notes) env.stdout(`  note    : ${n}\n`);
   }
 
   if (noTest) {
@@ -562,6 +606,7 @@ export async function finishEdit(input: {
           profile: profileId,
           activeProfile: config.activeProfile,
           test: null,
+          ...(notes.length > 0 ? { notes } : {}),
         }) + "\n",
       );
     } else {
@@ -595,6 +640,7 @@ export async function finishEdit(input: {
         profile: profileId,
         activeProfile: config.activeProfile,
         test,
+        ...(notes.length > 0 ? { notes } : {}),
       }) + "\n",
     );
     return outcome.ok && outcome.result.success ? 0 : 1;

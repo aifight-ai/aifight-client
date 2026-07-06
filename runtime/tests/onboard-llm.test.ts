@@ -209,6 +209,35 @@ describe("onboardDirectLLM", () => {
     expect(active.request.temperature).toBeNull(); // never defaulted
   });
 
+  it("offers to raise max tokens when the user explicitly picks max effort (D4)", async () => {
+    const { io } = makeIO({
+      lines: ["1", "", "", "max"], // provider, baseURL, model(default sonnet), effort = max (explicit)
+      hidden: ["sk-ant-xyz"],
+      yesno: [true, true, false], // thinking on, raise-to-ceiling YES, advanced no
+      models: null,
+      probe: [true],
+    });
+    const { env } = captureEnv();
+    const result = await onboardDirectLLM({ slug: SLUG, env, io });
+    expect(result).toBe("configured");
+    const active = readConfig().profiles[readConfig().activeProfile];
+    expect(active.thinking.effort).toBe("max");
+    expect(active.request.maxTokens).toBe(64000); // raised to claude-sonnet-4-6 ceiling
+  });
+
+  it("does NOT nag about max tokens when the effort is left at default", async () => {
+    const { io } = makeIO({
+      lines: ["1", "", "", ""], // effort = Enter (default) → no raise prompt
+      hidden: ["sk-ant-xyz"],
+      yesno: [true, false], // thinking on, advanced no (only two yes/no — no raise prompt)
+      models: null,
+      probe: [true],
+    });
+    const { env } = captureEnv();
+    await onboardDirectLLM({ slug: SLUG, env, io });
+    expect(readConfig().profiles[readConfig().activeProfile].request.maxTokens).toBe(32000);
+  });
+
   it("skips the thinking prompt for a non-thinking provider (OpenAI-compatible)", async () => {
     const { io } = makeIO({
       // provider 3 (compat): baseURL required, model; no thinking/effort prompts.

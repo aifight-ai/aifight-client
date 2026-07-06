@@ -12,13 +12,14 @@
 // Reads/writes the SAME agent config.json the CLI uses (config:* IPC); pasted
 // keys → 0600 file in main. Fully bilingual (zh/en).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RotateCw, KeyRound, Check, X, Plus, Trash2, Zap, Star } from "lucide-react";
 
 import {
   cliRun,
   getLLMConfig,
+  llmRecommendMaxTokens,
   saveLLMProfile,
   setLLMKey,
   clearLLMKey,
@@ -432,6 +433,42 @@ function ProfileForm({ form, setForm, onSave, onCancel, saving, t }: {
   const fdef = familyDef(form.family);
   const efforts = effortOptionsFor(form.family, form.model);
   const hint = detectHint(t, form.family, form.model);
+  const [tokenHint, setTokenHint] = useState<string | null>(null);
+  // Only the LATEST recommendation request may write back. The recommend call is
+  // async, and rapid model-field typing fires many — an earlier one resolving
+  // last must not clobber newer input (or a newer model's maxTokens).
+  const recSeq = useRef(0);
+  // Always-fresh form, so the async recommend callback writes back onto LIVE
+  // state (incl. the model the synchronous up() just set), never a stale closure.
+  const formRef = useRef(form);
+  formRef.current = form;
+
+  // D4: when the user changes reasoning effort (or turns thinking on, or picks a
+  // higher-ceiling model), a high effort can need up to the model's ceiling of
+  // headroom. If the current maxTokens is below the recommendation, fill in the
+  // recommended value (the user can still edit it) and show a hint. Only raises,
+  // never lowers; only on an explicit change, so it never nags on open.
+  const maybeRaiseTokens = (changed: Partial<Pick<FormState, "effort" | "thinkingEnabled" | "model" | "family">>) => {
+    const next = { family: form.family, model: form.model, effort: form.effort, thinkingEnabled: form.thinkingEnabled, ...changed };
+    const seq = ++recSeq.current;
+    void llmRecommendMaxTokens({
+      family: next.family,
+      model: next.model,
+      ...(next.effort ? { effort: next.effort } : {}),
+      thinkingEnabled: next.thinkingEnabled,
+    }).then((rec) => {
+      if (seq !== recSeq.current) return; // superseded by a newer change — drop it
+      const live = formRef.current;
+      const cur = Number(live.maxTokens) || 0;
+      if (rec && cur < rec.recommended) {
+        // Spread LIVE form (has the model up() just set) and only fill maxTokens.
+        setForm({ ...live, maxTokens: String(rec.recommended) });
+        setTokenHint(`${next.effort || "high"} effort works best with max tokens ≥ ${rec.recommended}${rec.ceilingKnown ? " (this model's max)" : ""} — filled in for you; edit if you like.`);
+      } else {
+        setTokenHint(null);
+      }
+    });
+  };
   return (
     <div className="space-y-3 rounded-xl border border-[var(--accent)]/40 bg-[var(--surface)] p-5">
       <div className="text-[14px] font-medium text-[var(--text)]">{form.isNew ? t("models.addModel") : t("models.edit")}</div>
@@ -453,7 +490,7 @@ function ProfileForm({ form, setForm, onSave, onCancel, saving, t }: {
       </Row>
       <Row label={t("models.model")}>
         <>
-          <input className={inputCls} list="model-suggest" value={form.model} onChange={(e) => up({ model: e.target.value })} placeholder={fdef.models[0]} />
+          <input className={inputCls} list="model-suggest" value={form.model} onChange={(e) => { up({ model: e.target.value }); maybeRaiseTokens({ model: e.target.value }); }} placeholder={fdef.models[0]} />
           <datalist id="model-suggest">{fdef.models.map((m) => <option key={m} value={m} />)}</datalist>
         </>
       </Row>
@@ -474,9 +511,10 @@ function ProfileForm({ form, setForm, onSave, onCancel, saving, t }: {
         <div className="flex flex-wrap items-center gap-2">
           <input className={inputCls + " max-w-[110px]"} value={form.temperature} onChange={(e) => up({ temperature: e.target.value })} placeholder={t("models.temperaturePh")} />
           <span className="text-[11px] text-[var(--text-faint)]">temp</span>
-          <input className={inputCls + " max-w-[120px]"} value={form.maxTokens} onChange={(e) => up({ maxTokens: e.target.value })} placeholder="16000" />
+          <input className={inputCls + " max-w-[120px]"} value={form.maxTokens} onChange={(e) => { setTokenHint(null); up({ maxTokens: e.target.value }); }} placeholder="32000" />
           <span className="text-[11px] text-[var(--text-faint)]">maxTokens</span>
         </div>
+        {tokenHint && <div className="mt-1 text-[11px] leading-snug text-[var(--accent)]">{tokenHint}</div>}
       </Row>
 
       {form.family === "openai_chat" && (
@@ -495,11 +533,11 @@ function ProfileForm({ form, setForm, onSave, onCancel, saving, t }: {
       <Row label={t("models.thinking")}>
         <div className="flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-1.5 text-[13px] text-[var(--text)]">
-            <input type="checkbox" checked={form.thinkingEnabled} onChange={(e) => up({ thinkingEnabled: e.target.checked })} />
+            <input type="checkbox" checked={form.thinkingEnabled} onChange={(e) => { const thinkingEnabled = e.target.checked; up({ thinkingEnabled }); maybeRaiseTokens({ thinkingEnabled }); }} />
             {t("models.thinkingOn")}
           </label>
           {form.thinkingEnabled && efforts.length > 0 && (
-            <select className={inputCls + " max-w-[160px]"} value={form.effort} onChange={(e) => up({ effort: e.target.value })}>
+            <select className={inputCls + " max-w-[160px]"} value={form.effort} onChange={(e) => { const effort = e.target.value; up({ effort }); maybeRaiseTokens({ effort }); }}>
               <option value="">{t("models.effortDefault")}</option>
               {efforts.map((eff) => <option key={eff} value={eff}>{eff}</option>)}
             </select>

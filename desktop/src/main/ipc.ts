@@ -18,6 +18,7 @@ import {
   clearKey,
   deleteProfile,
   getConfig,
+  recommendMaxTokensForFamily,
   saveProfile,
   setActive,
   setKey,
@@ -174,6 +175,7 @@ export function registerBridgeIpc(host: BridgeHost): void {
   // config.json the CLI uses; setKey takes the raw key over IPC and stores it
   // to a 0600 file (never argv, never returned to the renderer).
   ipcMain.handle(IPC.configGet, () => getConfig());
+  ipcMain.handle(IPC.configRecommendMaxTokens, (_e, input: unknown) => recommendMaxTokensForFamily(input as never));
   ipcMain.handle(IPC.configSaveProfile, (_e, input: unknown) => saveProfile("default", input as never));
   ipcMain.handle(IPC.configSetKey, (_e, profileId: unknown, apiKey: unknown) => setKey("default", profileId, apiKey));
   ipcMain.handle(IPC.configClearKey, (_e, profileId: unknown) => clearKey("default", profileId));

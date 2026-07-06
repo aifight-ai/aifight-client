@@ -21,6 +21,8 @@ import type { MatchDetail, MatchEvent } from "@aifight/api-types";
 import type { Game, OwnerPrivate } from "../liveMatch";
 import { ReasoningTracePanel, type TraceBadge } from "./ReasoningTracePanel";
 import { OwnHandStrip } from "./OwnHandStrip";
+import { TruncationBanner } from "./TruncationBanner";
+import { DecisionErrorBanner } from "./DecisionErrorBanner";
 import type { BridgeDecisionTrace } from "../../shared/ipc";
 
 export interface CockpitPanelProps {
@@ -120,6 +122,13 @@ export function CockpitPanel(props: CockpitPanelProps) {
           </span>
         </div>
       </div>
+
+      {/* Token-budget guard: warn (live only) when decisions were truncated. */}
+      <TruncationBanner traces={traces} isLive={isLive} />
+
+      {/* Error-class guard: warn (live only) when decisions fell back on a fatal
+          API error (auth / quota / config / content_filter). */}
+      <DecisionErrorBanner traces={traces} isLive={isLive} />
 
       {/* Your agent's own private view — the only secrets the cockpit reveals. */}
       <OwnHandStrip game={game} owner={ownerPrivate} />

@@ -67,7 +67,8 @@ function TraceRow({ trace }: { trace: BridgeDecisionTrace }) {
         <div className="flex items-start gap-2 px-1 text-[11px] text-red-400">
           <AlertTriangle size={13} className="mt-0.5 shrink-0" />
           <span>
-            {t("cockpit.runtimeFailed")} #{trace.attempt}: {trace.error}
+            {t("cockpit.runtimeFailed")} #{trace.attempt}
+            {trace.errorClass ? ` (${trace.errorClass})` : ""}: {trace.error}
           </span>
         </div>
       );

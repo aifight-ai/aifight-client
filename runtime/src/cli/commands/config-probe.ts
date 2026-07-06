@@ -75,6 +75,7 @@ export async function faithfulProbe(
         latencyMs: output.latencyMs ?? Date.now() - t0,
         model: profile.model,
         protocol: profile.protocol,
+        truncated: true,
         error:
           "the model returned no text — its token budget was likely spent on reasoning. Raise max tokens or lower the reasoning effort, then test again.",
       };
@@ -92,6 +93,7 @@ export async function faithfulProbe(
       model: profile.model,
       protocol: profile.protocol,
       jsonValid,
+      ...(output.truncated ? { truncated: true } : {}),
     };
   } catch (err) {
     return {
@@ -99,6 +101,7 @@ export async function faithfulProbe(
       latencyMs: Date.now() - t0,
       model: profile.model,
       protocol: profile.protocol,
+      ...(err instanceof Object && (err as { tokenLimit?: unknown }).tokenLimit === true ? { truncated: true } : {}),
       error: err instanceof Error ? err.message : String(err),
     };
   }
@@ -244,6 +247,7 @@ export async function runConfigProbe(
         success: probeResult.success,
         latencyMs: probeResult.latencyMs,
         jsonValid: probeResult.jsonValid ?? null,
+        truncated: probeResult.truncated ?? false,
         error: probeResult.error ?? null,
       }) + "\n",
     );
@@ -258,6 +262,9 @@ export async function runConfigProbe(
     }
     env.stdout(`  model       : ${probeResult.model}\n`);
     env.stdout(`  protocol    : ${probeResult.protocol}\n`);
+    if (probeResult.truncated) {
+      env.stdout(`  ⚠ truncated : the reply hit the max_tokens cap — raise it with \`aifight config update <profile> --max-tokens <higher>\`.\n`);
+    }
     env.stdout("\n");
   } else {
     env.stdout(`  result      : FAILED\n`);

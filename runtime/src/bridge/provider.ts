@@ -13,6 +13,7 @@ import { parseLiarsDiceAction } from "../games/liars_dice/action-parser";
 import { fallbackLiarsDice } from "../games/liars_dice/fallback";
 import { parseTexasHoldemAction } from "../games/texas_holdem/action-parser";
 import { fallbackTexasHoldem } from "../games/texas_holdem/fallback";
+import { classifyDecisionError, type DecisionErrorClass } from "../llm/adapters/error-class.js";
 
 export interface BridgeRuntimeDecisionRequest {
   readonly game: GameType;
@@ -57,6 +58,14 @@ export type BridgeRuntimeDecideOutput = string | LegalAction | BridgeRuntimeDeci
 export interface BridgeRuntimeDecisionResult {
   readonly raw: string | LegalAction;
   readonly usage?: BridgeRuntimeDecisionUsage;
+  /** Normalized stop signal from the adapter (token-budget guard). */
+  readonly stopReason?: "stop" | "max_tokens" | "other";
+  /** True when the model output was cut short by the token limit. */
+  readonly truncated?: boolean;
+  /** The profile that produced this decision (for the "raise max tokens" hint). */
+  readonly profileId?: string;
+  /** Set when the provider auto-retried this decision at a higher maxTokens. */
+  readonly selfHealed?: { readonly from: number; readonly to: number };
 }
 
 export interface BridgeRuntimeDecisionUsage {
@@ -82,10 +91,21 @@ export interface BridgeDecisionUsageEvent {
 function unwrapDecideOutput(out: BridgeRuntimeDecideOutput): {
   raw: string | LegalAction;
   usage?: BridgeRuntimeDecisionUsage;
+  stopReason?: "stop" | "max_tokens" | "other";
+  truncated?: boolean;
+  profileId?: string;
+  selfHealed?: { from: number; to: number };
 } {
   if (typeof out === "object" && out !== null && "raw" in out) {
     const result = out as BridgeRuntimeDecisionResult;
-    return { raw: result.raw, ...(result.usage !== undefined ? { usage: result.usage } : {}) };
+    return {
+      raw: result.raw,
+      ...(result.usage !== undefined ? { usage: result.usage } : {}),
+      ...(result.stopReason !== undefined ? { stopReason: result.stopReason } : {}),
+      ...(result.truncated ? { truncated: true } : {}),
+      ...(result.profileId !== undefined ? { profileId: result.profileId } : {}),
+      ...(result.selfHealed !== undefined ? { selfHealed: result.selfHealed } : {}),
+    };
   }
   return { raw: out as string | LegalAction };
 }
@@ -157,12 +177,26 @@ export type BridgeDecisionTrace =
       readonly matchId: string;
       readonly attempt: number;
       readonly raw: RuntimeRawTrace;
+      /** True when the model output was cut short by the token limit. */
+      readonly truncated?: boolean;
+      /** Profile that produced this decision (for the "raise max tokens" hint). */
+      readonly profileId?: string;
+      /** Set when the provider auto-raised maxTokens and retried this decision. */
+      readonly selfHealed?: { readonly from: number; readonly to: number };
     }
   | {
       readonly type: "runtime_failure";
       readonly matchId: string;
       readonly attempt: number;
       readonly error: string;
+      /** True when the failure was a max_tokens / reasoning-budget 4xx. */
+      readonly tokenLimit?: boolean;
+      /** Profile that failed (so the "raise max tokens" fix targets it, not the
+       *  active profile — they differ under per-game routing). */
+      readonly profileId?: string;
+      /** Coarse classification of the failure (auth / rate_limit / server / …)
+       *  so the CLI and cockpit can show an actionable reminder. */
+      readonly errorClass?: DecisionErrorClass;
     }
   | {
       readonly type: "strategy_error";
@@ -224,6 +258,13 @@ export interface BuildBridgeDecisionProviderOptions {
    * own key, so it is clamped to [0, 2]. Default 1.
    */
   readonly illegalRetryCount?: number;
+  /**
+   * Extra attempts for a TRANSIENT API failure (rate_limit / server / timeout /
+   * network) before falling back, each after a budget-bounded backoff. Only
+   * retryable classes consume these — auth / config / quota / content_filter
+   * fall back immediately. Clamped to [0, 4]. Default 2.
+   */
+  readonly transientRetryCount?: number;
   /** Called once per model call that reported token usage (§7A local stats). */
   readonly onUsage?: (event: BridgeDecisionUsageEvent) => void;
 }
@@ -237,6 +278,40 @@ const MIN_ILLEGAL_RETRY_BUDGET_MS = 10_000;
 function clampIllegalRetryCount(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value)) return 1;
   return Math.max(0, Math.min(2, Math.trunc(value)));
+}
+
+function clampTransientRetryCount(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 2;
+  return Math.max(0, Math.min(4, Math.trunc(value)));
+}
+
+// Transient-retry backoff: exponential with full jitter, capped. Same rationale
+// as the WS reconnect curve, but self-contained (a decision retry is a one-shot
+// within the turn, not a long-lived reconnect loop). Every wait is additionally
+// bounded by the turn budget — see MIN_TRANSIENT_RETRY_BUDGET_MS.
+const TRANSIENT_BACKOFF_BASE_MS = 500;
+const TRANSIENT_BACKOFF_FACTOR = 2;
+const TRANSIENT_BACKOFF_CAP_MS = 8_000;
+// A transient retry needs the backoff wait PLUS real time for the model to
+// answer; if less than this remains after the wait, skip it and fall back —
+// running into the platform turn timeout would forfeit, strictly worse than a
+// deterministic fallback (same reasoning as MIN_ILLEGAL_RETRY_BUDGET_MS).
+const MIN_TRANSIENT_RETRY_BUDGET_MS = 10_000;
+
+/** Backoff before the NEXT transient attempt. `failedAttempt` is 1-based (the
+ *  attempt that just failed). Honors a provider Retry-After when it asks for
+ *  longer than our own backoff. */
+function transientBackoffMs(failedAttempt: number, retryAfterMs: number | undefined): number {
+  const base = Math.min(
+    TRANSIENT_BACKOFF_BASE_MS * Math.pow(TRANSIENT_BACKOFF_FACTOR, Math.max(0, failedAttempt - 1)),
+    TRANSIENT_BACKOFF_CAP_MS,
+  );
+  const jittered = Math.floor(Math.random() * base); // full jitter
+  return retryAfterMs !== undefined ? Math.max(jittered, retryAfterMs) : jittered;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function buildBridgeDecisionProvider(
@@ -296,9 +371,10 @@ export function buildBridgeDecisionProvider(
         });
       };
 
+      const maxAttempts = 1 + clampTransientRetryCount(opts.transientRetryCount);
       let callIndex = 0;
       let raw: string | LegalAction | undefined;
-      while (callIndex < 2) {
+      while (callIndex < maxAttempts) {
         callIndex++;
         try {
           const out = unwrapDecideOutput(await runtimeProvider.decide(requestWithStrategy));
@@ -309,15 +385,35 @@ export function buildBridgeDecisionProvider(
             matchId: ctx.matchId,
             attempt: callIndex,
             raw: summarizeRuntimeRaw(raw),
+            ...(out.truncated ? { truncated: true } : {}),
+            ...(out.profileId !== undefined ? { profileId: out.profileId } : {}),
+            ...(out.selfHealed !== undefined ? { selfHealed: out.selfHealed } : {}),
           });
           break;
         } catch (cause) {
+          const profileId = profileIdFromCause(cause);
+          const errClass = classifyDecisionError(cause);
           opts.onTrace?.({
             type: "runtime_failure",
             matchId: ctx.matchId,
             attempt: callIndex,
             error: stringifyCause(cause),
+            ...(isTokenLimitCause(cause) ? { tokenLimit: true } : {}),
+            ...(profileId !== undefined ? { profileId } : {}),
+            errorClass: errClass.class,
           });
+          // Type-aware, budget-bounded transient retry. Only a retryable class
+          // (rate_limit / server / timeout / network / unknown) earns another
+          // attempt, after a backoff that never eats into the turn deadline.
+          // auth / config / quota / content_filter / token_limit fall straight
+          // through to the deterministic fallback — retrying them can't help.
+          if (!errClass.retryable || callIndex >= maxAttempts) break;
+          const delay = transientBackoffMs(callIndex, errClass.retryAfterMs);
+          const remainingMs = deadlineMs === undefined ? undefined : deadlineMs - Date.now();
+          if (remainingMs !== undefined && remainingMs < delay + MIN_TRANSIENT_RETRY_BUDGET_MS) {
+            break; // not enough turn budget left for a backoff plus a fresh call
+          }
+          if (delay > 0) await sleep(delay);
         }
       }
 
@@ -386,11 +482,15 @@ export function buildBridgeDecisionProvider(
             raw: summarizeRuntimeRaw(raw),
           });
         } catch (cause) {
+          const profileId = profileIdFromCause(cause);
           opts.onTrace?.({
             type: "runtime_failure",
             matchId: ctx.matchId,
             attempt: callIndex,
             error: stringifyCause(cause),
+            ...(isTokenLimitCause(cause) ? { tokenLimit: true } : {}),
+            ...(profileId !== undefined ? { profileId } : {}),
+            errorClass: classifyDecisionError(cause).class,
           });
           break; // transport error on a corrective retry → fallback
         }
@@ -647,4 +747,17 @@ function stringifyCause(cause: unknown): string {
   } catch {
     return String(cause);
   }
+}
+
+/** Duck-typed AdapterError.tokenLimit check (avoids importing the adapter layer). */
+function isTokenLimitCause(cause: unknown): boolean {
+  return typeof cause === "object" && cause !== null && (cause as { tokenLimit?: unknown }).tokenLimit === true;
+}
+
+/** Duck-typed profile id tagged onto a thrown decision error by the direct-LLM
+ *  provider, so a failure trace can point the "raise max tokens" fix at the
+ *  profile that actually failed. */
+function profileIdFromCause(cause: unknown): string | undefined {
+  const p = typeof cause === "object" && cause !== null ? (cause as { profileId?: unknown }).profileId : undefined;
+  return typeof p === "string" && p !== "" ? p : undefined;
 }

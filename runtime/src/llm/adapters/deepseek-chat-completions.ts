@@ -24,6 +24,8 @@ import type {
   ReasoningEffort,
 } from "./types.js";
 import { AdapterError } from "./types.js";
+import { looksLikeTokenLimit, normalizeOpenAIFinish, computeTruncated } from "./token-limit.js";
+import { parseRetryAfterMs, isContentFilterReason } from "./error-class.js";
 
 const PROTOCOL = "deepseek_chat_completions" as const;
 
@@ -175,7 +177,7 @@ async function sendRequest(
       kind,
       PROTOCOL,
       `DeepSeek API ${resp.status}: ${text.slice(0, 300)}`,
-      { retryable: kind === "rate_limited" || kind === "server_error" },
+      { retryable: kind === "rate_limited" || kind === "server_error", tokenLimit: looksLikeTokenLimit(text), status: resp.status, retryAfterMs: parseRetryAfterMs(resp.headers.get("retry-after")) },
     );
   }
 
@@ -507,8 +509,16 @@ export function createDeepSeekChatCompletionsAdapter(): LLMAdapter {
       const reasoningTokens =
         usage?.completion_tokens_details?.reasoning_tokens;
 
+      if (isContentFilterReason(choice.finish_reason)) {
+        throw new AdapterError("content_filter", PROTOCOL, "DeepSeek blocked the response (finish_reason: content_filter)");
+      }
+      const stopReason = normalizeOpenAIFinish(choice.finish_reason);
+      const truncated = computeTruncated(stopReason, text, reasoningTokens);
+
       return {
         text,
+        ...(stopReason ? { stopReason } : {}),
+        ...(truncated ? { truncated: true } : {}),
         inputTokens,
         outputTokens,
         reasoningTokens,

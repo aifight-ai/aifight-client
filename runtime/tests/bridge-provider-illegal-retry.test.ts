@@ -230,4 +230,40 @@ describe("bridge provider illegal-output retry (§3 Phase A)", () => {
     expect(requests).toHaveLength(2);
     expect(finalTrace(traces).decisionSource).toBe("fallback");
   });
+
+  it("truncation signal flows onto the runtime_success trace (Batch B1)", async () => {
+    const provider: BridgeRuntimeProvider = {
+      name: "trunc",
+      async decide() {
+        return { raw: '{"action":"call"}', truncated: true, profileId: "claude" };
+      },
+    };
+    const { traces, onTrace } = collectTraces();
+    const dp = buildBridgeDecisionProvider(provider, { onTrace });
+
+    await dp.decide(makeCtx());
+
+    const ok = traces.find((t) => t.type === "runtime_success");
+    expect(ok && ok.type === "runtime_success" && ok.truncated).toBe(true);
+    expect(ok && ok.type === "runtime_success" && ok.profileId).toBe("claude");
+  });
+
+  it("a token-limit error flags the runtime_failure trace (Batch B1)", async () => {
+    let call = 0;
+    const provider: BridgeRuntimeProvider = {
+      name: "tokenlimit",
+      async decide() {
+        call++;
+        if (call === 1) throw Object.assign(new Error("HTTP 400 max_tokens"), { tokenLimit: true });
+        return '{"action":"call"}';
+      },
+    };
+    const { traces, onTrace } = collectTraces();
+    const dp = buildBridgeDecisionProvider(provider, { onTrace });
+
+    await dp.decide(makeCtx());
+
+    const fail = traces.find((t) => t.type === "runtime_failure");
+    expect(fail && fail.type === "runtime_failure" && fail.tokenLimit).toBe(true);
+  });
 });

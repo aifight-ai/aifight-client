@@ -52,6 +52,17 @@ export interface LocalMatchSessionSummary {
   readonly strategy_hashes: readonly string[];
   /** ISO timestamp of the most recent self-review, if any (list marker). */
   readonly self_review_at?: string;
+  /** Decisions cut short by a too-small max_tokens (token-budget guard). */
+  readonly token_truncation_count?: number;
+  /** Profile of the most recent truncated decision (for the "raise it" hint). */
+  readonly truncated_profile?: string;
+  /**
+   * Decisions that FELL BACK to the deterministic policy because the model call
+   * failed, grouped by error class (auth / quota / config / rate_limit / …), so
+   * `sessions show` can tell the user what to fix. Counts once per fell-back
+   * decision, by the class of its final failure.
+   */
+  readonly error_class_counts?: Readonly<Record<string, number>>;
 }
 
 export interface LocalMatchSessionListItem extends LocalMatchSessionSummary {
@@ -160,6 +171,35 @@ export class LocalMatchSessionStore {
     });
     const strategySections = collectStrategySections(input.traces);
     this.#mergeStrategySnapshot(summary, strategySections, completedAt);
+    // Token-budget guard: this decision hit the max_tokens cap if the model was
+    // cut off (runtime_success.truncated), the provider auto-raised and retried
+    // it (runtime_success.selfHealed — the first attempt WAS truncated, so the
+    // user should still make the fix permanent), or it 4xx'd on the cap
+    // (runtime_failure.tokenLimit). Count once per decision; remember the profile
+    // so `sessions show` can print the exact fix for the profile that failed.
+    const truncTrace = input.traces.find(
+      (t) =>
+        (t.type === "runtime_success" && (t.truncated === true || t.selfHealed !== undefined)) ||
+        (t.type === "runtime_failure" && t.tokenLimit === true),
+    );
+    const truncatedThisDecision = truncTrace !== undefined;
+    const truncatedProfile =
+      truncTrace?.type === "runtime_success"
+        ? truncTrace.profileId
+        : truncTrace?.type === "runtime_failure"
+          ? truncTrace.profileId
+          : undefined;
+    // A decision that fell back to the deterministic policy because the model
+    // call failed: attribute it to the class of its FINAL failure so
+    // `sessions show` can name the fix. A decision that recovered on a retry
+    // (final action came from the model) does not count.
+    const fellBack = input.traces.some((t) => t.type === "final_action" && t.source === "fallback");
+    const lastFailure = [...input.traces].reverse().find((t) => t.type === "runtime_failure");
+    const failClass = fellBack && lastFailure?.type === "runtime_failure" ? lastFailure.errorClass : undefined;
+    const nextErrorClassCounts =
+      failClass !== undefined
+        ? { ...(summary.error_class_counts ?? {}), [failClass]: (summary.error_class_counts?.[failClass] ?? 0) + 1 }
+        : summary.error_class_counts;
     this.#appendJSONLine(summary, "decisions.jsonl", {
       at: completedAt,
       kind: "decision",
@@ -170,6 +210,7 @@ export class LocalMatchSessionStore {
       action_request: summarizeActionRequest(input.context.actionRequest),
       traces: redactDecisionTraces(input.traces),
       status: input.error === undefined ? "ok" : "error",
+      ...(truncatedThisDecision ? { truncated: true } : {}),
       ...(input.action !== undefined ? { final_action: input.action } : {}),
       ...(input.error !== undefined ? { error: stringifyCause(input.error) } : {}),
     });
@@ -179,6 +220,13 @@ export class LocalMatchSessionStore {
       player_id: readPlayerId(input.context.actionRequest.data.state) ?? summary.player_id,
       updated_at: completedAt,
       decision_count: summary.decision_count + 1,
+      token_truncation_count: (summary.token_truncation_count ?? 0) + (truncatedThisDecision ? 1 : 0),
+      ...(truncatedProfile !== undefined
+        ? { truncated_profile: truncatedProfile }
+        : summary.truncated_profile !== undefined
+          ? { truncated_profile: summary.truncated_profile }
+          : {}),
+      ...(nextErrorClassCounts !== undefined ? { error_class_counts: nextErrorClassCounts } : {}),
       strategy_hashes: mergeHashes(summary.strategy_hashes, strategySections.map((s) => s.sha256)),
     });
   }
@@ -616,7 +664,22 @@ function readSummary(file: string): LocalMatchSessionSummary | null {
       ? summary.strategy_hashes.filter((v): v is string => typeof v === "string")
       : [],
     ...(typeof summary.self_review_at === "string" ? { self_review_at: summary.self_review_at } : {}),
+    ...(typeof summary.token_truncation_count === "number" ? { token_truncation_count: summary.token_truncation_count } : {}),
+    ...(typeof summary.truncated_profile === "string" ? { truncated_profile: summary.truncated_profile } : {}),
+    ...(coerceErrorClassCounts(summary.error_class_counts) !== undefined
+      ? { error_class_counts: coerceErrorClassCounts(summary.error_class_counts) }
+      : {}),
   };
+}
+
+/** Keep only string→positive-number entries when reading a persisted summary. */
+function coerceErrorClassCounts(value: unknown): Record<string, number> | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function stripPath(item: LocalMatchSessionListItem): LocalMatchSessionSummary {

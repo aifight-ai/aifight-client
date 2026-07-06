@@ -26,6 +26,7 @@ import {
   type ReasoningEffort,
 } from "@aifight/aifight/profile/config-schema";
 import { storeSecretFile, checkSecretStatus } from "@aifight/aifight/profile/secret-ref";
+import { recommendMaxTokens } from "@aifight/aifight/llm/capabilities/validate-capabilities";
 import type {
   ConfigMutResult,
   ConfigProfileView,
@@ -154,6 +155,29 @@ function emptyConfig(): LLMConfig {
 }
 
 /** Read the editable config view (no secrets — only key SOURCE + resolvability). */
+/**
+ * Recommend the maxTokens a chosen reasoning effort needs (token-budget guard,
+ * TOKEN_BUDGET_SAFETY_SPEC D4). Maps the UI family → concrete protocol so the
+ * ceiling lookup matches the runtime. Returns null when no recommendation
+ * applies (thinking off, low/medium effort, unknown-but-no-effort model).
+ */
+export function recommendMaxTokensForFamily(input: {
+  family: string;
+  model: string;
+  effort?: string;
+  thinkingEnabled: boolean;
+}): { recommended: number; ceilingKnown: boolean } | null {
+  if (typeof input?.family !== "string" || typeof input?.model !== "string") return null;
+  const protocol = resolveConcreteProtocol(input.family, input.model, "");
+  const rec = recommendMaxTokens({
+    protocol,
+    model: input.model,
+    ...(input.effort ? { effort: input.effort } : {}),
+    thinkingEnabled: input.thinkingEnabled === true,
+  });
+  return rec ?? null;
+}
+
 export async function getConfig(slug: string = DEFAULT_SLUG): Promise<ConfigView> {
   const config = await readConfigOptional(slug);
   if (config === null) {

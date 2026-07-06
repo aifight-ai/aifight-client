@@ -29,6 +29,8 @@ import type {
   ValidationResult,
 } from "./types.js";
 import { AdapterError } from "./types.js";
+import { looksLikeTokenLimit, computeTruncated } from "./token-limit.js";
+import { parseRetryAfterMs, isContentFilterReason } from "./error-class.js";
 
 const PROTOCOL = "openai_responses" as const;
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -283,7 +285,7 @@ async function generateDecision(
       kind,
       PROTOCOL,
       `OpenAI Responses API returned HTTP ${response.status}: ${bodySnippet}`,
-      { retryable: kind === "rate_limited" || kind === "server_error" },
+      { retryable: kind === "rate_limited" || kind === "server_error", tokenLimit: looksLikeTokenLimit(bodySnippet), status: response.status, retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")) },
     );
   }
 
@@ -300,21 +302,31 @@ async function generateDecision(
     );
   }
 
+  const stopReason = extractResponsesStop(parsed);
+  const blockReason = responsesBlockReason(parsed);
+  if (blockReason !== null) {
+    throw new AdapterError("content_filter", PROTOCOL, `OpenAI blocked the response (${blockReason})`);
+  }
   const text = extractText(parsed);
   if (text === null) {
+    // status "incomplete" with reason max_output_tokens = reasoning/output hit
+    // the cap and no output_text was emitted.
     throw new AdapterError(
       "invalid_response",
       PROTOCOL,
       'response missing output[].content[].text (type "output_text")',
-      { retryable: false },
+      { retryable: false, tokenLimit: stopReason === "max_tokens" },
     );
   }
 
   const { inputTokens, outputTokens, reasoningTokens } = extractTokens(parsed);
   const reasoningSummary = extractReasoningSummary(parsed);
+  const truncated = computeTruncated(stopReason, text, reasoningTokens);
 
   return {
     text,
+    ...(stopReason ? { stopReason } : {}),
+    ...(truncated ? { truncated: true } : {}),
     inputTokens,
     outputTokens,
     reasoningTokens,
@@ -322,6 +334,29 @@ async function generateDecision(
     reasoningSummary,
     raw: parsed,
   };
+}
+
+/**
+ * OpenAI Responses API completion status → normalized stopReason.
+ *   status "completed" → "stop"
+ *   status "incomplete" + incomplete_details.reason "max_output_tokens" → "max_tokens"
+ *   status "incomplete" (other reason) → "other"; no status field → undefined.
+ */
+function extractResponsesStop(parsed: unknown): "stop" | "max_tokens" | "other" | undefined {
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const obj = parsed as Record<string, unknown>;
+  const status = obj["status"];
+  if (status === "completed") return "stop";
+  if (status === "incomplete") {
+    const details = obj["incomplete_details"];
+    const reason =
+      typeof details === "object" && details !== null
+        ? (details as Record<string, unknown>)["reason"]
+        : undefined;
+    if (typeof reason === "string" && /max_output_tokens|max_tokens/i.test(reason)) return "max_tokens";
+    return "other";
+  }
+  return undefined;
 }
 
 // ─── estimateUsage ───────────────────────────────────────────────────
@@ -424,6 +459,30 @@ function extractReasoningSummary(parsed: unknown): string | undefined {
   }
 
   return undefined;
+}
+
+/** Content-filter signal on a Responses payload: incomplete_details.reason
+ *  "content_filter", or a refusal output item. Returns the reason, else null. */
+function responsesBlockReason(parsed: unknown): string | null {
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const obj = parsed as Record<string, unknown>;
+  const inc = obj["incomplete_details"];
+  if (typeof inc === "object" && inc !== null) {
+    const r = (inc as Record<string, unknown>)["reason"];
+    if (isContentFilterReason(r)) return typeof r === "string" ? r : "content_filter";
+  }
+  const output = obj["output"];
+  if (Array.isArray(output)) {
+    for (const item of output) {
+      const content = typeof item === "object" && item !== null ? (item as Record<string, unknown>)["content"] : undefined;
+      if (Array.isArray(content)) {
+        for (const c of content) {
+          if (typeof c === "object" && c !== null && (c as Record<string, unknown>)["type"] === "refusal") return "refusal";
+        }
+      }
+    }
+  }
+  return null;
 }
 
 function httpStatusToKind(

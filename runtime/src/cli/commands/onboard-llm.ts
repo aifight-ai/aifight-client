@@ -22,7 +22,7 @@ import type { HandlerEnv } from "../shared.js";
 import type { LLMConfig, LLMProfile, Protocol, ReasoningEffort } from "../../profile/config-schema.js";
 import { resolveAgentDir } from "../../profile/profile-loader.js";
 import { checkSecretStatus } from "../../profile/secret-ref.js";
-import { resolveModelCapabilities } from "../../llm/capabilities/validate-capabilities.js";
+import { resolveModelCapabilities, recommendMaxTokens } from "../../llm/capabilities/validate-capabilities.js";
 import { buildLLMProfile } from "./config-shared.js";
 
 export interface OnboardProvider {
@@ -332,6 +332,7 @@ async function chooseModelSettings(
 
   // ── Effort (only when thinking is on and the model exposes levels) ──
   let effort: ReasoningEffort | undefined;
+  let effortExplicit = false;
   if (thinkingEnabled && caps.efforts.length > 0) {
     const efforts = caps.efforts.map(normalizeEffort);
     const def: ReasoningEffort = caps.defaultEffort
@@ -341,12 +342,26 @@ async function chooseModelSettings(
     const ans = (await io.promptLine(`  Effort [Enter = ${def}]: `)).trim().toLowerCase();
     const picked = normalizeEffort(ans);
     effort = ans === "" ? def : efforts.includes(picked) ? picked : def;
+    effortExplicit = ans !== "" && efforts.includes(picked);
   }
 
   // ── Advanced (off by default; LLM config is set once, but keep the common path short) ──
   let maxTokens = caps.maxOutputTokens && DEFAULT_MAX_TOKENS > caps.maxOutputTokens
     ? caps.maxOutputTokens
     : DEFAULT_MAX_TOKENS;
+  // D4: when the user EXPLICITLY picks a high reasoning effort, it can need up to
+  // the model's ceiling of headroom (e.g. Opus at max = 128000) — offer to raise
+  // before the advanced gate. Accepting the default effort never nags.
+  const rec = effortExplicit
+    ? recommendMaxTokens({ protocol: provider.protocol, model, ...(effort ? { effort } : {}), thinkingEnabled })
+    : undefined;
+  if (rec && maxTokens < rec.recommended) {
+    const raise = await io.promptYesNo(
+      `  ${effort ?? "high"} effort works best with max tokens ≥ ${rec.recommended} (currently ${maxTokens}). Raise it?`,
+      true,
+    );
+    if (raise) maxTokens = rec.recommended;
+  }
   let stream: "auto" | "always" | "never" = "auto";
   let temperature: number | null = null;
 

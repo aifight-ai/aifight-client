@@ -216,6 +216,7 @@ export function installDemoBridge(): void {
     writeStrategy: () => Promise.resolve({ ok: false, error: "demo" }),
     getLLMConfig: () =>
       Promise.resolve({ configured: true, slug: "default", activeProfile: "demo", routing: { default: "demo" }, profiles: [] }),
+    llmRecommendMaxTokens: () => Promise.resolve(null),
     saveLLMProfile: () => Promise.resolve({ ok: false, error: "demo" }),
     setLLMKey: () => Promise.resolve({ ok: false, error: "demo" }),
     clearLLMKey: () => Promise.resolve({ ok: false, error: "demo" }),

@@ -297,6 +297,34 @@ export interface ResolvedModelCapabilities {
   defaultBaseURL?: string;
 }
 
+/**
+ * The maxTokens a high-reasoning effort needs so the model isn't truncated
+ * mid-thought (docs/agent-bridge/TOKEN_BUDGET_SAFETY_SPEC.md D3). Only high /
+ * xhigh / max efforts get a recommendation (that's where the "budget can be up
+ * to the model ceiling" problem bites — e.g. Opus max needs 128000). The
+ * recommended value is the model's output ceiling when known, else a generous
+ * fallback for a model the registry doesn't list yet.
+ *
+ * Returns undefined when no recommendation applies (thinking off, or a
+ * low/medium/default effort). Since output tokens are billed on use, not on the
+ * cap, recommending the ceiling is free insurance against truncation.
+ *
+ * Shared by `config add/update` (headless), the interactive wizard, and the
+ * desktop app, so all three agree on the number.
+ */
+export function recommendMaxTokens(input: {
+  protocol: string;
+  model: string;
+  effort?: string;
+  thinkingEnabled: boolean;
+}): { recommended: number; ceilingKnown: boolean } | undefined {
+  if (!input.thinkingEnabled) return undefined;
+  const e = (input.effort ?? "").toLowerCase();
+  if (e !== "high" && e !== "xhigh" && e !== "max") return undefined;
+  const ceiling = resolveModelCapabilities(input.protocol, input.model).maxOutputTokens;
+  return { recommended: ceiling ?? 65536, ceilingKnown: ceiling !== undefined };
+}
+
 export function resolveModelCapabilities(
   protocol: string,
   model: string,

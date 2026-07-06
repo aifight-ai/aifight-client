@@ -22,6 +22,8 @@ import type {
   UsageRecord,
 } from "./types.js";
 import { AdapterError } from "./types.js";
+import { looksLikeTokenLimit, normalizeOpenAIFinish, computeTruncated } from "./token-limit.js";
+import { parseRetryAfterMs, isContentFilterReason } from "./error-class.js";
 
 const PROTOCOL = "openai_chat_compat" as const;
 
@@ -196,7 +198,7 @@ async function generateDecision(
       kind,
       PROTOCOL,
       `OpenAI-compat provider returned HTTP ${response.status}`,
-      { cause: rawBody, retryable: isRetryableStatus(response.status) },
+      { cause: rawBody, retryable: isRetryableStatus(response.status), tokenLimit: looksLikeTokenLimit(rawBody), status: response.status, retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")) },
     );
   }
 
@@ -213,19 +215,28 @@ async function generateDecision(
     );
   }
 
+  const finishReason = extractFinishReason(parsed);
+  if (isContentFilterReason(finishReason)) {
+    throw new AdapterError("content_filter", PROTOCOL, "the response was blocked by a content filter (finish_reason: content_filter)");
+  }
+  const stopReason = normalizeOpenAIFinish(finishReason);
   const text = extractText(parsed);
   if (text === null) {
     throw new AdapterError(
       "invalid_response",
       PROTOCOL,
       "response missing choices[0].message.content (or content is not a string)",
+      { tokenLimit: stopReason === "max_tokens" },
     );
   }
 
   const usage = extractUsage(parsed);
+  const truncated = computeTruncated(stopReason, text, undefined);
 
   return {
     text,
+    ...(stopReason ? { stopReason } : {}),
+    ...(truncated ? { truncated: true } : {}),
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     latencyMs,
@@ -316,6 +327,16 @@ function extractText(parsed: unknown): string | null {
   const content = message["content"];
   if (typeof content !== "string") return null;
   return content;
+}
+
+/** Read choices[0].finish_reason (unknown → normalizeOpenAIFinish handles it). */
+function extractFinishReason(parsed: unknown): unknown {
+  if (!isObject(parsed)) return undefined;
+  const choices = parsed["choices"];
+  if (!Array.isArray(choices) || choices.length === 0) return undefined;
+  const first = choices[0];
+  if (!isObject(first)) return undefined;
+  return first["finish_reason"];
 }
 
 function extractUsage(parsed: unknown): {

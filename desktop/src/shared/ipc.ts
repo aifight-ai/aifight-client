@@ -110,6 +110,19 @@ export interface TraceAction {
  * legal actions it faced, the model's raw output preview, and the final action
  * it took (from the runtime, or a safety fallback).
  */
+/** Mirror of the runtime's DecisionErrorClass (llm/adapters/error-class.ts). */
+export type DecisionErrorClass =
+  | "auth"
+  | "config"
+  | "quota"
+  | "rate_limit"
+  | "server"
+  | "timeout"
+  | "network"
+  | "content_filter"
+  | "token_limit"
+  | "unknown";
+
 export type BridgeDecisionTrace =
   | {
       readonly type: "decision_request";
@@ -124,13 +137,42 @@ export type BridgeDecisionTrace =
       readonly matchId: string;
       readonly attempt: number;
       readonly raw: { readonly kind: string; readonly sha256: string; readonly bytes: number; readonly preview: string };
+      /** True when the model output was cut short by the token limit. */
+      readonly truncated?: boolean;
+      /** Profile that produced this decision (for the "raise max tokens" hint). */
+      readonly profileId?: string;
+      /** Set when the provider auto-raised maxTokens and retried this decision. */
+      readonly selfHealed?: { readonly from: number; readonly to: number };
     }
-  | { readonly type: "runtime_failure"; readonly matchId: string; readonly attempt: number; readonly error: string }
+  | {
+      readonly type: "runtime_failure";
+      readonly matchId: string;
+      readonly attempt: number;
+      readonly error: string;
+      /** True when the failure was a max_tokens / reasoning-budget 4xx. */
+      readonly tokenLimit?: boolean;
+      /** Profile that failed (so the "raise max tokens" fix targets it, not the
+       *  active profile — they differ under per-game routing). */
+      readonly profileId?: string;
+      /** Coarse failure classification (mirror of runtime DecisionErrorClass). */
+      readonly errorClass?: DecisionErrorClass;
+    }
   | { readonly type: "strategy_error"; readonly matchId: string; readonly error: string }
+  | {
+      // Emitted right before each corrective retry of an unparseable/illegal
+      // model output (kept in sync with runtime/src/bridge/provider.ts).
+      readonly type: "illegal_retry";
+      readonly matchId: string;
+      readonly attempt: number;
+      readonly reason: "unparseable_runtime_text" | "illegal_runtime_action";
+      readonly priorPreview: string;
+    }
   | {
       readonly type: "final_action";
       readonly matchId: string;
       readonly source: "runtime" | "fallback";
+      /** model | model_retry | fallback — who authored the action. */
+      readonly decisionSource?: "model" | "model_retry" | "fallback";
       readonly reason?: string;
       readonly action: TraceAction;
     };
@@ -285,6 +327,18 @@ export interface ConfigView {
   readonly activeProfile: string;
   readonly routing: { readonly default: string; readonly byGame?: Record<string, string> };
   readonly profiles: ConfigProfileView[];
+}
+
+/** Query for the maxTokens a chosen reasoning effort needs (token-budget guard). */
+export interface RecommendMaxTokensInput {
+  readonly family: ProtocolFamily;
+  readonly model: string;
+  readonly effort?: string;
+  readonly thinkingEnabled: boolean;
+}
+export interface RecommendMaxTokensResult {
+  readonly recommended: number;
+  readonly ceilingKnown: boolean;
 }
 
 /** Editable profile fields (everything except the API key, which has its own call). */
@@ -500,6 +554,7 @@ export const IPC = {
   strategyRead: "strategy:read",
   strategyWrite: "strategy:write",
   configGet: "config:get",
+  configRecommendMaxTokens: "config:recommend-max-tokens",
   configSaveProfile: "config:save-profile",
   configSetKey: "config:set-key",
   configClearKey: "config:clear-key",
@@ -599,6 +654,8 @@ export interface AifightBridgeApi {
   // Graphical LLM config (standalone — no CLI). Keys never returned; setKey takes
   // the raw key over IPC (structured clone, not argv) and stores it 0600.
   getLLMConfig(): Promise<ConfigView>;
+  /** Recommend a maxTokens for a family+model+effort (null = no recommendation). */
+  llmRecommendMaxTokens(input: RecommendMaxTokensInput): Promise<RecommendMaxTokensResult | null>;
   saveLLMProfile(input: ProfileInput): Promise<ConfigMutResult>;
   setLLMKey(profileId: string, apiKey: string): Promise<ConfigMutResult>;
   /** Remove a profile's stored API key (deletes the 0600 key file, resets the ref). */

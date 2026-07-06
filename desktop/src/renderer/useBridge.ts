@@ -12,6 +12,8 @@ import type {
   HexagonData,
   CliRunResult,
   ConfigMutResult,
+  RecommendMaxTokensInput,
+  RecommendMaxTokensResult,
   ConfigView,
   ConnectionHealth,
   EventsData,
@@ -227,6 +229,13 @@ export async function saveLLMProfile(input: ProfileInput): Promise<ConfigMutResu
   const api = window.aifight;
   if (api === undefined) return { ok: false, error: NO_BRIDGE };
   return api.saveLLMProfile(input);
+}
+export async function llmRecommendMaxTokens(
+  input: RecommendMaxTokensInput,
+): Promise<RecommendMaxTokensResult | null> {
+  const api = window.aifight;
+  if (api === undefined) return null;
+  return api.llmRecommendMaxTokens(input);
 }
 export async function setLLMKey(profileId: string, apiKey: string): Promise<ConfigMutResult> {
   const api = window.aifight;

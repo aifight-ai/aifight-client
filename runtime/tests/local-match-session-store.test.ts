@@ -260,4 +260,110 @@ describe("LocalMatchSessionStore", () => {
     expect(healed.player_count).toBe(2);
     expect(healed.event_count).toBe(2);
   });
+
+  it("counts token-truncated decisions and remembers the profile (Batch B1)", () => {
+    const store = new LocalMatchSessionStore({ runtimeHome: tempHome(), now: () => new Date("2026-05-18T01:02:03.000Z") });
+    const config = bridgeConfig();
+    const req = actionRequest();
+    const ctx = { actionRequest: req, matchId: "session-1", game: "liars_dice", state: null } as never;
+
+    // Decision 1: truncated (runtime_success with truncated + profileId).
+    store.recordDecision({
+      config, context: ctx,
+      startedAt: new Date("2026-05-18T01:02:03.000Z"), completedAt: new Date("2026-05-18T01:02:04.000Z"),
+      traces: [{ type: "runtime_success", matchId: "session-1", attempt: 1, raw: { kind: "text", preview: "…" }, truncated: true, profileId: "claude" } as never],
+      action: { type: "challenge" },
+    });
+    // Decision 2: a token-limit failure (runtime_failure with tokenLimit).
+    store.recordDecision({
+      config, context: ctx,
+      startedAt: new Date("2026-05-18T01:02:05.000Z"), completedAt: new Date("2026-05-18T01:02:06.000Z"),
+      traces: [{ type: "runtime_failure", matchId: "session-1", attempt: 1, error: "HTTP 400 max_tokens", tokenLimit: true } as never],
+      action: { type: "challenge" },
+    });
+    // Decision 3: normal — must not increment.
+    store.recordDecision({
+      config, context: ctx,
+      startedAt: new Date("2026-05-18T01:02:07.000Z"), completedAt: new Date("2026-05-18T01:02:08.000Z"),
+      traces: [{ type: "runtime_success", matchId: "session-1", attempt: 1, raw: { kind: "text", preview: "ok" } } as never],
+      action: { type: "challenge" },
+    });
+
+    const summary = store.listSessions().find((s) => s.session_id === "session-1")!;
+    expect(summary.token_truncation_count).toBe(2);
+    expect(summary.truncated_profile).toBe("claude");
+    expect(summary.decision_count).toBe(3);
+  });
+
+  it("counts a self-healed decision and targets the failing profile (F3/F5)", () => {
+    const store = new LocalMatchSessionStore({ runtimeHome: tempHome(), now: () => new Date("2026-05-18T01:02:03.000Z") });
+    const config = bridgeConfig();
+    const req = actionRequest();
+    const ctx = { actionRequest: req, matchId: "session-1", game: "liars_dice", state: null } as never;
+
+    // Decision 1: the provider auto-raised maxTokens and retried, so the trace
+    // carries selfHealed (not truncated). The first attempt WAS cut off, so the
+    // user should still be nudged to make the fix permanent → this must count.
+    store.recordDecision({
+      config, context: ctx,
+      startedAt: new Date("2026-05-18T01:02:03.000Z"), completedAt: new Date("2026-05-18T01:02:04.000Z"),
+      traces: [{ type: "runtime_success", matchId: "session-1", attempt: 1, raw: { kind: "text", preview: "ok" }, selfHealed: { from: 32000, to: 128000 }, profileId: "claude" } as never],
+      action: { type: "challenge" },
+    });
+    // Decision 2: a token-limit FAILURE on a per-game-routed profile — the fix
+    // must target that profile ("gpt"), not the active one (F5).
+    store.recordDecision({
+      config, context: ctx,
+      startedAt: new Date("2026-05-18T01:02:05.000Z"), completedAt: new Date("2026-05-18T01:02:06.000Z"),
+      traces: [{ type: "runtime_failure", matchId: "session-1", attempt: 1, error: "HTTP 400 max_tokens", tokenLimit: true, profileId: "gpt" } as never],
+      action: { type: "challenge" },
+    });
+
+    const summary = store.listSessions().find((s) => s.session_id === "session-1")!;
+    expect(summary.token_truncation_count).toBe(2); // self-heal (F3) + failure both count
+    expect(summary.truncated_profile).toBe("gpt"); // read from the failure trace (F5), last write wins
+  });
+
+  it("counts fell-back decisions by API error class, not recovered ones (Batch D)", () => {
+    const store = new LocalMatchSessionStore({ runtimeHome: tempHome(), now: () => new Date("2026-05-18T01:02:03.000Z") });
+    const config = bridgeConfig();
+    const req = actionRequest();
+    const ctx = { actionRequest: req, matchId: "session-1", game: "liars_dice", state: null } as never;
+
+    // Decision 1: auth failure that fell back → counted as auth.
+    store.recordDecision({
+      config, context: ctx,
+      startedAt: new Date("2026-05-18T01:02:03.000Z"), completedAt: new Date("2026-05-18T01:02:04.000Z"),
+      traces: [
+        { type: "runtime_failure", matchId: "session-1", attempt: 1, error: "HTTP 401", errorClass: "auth" } as never,
+        { type: "final_action", matchId: "session-1", source: "fallback", action: { type: "challenge" } } as never,
+      ],
+      action: { type: "challenge" },
+    });
+    // Decision 2: a server error that RECOVERED on retry (final action from the
+    // model) → must NOT count.
+    store.recordDecision({
+      config, context: ctx,
+      startedAt: new Date("2026-05-18T01:02:05.000Z"), completedAt: new Date("2026-05-18T01:02:06.000Z"),
+      traces: [
+        { type: "runtime_failure", matchId: "session-1", attempt: 1, error: "HTTP 503", errorClass: "server" } as never,
+        { type: "runtime_success", matchId: "session-1", attempt: 2, raw: { kind: "text", preview: "ok" } } as never,
+        { type: "final_action", matchId: "session-1", source: "runtime", action: { type: "challenge" } } as never,
+      ],
+      action: { type: "challenge" },
+    });
+    // Decision 3: another auth fallback → auth becomes 2.
+    store.recordDecision({
+      config, context: ctx,
+      startedAt: new Date("2026-05-18T01:02:07.000Z"), completedAt: new Date("2026-05-18T01:02:08.000Z"),
+      traces: [
+        { type: "runtime_failure", matchId: "session-1", attempt: 1, error: "HTTP 403", errorClass: "auth" } as never,
+        { type: "final_action", matchId: "session-1", source: "fallback", action: { type: "challenge" } } as never,
+      ],
+      action: { type: "challenge" },
+    });
+
+    const summary = store.listSessions().find((s) => s.session_id === "session-1")!;
+    expect(summary.error_class_counts).toEqual({ auth: 2 }); // server recovered → not counted
+  });
 });

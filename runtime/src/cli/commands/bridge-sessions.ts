@@ -1,5 +1,26 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+
 import { createLocalMatchSessionStore, type LocalMatchSessionListItem } from "../../session/local-match-session-store";
 import { CommandError, expectArity, type HandlerArgs, type HandlerEnv, UsageError } from "../shared";
+import { resolveAgentDir } from "../../profile/profile-loader";
+import { validateConfig } from "../../profile/config-schema";
+import { resolveModelCapabilities } from "../../llm/capabilities/validate-capabilities";
+
+/** The model ceiling for a truncated session's profile — the "raise it to" target. */
+async function truncationFixTokens(profileId: string | undefined): Promise<number | undefined> {
+  if (!profileId) return undefined;
+  try {
+    const raw = await fs.readFile(path.join(resolveAgentDir("default"), "config.json"), "utf8");
+    const parsed = validateConfig(JSON.parse(raw));
+    if (!parsed.ok) return undefined;
+    const p = parsed.config.profiles[profileId];
+    if (!p) return undefined;
+    return resolveModelCapabilities(p.protocol, p.model).maxOutputTokens;
+  } catch {
+    return undefined;
+  }
+}
 
 const USAGE = [
   "usage: aifight sessions list",
@@ -41,7 +62,10 @@ export async function runBridgeSessions(
       env.stdout(JSON.stringify({ session: item }) + "\n");
       return 0;
     }
-    env.stdout(formatSessionDetail(item));
+    const fix = (item.token_truncation_count ?? 0) > 0
+      ? await truncationFixTokens(item.truncated_profile)
+      : undefined;
+    env.stdout(formatSessionDetail(item, fix));
     return 0;
   }
 
@@ -89,12 +113,14 @@ function formatSessionLine(item: LocalMatchSessionListItem): string {
     game,
     result,
     `decisions=${item.decision_count}`,
+    (item.token_truncation_count ?? 0) > 0 ? `truncated=${item.token_truncation_count}` : "",
+    errorClassTotal(item) > 0 ? `errors=${errorClassTotal(item)}` : "",
     `updated=${item.updated_at}`,
     match.trim(),
   ].filter(Boolean).join("  ");
 }
 
-function formatSessionDetail(item: LocalMatchSessionListItem): string {
+function formatSessionDetail(item: LocalMatchSessionListItem, fixTokens?: number): string {
   const lines = [
     `Session: ${item.session_id}`,
     `Agent: ${item.agent_name} (${item.agent_id})`,
@@ -115,7 +141,53 @@ function formatSessionDetail(item: LocalMatchSessionListItem): string {
   if (item.strategy_hashes.length > 0) {
     lines.push(`Strategy snapshots: ${item.strategy_hashes.length}`);
   }
+  if ((item.token_truncation_count ?? 0) > 0) {
+    const prof = item.truncated_profile ?? "<profile>";
+    const target = fixTokens ? String(fixTokens) : "<your model's max>";
+    lines.push(
+      `⚠ Truncated: ${item.token_truncation_count} decision(s) hit the max_tokens cap — your agent may not have played its best.`,
+      `  Raise it: aifight config update ${prof} --max-tokens ${target}`,
+    );
+  }
+  const errorCounts = item.error_class_counts;
+  if (errorCounts && Object.keys(errorCounts).length > 0) {
+    const total = errorClassTotal(item);
+    lines.push(`⚠ ${total} decision(s) fell back to a safe move after an API error:`);
+    for (const [cls, n] of Object.entries(errorCounts).sort((a, b) => b[1] - a[1])) {
+      lines.push(`  • ${cls} ×${n} — ${errorClassHint(cls)}`);
+    }
+  }
   return `${lines.join("\n")}\n`;
+}
+
+function errorClassTotal(item: LocalMatchSessionListItem): number {
+  return Object.values(item.error_class_counts ?? {}).reduce((a, b) => a + b, 0);
+}
+
+/** One-line, actionable hint per failure class for `sessions show`. */
+function errorClassHint(cls: string): string {
+  switch (cls) {
+    case "auth":
+      return "API key was rejected — check it with: aifight config test";
+    case "quota":
+      return "out of API credits/quota — top up or switch provider";
+    case "config":
+      return "provider rejected the request (bad model id or parameter) — check the profile";
+    case "content_filter":
+      return "the model blocked its own response (content filter)";
+    case "rate_limit":
+      return "rate-limited — slow down or use a higher-tier key";
+    case "server":
+      return "provider server error / overload (usually transient)";
+    case "timeout":
+      return "the request timed out — try a faster model or a larger timeout";
+    case "network":
+      return "network error reaching the provider";
+    case "token_limit":
+      return "cut off by max_tokens — see the truncation hint above";
+    default:
+      return "unclassified API error";
+  }
 }
 
 function shortId(value: string): string {

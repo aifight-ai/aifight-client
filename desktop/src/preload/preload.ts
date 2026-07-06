@@ -15,6 +15,7 @@ import {
   type ServerMessage,
   type StrategyScope,
   type ProfileInput,
+  type RecommendMaxTokensInput,
   type UpdateStatus,
 } from "../shared/ipc";
 
@@ -64,6 +65,7 @@ const api: AifightBridgeApi = {
   readStrategy: () => ipcRenderer.invoke(IPC.strategyRead),
   writeStrategy: (scope: StrategyScope, content: string) => ipcRenderer.invoke(IPC.strategyWrite, scope, content),
   getLLMConfig: () => ipcRenderer.invoke(IPC.configGet),
+  llmRecommendMaxTokens: (input: RecommendMaxTokensInput) => ipcRenderer.invoke(IPC.configRecommendMaxTokens, input),
   saveLLMProfile: (input: ProfileInput) => ipcRenderer.invoke(IPC.configSaveProfile, input),
   setLLMKey: (profileId: string, apiKey: string) => ipcRenderer.invoke(IPC.configSetKey, profileId, apiKey),
   clearLLMKey: (profileId: string) => ipcRenderer.invoke(IPC.configClearKey, profileId),
