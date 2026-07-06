@@ -11,7 +11,8 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Save, Check, Globe } from "lucide-react";
 
-import { readStrategy, writeStrategy } from "../useBridge";
+import { readStrategy, writeStrategy, useBridgeStatus } from "../useBridge";
+import { webOrigin } from "../webOrigin";
 import { PageHeader } from "../components/ui";
 import { gameLabel } from "../../shared/games";
 import type { StrategyScope } from "../../shared/ipc";
@@ -31,6 +32,11 @@ const byteLen = (s: string) => new TextEncoder().encode(s).length;
 
 export function StrategyView() {
   const { t } = useTranslation();
+  const status = useBridgeStatus();
+  // Deep-link to the public strategy guide (templates + how it works). Derived
+  // from the configured bridge base URL like every other web link; the main
+  // process' window-open handler sends http(s) to the user's browser.
+  const howToUrl = `${webOrigin(status?.config?.baseUrl)}/how-to-win#strategy`;
   const [state, setState] = useState<State>({ kind: "loading" });
   const [active, setActive] = useState<StrategyScope>("global");
   const [saving, setSaving] = useState<StrategyScope | null>(null);
@@ -109,7 +115,23 @@ export function StrategyView() {
 
   return (
     <div className="mx-auto flex h-full max-w-3xl flex-col">
-      <PageHeader eyebrow={t("eyebrow.strategy")} title={t("nav.strategy")} subtitle={t("strategy.intro")} />
+      <PageHeader
+        eyebrow={t("eyebrow.strategy")}
+        title={t("nav.strategy")}
+        subtitle={
+          <>
+            {t("strategy.intro")}
+            <a
+              href={howToUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-2 block w-fit text-[var(--accent-text)] hover:underline"
+            >
+              {t("strategy.howToLink")}
+            </a>
+          </>
+        }
+      />
 
       {/* Scope tabs */}
       <div className="mb-3 inline-flex gap-0.5 self-start rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-0.5">

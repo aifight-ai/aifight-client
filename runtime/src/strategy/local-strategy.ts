@@ -9,36 +9,12 @@ import type { BridgeDecisionStrategy, BridgeDecisionStrategySection } from "../b
 
 const MAX_STRATEGY_FILE_BYTES = 64 * 1024;
 
-/**
- * Starter template written to a fresh `strategy/global.md` on first setup.
- *
- * This is the single source of truth for an agent's *strategy* — there is no
- * separate "soul/persona" file or schema. The whole document is free-form text
- * that the runtime injects into the system prompt before each decision; a user
- * may describe how their agent reasons or the tone it uses, but the product
- * treats all of it as strategy. Per-game tactics layer on top in
- * `strategy/games/<game>.md`.
- */
-export const DEFAULT_GLOBAL_STRATEGY = `# Strategy
-
-This is your agent's global strategy. It applies to every game you play on
-AIFight and is added to the system prompt before each decision. Write plain
-guidance here, in your own words — there is no required format or schema.
-
-You can describe how your agent should reason, weigh risk, and read opponents,
-and even the voice it uses when it explains a move. Per-game tactics go in
-strategy/games/<game>.md and layer on top of this file. Leave anything blank
-and the runtime simply skips it.
-
-## How to decide
-- Reason from the information in the current game state; don't over-anchor on past rounds.
-- Take calculated risks only when the expected value is clearly positive.
-- Prefer a safe legal action when uncertain or short on time.
-
-## Reading opponents
-- Track betting, bidding, and claim patterns and adapt as the match goes on.
-- Stay unpredictable enough that opponents can't model you cheaply.
-`;
+// An agent's strategy is free-form Markdown — there is no separate
+// "soul/persona" file or schema. `strategy/global.md` applies to every game and
+// per-game tactics layer on top in `strategy/games/<game>.md`. A fresh setup
+// scaffolds an EMPTY global.md (see scaffoldGlobalStrategy): there is no default
+// strategy, and an empty file is skipped at decision time, so nothing is
+// injected until the user writes something.
 
 export interface LocalStrategyPaths {
   readonly root: string;
@@ -123,11 +99,13 @@ function safePathSegment(value: string): string {
 }
 
 /**
- * Write a starter `strategy/global.md` (DEFAULT_GLOBAL_STRATEGY) if one does not
- * already exist, so a freshly set-up agent has an editable strategy to play
- * with. Idempotent: an existing file (even empty) is never clobbered. The file
- * lands at exactly the path the runtime reads at decision time
- * (resolveLocalStrategyPaths), so the scaffold is immediately in effect.
+ * Scaffold an empty `strategy/global.md` if one does not already exist, so a
+ * freshly set-up agent has an editable file ready at the path the runtime reads
+ * each decision (resolveLocalStrategyPaths). There is no default strategy — the
+ * file starts empty, and an empty file is skipped at decision time
+ * (readStrategySection returns null), so nothing is injected until the user
+ * writes something. Idempotent: an existing file (even empty) is never
+ * clobbered.
  *
  * The directory is created 0700 and the file 0600 (best-effort chmod, no-op on
  * Windows), matching the rest of the local runtime home. Never throws on chmod;
@@ -147,7 +125,7 @@ export async function scaffoldGlobalStrategy(
   } catch {
     // Absent — create it below.
   }
-  await fsp.writeFile(paths.global, DEFAULT_GLOBAL_STRATEGY, { mode: 0o600 });
+  await fsp.writeFile(paths.global, "", { mode: 0o600 });
   await chmodBestEffort(paths.global, 0o600);
   return "created";
 }

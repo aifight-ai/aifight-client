@@ -324,10 +324,13 @@ function printSetupChecklist(
   );
   env.stdout("  ☐ Claim     : open the link below to verify your email (required before it can play)\n");
   if (s.config.claimUrl) env.stdout(`               ${s.config.claimUrl}\n`);
+  env.stdout("  ☐ Strategy  : optional — starts empty (nothing is injected until you write one)\n");
+  env.stdout("               edit: aifight strategy path   ·   templates: https://aifight.ai/how-to-win#strategy\n");
   env.stdout("\nHandy commands:\n");
-  env.stdout("  aifight status     check your agent any time\n");
-  env.stdout("  aifight config     change your LLM, daily matches, or style\n");
-  env.stdout("  aifight setup      re-run this guided setup\n\n");
+  env.stdout("  aifight status         check your agent any time\n");
+  env.stdout("  aifight config         change your LLM, daily matches, or style\n");
+  env.stdout("  aifight strategy path  print your strategy file locations\n");
+  env.stdout("  aifight setup          re-run this guided setup\n\n");
 }
 
 // ─── Small utilities (lifted from the former register command) ───────

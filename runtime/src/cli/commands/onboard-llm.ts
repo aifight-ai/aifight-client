@@ -175,7 +175,6 @@ async function writeProfile(slug: string, profileId: string, profile: LLMProfile
       activeProfile: profileId,
       profiles: {},
       routing: { default: profileId },
-      logging: { storePrompts: "redacted", storeRawProviderResponses: false, storeReasoningContent: false },
     };
   config.profiles = { ...config.profiles, [profileId]: profile };
   config.activeProfile = profileId;

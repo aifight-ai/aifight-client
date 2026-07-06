@@ -211,6 +211,39 @@ describe("BridgeRunner", () => {
     expect(complete?.message).toContain("Replay: https://aifight.ai/replay/real-match-1");
   });
 
+  it("match-complete summary stays neutral even when autoDailyLimit is exactly 2", async () => {
+    // Regression guard: the old copy treated cap === 2 as "user never customized"
+    // and appended a "set daily 4 to compete more often" upsell after EVERY match —
+    // false for anyone who deliberately chose 2, and (with the local cap stuck at
+    // the setup default) shown even to desktop users who had raised the server cap.
+    // The block is gone; the summary carries no cap nag.
+    const client = new FakeReconnectClient();
+    const connect = vi.fn(async (_opts: ReconnectingWSClientOptions) => client);
+    const logs: Array<{ code: string; message: string }> = [];
+    const runner = new BridgeRunner({
+      config: { ...bridgeConfig(), autoDailyLimit: 2 },
+      runtimeProvider: createMockRuntimeProvider(),
+      autoJoinGame: "liars_dice",
+      autoJoinMode: "ranked",
+      autoJoinOneShot: true,
+      connect,
+      onLog: (event) => logs.push(event),
+      sessionStore: false,
+    });
+
+    await runner.start();
+    client.emitMessage(gameStart());
+    client.emitMessage(actionRequest());
+    await flushEffects();
+    client.emitMessage(gameOver());
+    await flushEffects();
+
+    const complete = logs.find((event) => event.code === "bridge.match_complete");
+    expect(complete?.message).toContain("Match complete: Liar's Dice");
+    expect(complete?.message).not.toContain("set daily");
+    expect(complete?.message).not.toContain("per day");
+  });
+
   it("forwards raw server messages to onServerMessage even without a session store", async () => {
     const client = new FakeReconnectClient();
     const forwarded: ServerMessageEnvelope[] = [];

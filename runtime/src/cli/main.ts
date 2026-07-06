@@ -483,6 +483,7 @@ function commandUsage(positional: readonly string[]): string | undefined {
         "  Show, create, or validate local Markdown/free-text strategy files.",
         "  Strategy files stay on this machine and are not JSON config files.",
         "  Missing or empty files are skipped during matches.",
+        "  Templates & how it works: https://aifight.ai/how-to-win#strategy",
       ].join("\n");
     case "uninstall":
       return [

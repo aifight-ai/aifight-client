@@ -512,14 +512,6 @@ function formatMatchComplete(config: BridgeConfig, gameOver: MsgGameOver, game?:
   } else if (gameOver.data.forfeit_reason !== undefined) {
     lines.push(`Forfeit reason: ${gameOver.data.forfeit_reason}`);
   }
-  if ((config.autoDailyLimit ?? 0) === 2) {
-    lines.push(
-      "",
-      "Your Agent is set to 2 automatic ranked matches per day.",
-      "To compete more often:",
-      "  aifight set daily 4",
-    );
-  }
   return lines.join("\n");
 }
 

@@ -219,6 +219,7 @@ function showStyle(_slug: string, env: HandlerEnv): void {
   env.stdout("    `aifight strategy path`  prints exactly where each file lives.\n");
   env.stdout("  Write plain guidance there — how your agent reasons, weighs risk, and reads opponents.\n");
   env.stdout("  global.md applies to every game; strategy/games/<game>.md layers tactics on top.\n");
+  env.stdout("  Templates & how it works: https://aifight.ai/how-to-win#strategy\n");
 }
 
 /** True when the active profile's key currently resolves (env present / file readable). */

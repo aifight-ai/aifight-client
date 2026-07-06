@@ -150,7 +150,6 @@ function emptyConfig(): LLMConfig {
     activeProfile: "",
     profiles: {},
     routing: { default: "" },
-    logging: { storePrompts: "redacted", storeRawProviderResponses: false, storeReasoningContent: false },
   };
 }
 

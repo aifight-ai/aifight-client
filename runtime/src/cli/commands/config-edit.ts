@@ -535,7 +535,6 @@ export function mergeProfile(
         activeProfile: profileId,
         profiles: {},
         routing: { default: profileId },
-        logging: { storePrompts: "redacted", storeRawProviderResponses: false, storeReasoningContent: false },
       };
   config.profiles[profileId] = profile;
   if (setActive || !existing) {

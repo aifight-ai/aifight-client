@@ -49,9 +49,6 @@ export type GameType = "texas_holdem" | "liars_dice" | "coup";
  */
 export type SelfReviewAutoMode = "off" | "all" | "losses_only";
 
-/** How much of the prompt to persist in logs. */
-export type PromptStoreMode = "full" | "redacted" | "none";
-
 // ---------------------------------------------------------------------------
 // SecretRef — API key indirection
 // ---------------------------------------------------------------------------
@@ -234,23 +231,6 @@ export interface RoutingConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Logging preferences
-// ---------------------------------------------------------------------------
-
-export interface LoggingConfig {
-  /**
-   * "full"     — store the full prompt (may contain strategy details).
-   * "redacted" — store only metadata + token counts.
-   * "none"     — do not log prompts.
-   */
-  storePrompts?: PromptStoreMode;
-  /** Whether to store the raw JSON response from the provider. */
-  storeRawProviderResponses?: boolean;
-  /** Whether to store the reasoning/thinking content (can be large). */
-  storeReasoningContent?: boolean;
-}
-
-// ---------------------------------------------------------------------------
 // Self-review (post-match LLM analysis) — see SELF_REVIEW_DESIGN.md
 // ---------------------------------------------------------------------------
 
@@ -283,8 +263,6 @@ export interface LLMConfig {
   profiles: Record<string, LLMProfile>;
   /** Game-level routing rules. */
   routing: RoutingConfig;
-  /** Logging preferences. */
-  logging?: LoggingConfig;
   /** Post-match self-review behavior (optional; absent = feature off). */
   selfReview?: SelfReviewConfig;
 }
@@ -678,33 +656,6 @@ function validateSelfReview(
   }
 }
 
-function validateLogging(raw: unknown, path: string, errors: string[]): void {
-  if (!isObject(raw)) {
-    errors.push(`${path}: must be an object if present`);
-    return;
-  }
-  if (
-    raw.storePrompts !== undefined &&
-    raw.storePrompts !== "full" &&
-    raw.storePrompts !== "redacted" &&
-    raw.storePrompts !== "none"
-  ) {
-    errors.push(`${path}.storePrompts: must be "full", "redacted", or "none"`);
-  }
-  if (
-    raw.storeRawProviderResponses !== undefined &&
-    typeof raw.storeRawProviderResponses !== "boolean"
-  ) {
-    errors.push(`${path}.storeRawProviderResponses: must be a boolean`);
-  }
-  if (
-    raw.storeReasoningContent !== undefined &&
-    typeof raw.storeReasoningContent !== "boolean"
-  ) {
-    errors.push(`${path}.storeReasoningContent: must be a boolean`);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Public validator
 // ---------------------------------------------------------------------------
@@ -779,11 +730,6 @@ export function validateConfig(raw: unknown): ValidationResult {
     }
   }
 
-  // logging (optional)
-  if (raw.logging !== undefined) {
-    validateLogging(raw.logging, "logging", errors);
-  }
-
   if (errors.length > 0) {
     return { ok: false, errors };
   }
@@ -837,10 +783,5 @@ export const DEFAULT_CONFIG: LLMConfig = {
   },
   routing: {
     default: "claude-default",
-  },
-  logging: {
-    storePrompts: "redacted",
-    storeRawProviderResponses: false,
-    storeReasoningContent: false,
   },
 };

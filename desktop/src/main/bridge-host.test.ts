@@ -13,7 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { writeBridgeConfig, type BridgeConfig } from "@aifight/aifight/bridge/config";
+import { readBridgeConfig, writeBridgeConfig, type BridgeConfig } from "@aifight/aifight/bridge/config";
 import { FALLBACK_LIVE_GAMES } from "../shared/games";
 import { BridgeHost, pickAutoGame, safeExternalClaimUrl } from "./bridge-host";
 
@@ -108,6 +108,58 @@ describe("shared-config cross-check (CLI writes ↔ desktop reads)", () => {
     expect(health.connectedAt).toBeNull();
     expect(health.reconnects).toBe(0);
     expect(health.lastActivityAt).toBeNull();
+  });
+});
+
+// ── Daily-cap two-ledger sync (setAgentPolicy → local bridge.json) ───────────
+// The desktop's cap control writes the SERVER policy (source of truth) AND the
+// local bridge.json autoDailyLimit, so `aifight status` + the diagnostics card
+// (which read the LOCAL field) never disagree with what the user just set. The
+// desktop used to write the local field only at `aifight setup`, pinning it at
+// the default while the server cap moved.
+
+describe("setAgentPolicy reconciles the LOCAL bridge.json cap after the server accepts", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("writes autoDailyLimit back to bridge.json when the server PATCH succeeds", async () => {
+    freshHome();
+    writeBridgeConfig(validConfig()); // starts at autoDailyLimit: 7
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const host = new BridgeHost();
+    const r = await host.setAgentPolicy({ maxGamesPerDay: 6 });
+
+    expect(r.ok).toBe(true);
+    // PATCH hit the policy endpoint...
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://aifight.ai/api/agents/me/policy");
+    // ...and the local ledger the diagnostics card reads now agrees with it.
+    expect(readBridgeConfig().autoDailyLimit).toBe(6);
+  });
+
+  it("disabling auto-match (cap 0) is mirrored locally too", async () => {
+    freshHome();
+    writeBridgeConfig(validConfig()); // autoDailyLimit: 7
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, text: async () => "" }));
+
+    const r = await new BridgeHost().setAgentPolicy({ maxGamesPerDay: 0 });
+
+    expect(r.ok).toBe(true);
+    expect(readBridgeConfig().autoDailyLimit).toBe(0);
+  });
+
+  it("does NOT touch the local cap when the server PATCH fails (no half-applied state)", async () => {
+    freshHome();
+    writeBridgeConfig(validConfig()); // autoDailyLimit: 7
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 500, text: async () => "" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const r = await new BridgeHost().setAgentPolicy({ maxGamesPerDay: 6 });
+
+    expect(r.ok).toBe(false);
+    expect(readBridgeConfig().autoDailyLimit).toBe(7); // unchanged
   });
 });
 

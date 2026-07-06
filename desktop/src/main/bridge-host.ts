@@ -22,6 +22,7 @@
 import {
   dropClaimCredentialsAfterClaim,
   readBridgeConfig,
+  writeBridgeConfig,
   type BridgeConfig,
 } from "@aifight/aifight/bridge/config";
 import type { BridgeRunner as BridgeRunnerInstance } from "@aifight/aifight/bridge/runner";
@@ -655,9 +656,42 @@ export class BridgeHost {
         const t = await res.text().catch(() => "");
         return { ok: false, error: `HTTP ${res.status}${t ? ": " + t.slice(0, 200) : ""}` };
       }
+      // Two-ledger sync (mirrors `aifight set daily <N>`): the server is the source
+      // of truth for matchmaking, but the LOCAL bridge.json `autoDailyLimit` is what
+      // `aifight status` + the desktop diagnostics card read back. The desktop used
+      // to write that field ONLY at `aifight setup`, so it stayed pinned at the
+      // default while the server cap moved — the two ledgers disagreed (home hero
+      // showed 6, diagnostics still showed 2). Reconcile it here, but ONLY after the
+      // server confirms, and best-effort so a local-write hiccup never undoes a cap
+      // change the platform already accepted.
+      this.#persistDailyLimitLocally(patch.maxGamesPerDay);
       return { ok: true };
     } catch (cause) {
       return { ok: false, error: describeError(cause) };
+    }
+  }
+
+  /**
+   * Persist the daily cap into the shared bridge.json (`autoDailyLimit`) so the CLI
+   * `aifight status` view and the desktop diagnostics card reflect what the user set
+   * here. Skips the write when already in sync (no keychain churn from re-encrypting
+   * the config's secret fields), then re-reads + re-emits status so a mounted
+   * diagnostics/status view updates without waiting for a remount or focus refetch.
+   * Never throws: by the time we reach here the server write is already committed,
+   * so a local failure is logged, not surfaced as a failed policy change.
+   */
+  #persistDailyLimitLocally(maxGamesPerDay: number): void {
+    try {
+      const config = readBridgeConfig();
+      if (config.autoDailyLimit === maxGamesPerDay) return;
+      writeBridgeConfig({ ...config, autoDailyLimit: maxGamesPerDay, updatedAt: new Date().toISOString() });
+      this.readConfigSummary();
+    } catch (cause) {
+      this.#callbacks.onLog?.({
+        level: "warning",
+        code: "desktop.daily_limit_persist_failed",
+        message: describeError(cause),
+      });
     }
   }
 

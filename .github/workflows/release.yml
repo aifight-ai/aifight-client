@@ -214,7 +214,10 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
-          draft: false
+          # Owner policy (2026-07-06): releases land as DRAFTS by default —
+          # publish manually after checking assets. Skipping the draft stage
+          # is a per-release owner call (publish the draft immediately).
+          draft: true
           prerelease: false
           make_latest: true
           name: ${{ github.ref_name }}
