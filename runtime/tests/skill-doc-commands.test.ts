@@ -1,7 +1,12 @@
-// Batch E — "documentation as test". Extracts the concrete `aifight config`
-// commands from the public SKILL.md and runs each one, so a future edit that
-// drifts a flag name or profile-id convention (the class of bug that shipped
-// `config set-key default`) fails CI instead of reaching users.
+// Batch E / G3 — "documentation as test". Extracts the concrete `aifight config`
+// commands from BOTH published skill entry points — public/skill.md (served at
+// aifight.ai/skill.md) and skills/aifight/SKILL.md (the ClawHub copy) — and runs
+// each one, so a future edit that drifts a flag name or profile-id convention
+// (the class of bug that shipped `config set-key default`) fails CI instead of
+// reaching users. It also asserts the two files stay in lockstep, so a fix
+// applied to one entry point can't silently miss the other (the drift that left
+// public/skill.md advertising `set-key default` and `--auto` as an alias after
+// SKILL.md had already been corrected).
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
@@ -11,10 +16,11 @@ import { fileURLToPath } from "node:url";
 
 import { run } from "../src/cli/main";
 
-const SKILL_PATH = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../../skills/aifight/SKILL.md",
-);
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const SKILL_PATHS: ReadonlyArray<readonly [string, string]> = [
+  ["public/skill.md", path.join(REPO_ROOT, "public/skill.md")],
+  ["skills/aifight/SKILL.md", path.join(REPO_ROOT, "skills/aifight/SKILL.md")],
+];
 
 let prevHome: string | undefined;
 let tmpDir: string;
@@ -67,6 +73,12 @@ function extractConfigCommands(md: string): string[] {
     .filter((l) => !l.includes("<") && !l.includes("[") && !l.includes("|"));
 }
 
+/** The YAML frontmatter block (between the first pair of `---` fences). */
+function frontmatter(md: string): string {
+  const m = md.match(/^---\n([\s\S]*?)\n---\n/);
+  return m ? m[1] : "";
+}
+
 async function runCapture(argv: readonly string[]) {
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -74,8 +86,8 @@ async function runCapture(argv: readonly string[]) {
   return { code, stdout: stdout.join(""), stderr: stderr.join("") };
 }
 
-describe("SKILL.md config commands (doc-as-test)", () => {
-  const md = fs.readFileSync(SKILL_PATH, "utf8");
+describe.each(SKILL_PATHS)("%s config commands (doc-as-test)", (_label, skillPath) => {
+  const md = fs.readFileSync(skillPath, "utf8");
   const commands = extractConfigCommands(md);
 
   it("finds the documented headless config examples", () => {
@@ -111,5 +123,19 @@ describe("SKILL.md config commands (doc-as-test)", () => {
     // --auto and --approved-local-setup are distinct flags, not aliases.
     expect(md).not.toMatch(/alias[^\n]*--approved-local-setup/);
     expect(md).not.toMatch(/--auto`?\s*\(alias/);
+  });
+});
+
+describe("skill entry points stay in lockstep", () => {
+  const [pub, clawhub] = SKILL_PATHS.map(([, p]) => fs.readFileSync(p, "utf8"));
+
+  it("share the same shell blocks (no per-entry command drift)", () => {
+    // If one entry point is fixed and the other is not, the extracted shell
+    // blocks diverge here before the stale copy can reach users.
+    expect(extractShellLines(pub!)).toEqual(extractShellLines(clawhub!));
+  });
+
+  it("have byte-identical YAML frontmatter", () => {
+    expect(frontmatter(pub!)).toBe(frontmatter(clawhub!));
   });
 });

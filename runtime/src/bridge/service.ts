@@ -43,6 +43,10 @@ export interface BridgeServiceDeps {
   readonly systemdUserUnitPath?: string;
   readonly launchdPlistPath?: string;
   readonly launchdLogDir?: string;
+  /** How long (ms) install polls `launchctl print` to confirm the freshly
+   *  bootstrapped job registered before nudging it. Default 2000; tests pass 0
+   *  for a single immediate check. */
+  readonly launchdReadyTimeoutMs?: number;
 }
 
 export interface BridgeServiceTarget {
@@ -104,7 +108,10 @@ export async function installBridgeService(
     if (target.platform === "darwin-launchd-user") {
       await execFile("launchctl", ["bootout", launchdDomain(deps), target.unitPath]).catch(() => undefined);
       await execFile("launchctl", ["bootstrap", launchdDomain(deps), target.unitPath]);
-      const warning = await kickstartLaunchdBestEffort(deps);
+      // bootstrap + the plist's RunAtLoad already start the job; just confirm it
+      // registered. No `kickstart -k` here — it raced the fresh load and printed
+      // a scary "did not complete cleanly" during a perfectly healthy install.
+      const warning = await ensureLaunchdRunningBestEffort(deps);
       return { ...target, linger: "not_needed", ...(warning ? { warning } : {}) };
     }
 
@@ -356,6 +363,60 @@ async function kickstartLaunchdBestEffort(
       throw e;
     }
   }
+}
+
+/**
+ * Confirm a freshly bootstrapped launchd job is up — the gentle path used by
+ * `install`. The plist's RunAtLoad starts the service on bootstrap, so the
+ * normal path only verifies `launchctl print` answers (with a brief poll, since
+ * a just-loaded job can take a beat to register). Only if it never answers do we
+ * nudge it with a PLAIN `kickstart` (start, not `-k` kill+restart) and re-check.
+ *
+ * Never throws and never emits the old alarming "kickstart did not complete
+ * cleanly / Command failed" wording during a healthy install (⑤). Returns
+ * undefined on success; a single calm note only when the job was bootstrapped
+ * but could not be confirmed running. A genuine bootstrap failure throws earlier
+ * (installBridgeService's try/catch → a loud BridgeServiceError) and never
+ * reaches here.
+ */
+async function ensureLaunchdRunningBestEffort(
+  deps: BridgeServiceDeps,
+): Promise<string | undefined> {
+  const execFile = deps.execFile ?? defaultServiceExecFile;
+  const serviceName = `${launchdDomain(deps)}/${LAUNCHD_LABEL}`;
+  const timeoutMs = deps.launchdReadyTimeoutMs ?? 2_000;
+
+  if (await launchdJobRegistered(execFile, serviceName, timeoutMs)) return undefined;
+
+  // Not observably up yet → start it (plain kickstart), then re-check.
+  await execFile("launchctl", ["kickstart", serviceName]).catch(() => undefined);
+  if (await launchdJobRegistered(execFile, serviceName, timeoutMs)) return undefined;
+
+  return `${LAUNCHD_LABEL} is installed and set to start automatically, but has not reported as running yet. If your Agent does not come online, run \`aifight service restart\`.`;
+}
+
+/** Poll `launchctl print <service>` until it answers or the budget runs out.
+ *  timeoutMs = 0 → a single immediate check (used by tests). */
+async function launchdJobRegistered(
+  execFile: ServiceExecFile,
+  serviceName: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  for (;;) {
+    try {
+      await execFile("launchctl", ["print", serviceName]);
+      return true;
+    } catch {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      await sleep(Math.min(200, remaining));
+    }
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function enableLingerBestEffort(

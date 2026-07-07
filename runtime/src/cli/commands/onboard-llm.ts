@@ -436,11 +436,36 @@ export async function onboardDirectLLM(opts: {
 
   if (!opts.reconfigure && (await existingConfigIsUsable(slug, io, env))) return "configured";
 
+  // Snapshot the profiles that already existed BEFORE this wizard run, so we can
+  // warn before overwriting one. Each provider maps to a FIXED profile id (every
+  // OpenAI-compatible provider is "compat", etc.), so re-picking a configured
+  // provider would clobber it and force it active — silent data loss the new
+  // "add another" flow makes easy to hit. A profile written by an earlier failed
+  // attempt in THIS run is not "pre-existing" and never triggers the prompt.
+  const preExistingProfiles = (await readConfig(slug))?.profiles ?? {};
+
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const provider = await chooseProvider(io, env);
     if (!provider) {
       env.stdout("No provider selected.\n");
       return "failed";
+    }
+
+    // Confirm before overwriting a pre-existing profile (default No). To keep
+    // both, the user runs `aifight config add <name>` with a custom id. Headless
+    // `config add` is untouched — this gate lives only in the interactive wizard.
+    const clash = preExistingProfiles[provider.id];
+    if (clash) {
+      const replace = await io.promptYesNo(
+        `  You already have "${provider.id}" (${clash.model}). Replace it? (No keeps it — use \`aifight config add <name>\` to add another alongside)`,
+        false,
+      );
+      if (!replace) {
+        env.stdout(
+          `  Kept your existing "${provider.id}". Run \`aifight config add <name>\` to add another provider alongside it.\n`,
+        );
+        return "failed";
+      }
     }
 
     const baseURL = await chooseBaseURL(provider, io);

@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+
+import { Entry } from "@napi-rs/keyring";
 
 import {
   dropClaimCredentialsAfterClaim,
@@ -15,7 +18,10 @@ import {
   wsUrlIsValid,
   type BridgeConfig,
 } from "../src/bridge/config";
-import { AIFIGHT_CRYPTO_V1_PREFIX } from "../src/account/credentials";
+import {
+  AIFIGHT_CRYPTO_V1_PREFIX,
+  AIFIGHT_KEYCHAIN_V1_PREFIX,
+} from "../src/account/credentials";
 
 let prevHome: string | undefined;
 let tmpDir: string | null = null;
@@ -176,6 +182,83 @@ describe("bridge config credential encryption (F10)", () => {
     expect(fs.existsSync(getBridgeConfigPath())).toBe(false);
     removeBridgeConfig(); // no file → no throw
   });
+});
+
+// D1: a bridge.json whose credential fields still point at OS-keychain entries
+// migrates to the AES file backend on read, so future reads never touch the
+// keychain (no macOS authorization popup). Keychain decrypt/delete is
+// format-driven and works even under the suite-wide AIFIGHT_FORCE_FALLBACK=1.
+describe("bridge config keychain → file migration (D1)", () => {
+  const keychainAvailable: boolean = (() => {
+    const svc = "aifight-envprobe-" + randomUUID();
+    try {
+      const e = new Entry(svc, "check-" + randomUUID());
+      e.setPassword("probe");
+      try {
+        e.deletePassword();
+      } catch {
+        // best effort
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  let service = "";
+  let uuidToClean = "";
+
+  afterEach(() => {
+    if (service && uuidToClean) {
+      try {
+        new Entry(service, uuidToClean).deletePassword();
+      } catch {
+        // best effort
+      }
+    }
+    delete process.env.AIFIGHT_KEYCHAIN_SERVICE;
+    service = "";
+    uuidToClean = "";
+  });
+
+  it.skipIf(!keychainAvailable)(
+    "rewrites a legacy keychain-format field to a file BLOB on read and releases the entry",
+    () => {
+      const dir = useTempHome();
+      service = "aifight-test-" + randomUUID();
+      process.env.AIFIGHT_KEYCHAIN_SERVICE = service; // isolate from production
+
+      // Build a legacy keychain-format apiKey ref exactly as pre-D1 encrypt did.
+      const uuid = randomUUID();
+      uuidToClean = uuid;
+      new Entry(service, uuid).setPassword("sk-test-secret-key");
+      const keychainBlob = Buffer.concat([
+        Buffer.from(AIFIGHT_KEYCHAIN_V1_PREFIX, "ascii"),
+        Buffer.from(uuid, "ascii"),
+      ]);
+      const encField = "enc:" + keychainBlob.toString("base64");
+
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        getBridgeConfigPath(),
+        JSON.stringify({ ...config(), apiKey: encField }, null, 2) + "\n",
+      );
+
+      // Read decrypts via the keychain, returns plaintext, and migrates the file.
+      expect(readBridgeConfig().apiKey).toBe("sk-test-secret-key");
+
+      // On disk the apiKey is now a file BLOB (AIFIGHT_CRYPTO_V1), not a keychain ref.
+      const disk = JSON.parse(fs.readFileSync(getBridgeConfigPath(), "utf8")) as Record<string, unknown>;
+      const migrated = Buffer.from((disk.apiKey as string).slice("enc:".length), "base64");
+      expect(migrated.subarray(0, 18).toString("ascii")).toBe(AIFIGHT_CRYPTO_V1_PREFIX);
+      expect(migrated.subarray(0, 20).toString("ascii")).not.toBe(AIFIGHT_KEYCHAIN_V1_PREFIX);
+
+      // The now-orphaned keychain entry was released, and a second read is a
+      // clean no-migration round-trip.
+      expect(new Entry(service, uuid).getPassword()).toBeNull();
+      expect(readBridgeConfig().apiKey).toBe("sk-test-secret-key");
+    },
+  );
 });
 
 describe("wsUrlIsValid", () => {

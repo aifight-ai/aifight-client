@@ -54,7 +54,7 @@ import {
   randomUUID,
   scryptSync,
 } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, fsyncSync, linkSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
 
 import { ensureRuntimeHome, getRuntimeHome } from "../store/paths";
@@ -201,8 +201,137 @@ function loadOrCreateMasterKey(): Buffer {
     );
   }
   const path = getMasterKeyPath();
-  let key: Buffer;
-  if (existsSync(path)) {
+
+  // FIRST-WRITER-WINS — no check-then-act. Two independent processes can reach a
+  // fresh machine at once (the desktop app auto-starts its bridge while a
+  // headless `aifight` CLI or the launchd service runs) with NO cross-process
+  // lock between them. A plain existsSync()+writeFileSync() lets both mint a
+  // DIFFERENT master key and clobber each other; every ciphertext the loser
+  // already sealed then fails its AES-GCM tag and the local apiKey is bricked
+  // (recoverable only by re-pairing). O_CREAT|O_EXCL makes exactly one create
+  // win; whoever loses the create reads the winner's key instead. And unlike
+  // device.key, a master.key we cannot validate must FAIL CLOSED — overwriting
+  // it destroys data (ciphertext already sealed under the real key), it does not
+  // just re-mint a self-contained secret.
+  const created = tryCreateMasterKey(path);
+  const key = created ?? readExistingMasterKey(path);
+  masterKeyCache = key;
+  return key;
+}
+
+/** Create master.key first-writer-wins and return the freshly minted key, or
+ *  null when the file already exists — a prior run, or a concurrent first-writer
+ *  we lost the create race to (the caller then reads the winner). Any other I/O
+ *  error is fatal.
+ *
+ *  POSIX publishes via link(): the key is written + fsync'd to a private tmp and
+ *  then linked into place, so a create-race LOSER that reads master.key after the
+ *  winner's link only ever observes a COMPLETE file. A bare openSync("wx") +
+ *  writeSync leaves a 0-byte window between create and write; a loser spinning
+ *  its settle read through that window would false-throw on a perfectly good key
+ *  (~7% under a real desktop+CLI double launch — the review finding this closes).
+ *  Windows keeps the direct O_EXCL create (hard-link semantics vary by FS) and
+ *  relies on the 0-byte-aware settle read in readExistingMasterKey. */
+function tryCreateMasterKey(path: string): Buffer | null {
+  const key = randomBytes(MASTER_KEY_BYTES);
+  if (process.platform === "win32") {
+    try {
+      writeKeyFileDurable(path, key);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "EEXIST") return null;
+      throw new CredentialsCryptoError(
+        "kdf",
+        `failed to create master key at ${path}: ${e instanceof Error ? e.message : String(e)}`,
+        e,
+      );
+    }
+    return key;
+  }
+  const tmp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    writeKeyFileDurable(tmp, key);
+    try {
+      linkSync(tmp, path);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "EEXIST") return null;
+      throw new CredentialsCryptoError(
+        "kdf",
+        `failed to create master key at ${path}: ${e instanceof Error ? e.message : String(e)}`,
+        e,
+      );
+    }
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // best effort — a stray tmp file is harmless
+    }
+  }
+  // link() carries the tmp's perms; re-assert 0600 (umask may have masked it).
+  try {
+    chmodSync(path, 0o600);
+  } catch (e) {
+    throw new CredentialsCryptoError(
+      "kdf",
+      `failed to enforce 0600 permissions on new master key at ${path}: ${e instanceof Error ? e.message : String(e)}`,
+      e,
+    );
+  }
+  return key;
+}
+
+/** openSync("wx") + writeSync(full) + fsync + close. Create-or-fail; fsync so a
+ *  crash cannot leave a zero-length/torn key that later reads as corrupt. */
+function writeKeyFileDurable(file: string, key: Buffer): void {
+  const fd = openSync(file, "wx", 0o600);
+  try {
+    writeSync(fd, key);
+    fsyncSync(fd);
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // best effort — the bytes are already fsync'd.
+    }
+  }
+}
+
+/** Block ~ms without busy-spinning, to space out create-race settle reads so a
+ *  concurrent winner's write can land. Degrades to an immediate return where
+ *  SharedArrayBuffer/Atomics are unavailable. */
+function sleepSyncMs(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    // Atomics.wait / SharedArrayBuffer unavailable — skip the wait.
+  }
+}
+
+/** Read the on-disk master key — the common already-exists path, and the branch
+ *  a create-race loser takes. Re-asserts 0600, validates the 32-byte length, and
+ *  briefly retries a short/absent read to ride out a concurrent winner whose
+ *  write+fsync has not yet landed. FAILS CLOSED — never overwrites — so a
+ *  genuinely corrupt master.key surfaces as an error instead of silently
+ *  destroying every ciphertext sealed under the real key. */
+function readExistingMasterKey(path: string): Buffer {
+  // Re-assert 0600: a backup restore, sibling process, or user error could have
+  // widened perms after the original write. Refuse a key we cannot re-confine.
+  if (process.platform !== "win32") {
+    try {
+      chmodSync(path, 0o600);
+    } catch (e) {
+      throw new CredentialsCryptoError(
+        "kdf",
+        `failed to enforce 0600 permissions on existing master key at ${path}: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+        e,
+      );
+    }
+  }
+  let lastLen = -1;
+  for (let i = 0; i < 8; i++) {
+    let key: Buffer;
     try {
       key = readFileSync(path);
     } catch (e) {
@@ -214,51 +343,20 @@ function loadOrCreateMasterKey(): Buffer {
         e,
       );
     }
-    if (key.length !== MASTER_KEY_BYTES) {
-      throw new CredentialsCryptoError(
-        "kdf",
-        `master key at ${path} is ${key.length} bytes, expected ${MASTER_KEY_BYTES}`,
-      );
-    }
-    // Re-assert 0600 on existing files: a sibling process, backup
-    // restore, or user error could have widened perms after the
-    // original write. FAIL CLOSED — refuse to use a master key
-    // whose confidentiality we cannot re-assert.
-    if (process.platform !== "win32") {
-      try {
-        chmodSync(path, 0o600);
-      } catch (e) {
-        throw new CredentialsCryptoError(
-          "kdf",
-          `failed to enforce 0600 permissions on existing master key at ${path}: ${
-            e instanceof Error ? e.message : String(e)
-          }`,
-          e,
-        );
-      }
-    }
-  } else {
-    key = randomBytes(MASTER_KEY_BYTES);
-    try {
-      writeFileSync(path, key, { mode: 0o600 });
-      // Re-chmod on POSIX: the writeFileSync `mode` option only
-      // takes effect on create and can be masked by umask on some
-      // systems. An explicit chmod guarantees the final 0600.
-      if (process.platform !== "win32") {
-        chmodSync(path, 0o600);
-      }
-    } catch (e) {
-      throw new CredentialsCryptoError(
-        "kdf",
-        `failed to persist master key at ${path}: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-        e,
-      );
-    }
+    if (key.length === MASTER_KEY_BYTES) return key;
+    lastLen = key.length;
+    // On Windows (direct O_EXCL create) a create-race loser can read the file in
+    // the instant after create but before the winner's single 32-byte write — an
+    // empty (0-byte) read. Wait briefly and retry ONLY that transient; any other
+    // wrong length is persistent corruption, so fail closed at once and never
+    // overwrite (that would destroy ciphertext sealed under the real key).
+    if (key.length !== 0) break;
+    if (i < 7) sleepSyncMs(5);
   }
-  masterKeyCache = key;
-  return key;
+  throw new CredentialsCryptoError(
+    "kdf",
+    `master key at ${path} is ${lastLen} bytes, expected ${MASTER_KEY_BYTES}`,
+  );
 }
 
 // ─── Encrypt ────────────────────────────────────────────────────────
@@ -304,29 +402,22 @@ function encryptWithFallback(plaintext: string): Buffer {
 }
 
 export function encryptForStorage(plaintext: string): Buffer {
-  if (isKeychainAvailable()) {
-    const uuid = randomUUID();
-    try {
-      new Entry(getServiceName(), uuid).setPassword(plaintext);
-      return Buffer.concat([
-        Buffer.from(AIFIGHT_KEYCHAIN_V1_PREFIX, "ascii"),
-        Buffer.from(uuid, "ascii"),
-      ]);
-    } catch (e) {
-      // Runtime demotion: probe succeeded but the real setPassword
-      // failed. Flip the cache so subsequent calls skip keychain,
-      // then fall through to fallback. The write error itself is
-      // NOT re-thrown — fallback is a superset path that doesn't
-      // depend on the OS keychain.
-      backendCache = {
-        backend: "fallback-crypto",
-        keychainProbeMessage: `runtime keychain write failed: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      };
-      // fall through
-    }
-  }
+  // Unified local-file backend (D1): always emit the AES-256-GCM file BLOB
+  // (AIFIGHT_CRYPTO_V1) — the OS keychain is no longer WRITTEN.
+  //
+  // Why: a keychain entry created by one code-signed program (the desktop app)
+  // and read by another (the CLI's Node binary) makes macOS raise a "enter your
+  // login keychain password" authorization dialog. On the app+CLI-on-one-machine
+  // setup this is unavoidable and reads to users as spyware. The user's most
+  // valuable secret (the LLM API key) is already a 0600 plaintext file, so
+  // guarding the platform key behind a popup-prone keychain was protection
+  // inversion. Every major peer tool (Cherry Studio, opencode, aws/gh) keeps
+  // credentials in a local config file; this adds an AES-256-GCM layer on top.
+  //
+  // Existing AIFIGHT_KEYCHAIN_V1 BLOBs are still READ and one-time migrated to
+  // this format (decryptFromStorage stays format-driven; bridge/config.ts
+  // rewrites + releases the old keychain entry on next read).
+  // AIFIGHT_FORCE_FALLBACK=1 is retained and now simply matches the default.
   return encryptWithFallback(plaintext);
 }
 

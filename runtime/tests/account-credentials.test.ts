@@ -15,18 +15,21 @@
 //   - Every case sets env BEFORE it calls any credentials API, and
 //     calls resetCredentialsBackendCacheForTests() after the env
 //     change so module-level caches cannot leak across cases.
-//   - The setPassword-demotion case uses vi.doMock + vi.resetModules
-//     + dynamic import; credentials.ts is not modified to accommodate
-//     the mock.
+//   - Under the D1 unified file backend, encrypt always emits the
+//     AIFIGHT_CRYPTO_V1 file BLOB; the keychain is only READ + DELETED for
+//     one-time migration of legacy AIFIGHT_KEYCHAIN_V1 BLOBs. Cases 10/11
+//     construct such a legacy BLOB by hand (new Entry(...).setPassword) to
+//     exercise those still-live read/delete paths.
 //   - afterEach cleans up real keychain entries via the exact shape
 //     { account, password } probed on 2026-04-24 (commit ce2388e):
 //     `new Entry(testService, account).deletePassword()`.
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   chmodSync,
   existsSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -47,7 +50,7 @@ import {
   isKeychainAvailable,
   resetCredentialsBackendCacheForTests,
 } from "../src/account/credentials";
-import { CredentialsCorruptError } from "../src/account/errors";
+import { CredentialsCorruptError, CredentialsCryptoError } from "../src/account/errors";
 
 // ─── Test fixture plumbing ──────────────────────────────────────────
 
@@ -136,27 +139,18 @@ describe("credentials.ts — M1-05", () => {
     expect(typeof isKeychainAvailable()).toBe("boolean");
   });
 
-  it.skipIf(!keychainAvailable)(
-    "Case 2 — keychain path round-trip (platform dependent)",
-    () => {
-      expect(isKeychainAvailable()).toBe(true);
+  it("Case 2 — encrypt always emits the file BLOB, never a keychain ref (D1)", () => {
+    // Even on a machine with a usable keychain, encrypt no longer WRITES it —
+    // the unified local-file backend (AIFIGHT_CRYPTO_V1) is the only output.
+    const plaintext = "sk-secret-" + randomUUID();
+    const blob = encryptForStorage(plaintext);
 
-      const plaintext = "sk-secret-" + randomUUID();
-      const blob = encryptForStorage(plaintext);
-
-      // Format A: 20-byte prefix + 36-byte UUID = 56 bytes total.
-      expect(blob.length).toBe(56);
-      expect(blob.subarray(0, 20).toString("ascii")).toBe(
-        AIFIGHT_KEYCHAIN_V1_PREFIX,
-      );
-
-      expect(decryptFromStorage(blob)).toBe(plaintext);
-
-      // Delete removes the keychain entry; subsequent decrypt throws.
-      deleteFromStorage(blob);
-      expect(() => decryptFromStorage(blob)).toThrow(CredentialsCorruptError);
-    },
-  );
+    expect(blob.subarray(0, 18).toString("ascii")).toBe(AIFIGHT_CRYPTO_V1_PREFIX);
+    expect(blob.subarray(0, 20).toString("ascii")).not.toBe(
+      AIFIGHT_KEYCHAIN_V1_PREFIX,
+    );
+    expect(decryptFromStorage(blob)).toBe(plaintext);
+  });
 
   it("Case 3 — fallback path round-trip (AIFIGHT_FORCE_FALLBACK=1)", () => {
     teardownEnv();
@@ -250,78 +244,39 @@ describe("credentials.ts — M1-05", () => {
   });
 
   it.skipIf(!keychainAvailable)(
-    "Case 10 — keychain write failure demotes to fallback (mock @napi-rs/keyring)",
-    async () => {
-      teardownEnv();
-      setupEnv(); // keychain path, no forced fallback
+    "Case 10 — legacy keychain BLOBs still decrypt + delete (migration read path)",
+    () => {
+      // encrypt no longer writes the keychain, so construct a legacy
+      // AIFIGHT_KEYCHAIN_V1 BLOB the pre-D1 way to exercise the still-live
+      // keychain READ + DELETE that credential migration depends on.
+      const plaintext = "legacy-" + randomUUID();
+      const uuid = randomUUID();
+      new Entry(testService, uuid).setPassword(plaintext);
+      const blob = Buffer.concat([
+        Buffer.from(AIFIGHT_KEYCHAIN_V1_PREFIX, "ascii"),
+        Buffer.from(uuid, "ascii"),
+      ]);
+      expect(blob.length).toBe(56);
 
-      vi.resetModules();
-      vi.doMock("@napi-rs/keyring", async (importOriginal) => {
-        const actual =
-          await importOriginal<typeof import("@napi-rs/keyring")>();
-        class MockEntry {
-          constructor(
-            public readonly service: string,
-            public readonly username: string,
-          ) {}
-          setPassword(pw: string): void {
-            // Probe uses the "probe-" prefix — let it through to
-            // real keychain so getCredentialsBackend() sees
-            // backend = keychain. Any OTHER username fails,
-            // exercising the runtime-demotion code path.
-            if (this.username.startsWith("probe-")) {
-              new actual.Entry(this.service, this.username).setPassword(pw);
-              return;
-            }
-            throw new Error("mock-keychain-write-failure");
-          }
-          getPassword(): string | null {
-            return new actual.Entry(this.service, this.username).getPassword();
-          }
-          deletePassword(): boolean {
-            return new actual.Entry(
-              this.service,
-              this.username,
-            ).deletePassword();
-          }
-        }
-        return {
-          ...actual,
-          Entry: MockEntry,
-        };
-      });
+      // decrypt reads the value back out of the keychain entry
+      expect(decryptFromStorage(blob)).toBe(plaintext);
 
-      try {
-        const mod = await import("../src/account/credentials");
-        mod.resetCredentialsBackendCacheForTests();
-
-        const blob = mod.encryptForStorage("demotion-test");
-
-        // After demotion, blob is Format B (fallback) and cache is
-        // flipped so the next encrypt skips the keychain path.
-        expect(blob.subarray(0, 18).toString("ascii")).toBe(
-          AIFIGHT_CRYPTO_V1_PREFIX,
-        );
-        expect(mod.getCredentialsBackend().backend).toBe("fallback-crypto");
-
-        const blob2 = mod.encryptForStorage("still-fallback");
-        expect(blob2.subarray(0, 18).toString("ascii")).toBe(
-          AIFIGHT_CRYPTO_V1_PREFIX,
-        );
-      } finally {
-        vi.doUnmock("@napi-rs/keyring");
-        vi.resetModules();
-      }
+      // once deleted, the entry is gone → decrypt reports corruption
+      deleteFromStorage(blob);
+      expect(() => decryptFromStorage(blob)).toThrow(CredentialsCorruptError);
     },
   );
 
   it.skipIf(!keychainAvailable)(
-    "Case 11 — deleteFromStorage is idempotent on keychain path",
+    "Case 11 — deleteFromStorage is idempotent on a legacy keychain BLOB",
     () => {
-      const blob = encryptForStorage("delete-me");
-      expect(blob.subarray(0, 20).toString("ascii")).toBe(
-        AIFIGHT_KEYCHAIN_V1_PREFIX,
-      );
+      // Construct a legacy keychain BLOB (encrypt no longer produces one).
+      const uuid = randomUUID();
+      new Entry(testService, uuid).setPassword("delete-me");
+      const blob = Buffer.concat([
+        Buffer.from(AIFIGHT_KEYCHAIN_V1_PREFIX, "ascii"),
+        Buffer.from(uuid, "ascii"),
+      ]);
 
       expect(() => deleteFromStorage(blob)).not.toThrow();
       // Second delete on the now-absent entry: still no-throw.
@@ -413,6 +368,71 @@ describe("credentials.ts — M1-05", () => {
       encryptForStorage("trigger-load");
 
       expect(statSync(keyPath).mode & 0o777).toBe(0o600);
+    },
+  );
+
+  it.skipIf(!POSIX)(
+    "Case 16 — an existing master.key is adopted, never overwritten (first-writer-wins)",
+    () => {
+      teardownEnv();
+      setupEnv({ forceFallback: true });
+
+      // Pre-seed a valid 32-byte master.key, as a concurrent first-writer would
+      // have left it. This process must ADOPT it (O_EXCL create loses cleanly),
+      // never clobber it — overwriting would strand every ciphertext already
+      // sealed under it.
+      const keyPath = join(testHome, "master.key");
+      const winner = randomBytes(32);
+      writeFileSync(keyPath, winner, { mode: 0o600 });
+
+      const blob = encryptForStorage("sealed-under-the-winner-key");
+      expect(decryptFromStorage(blob)).toBe("sealed-under-the-winner-key");
+
+      // The pre-existing key bytes are byte-identical afterwards — the create
+      // race was lost and we read the winner instead of minting a new key.
+      expect(readFileSync(keyPath).equals(winner)).toBe(true);
+      expect(statSync(keyPath).mode & 0o777).toBe(0o600);
+    },
+  );
+
+  it.skipIf(!POSIX)(
+    "Case 17 — a corrupt (wrong-length) master.key fails closed and is not overwritten",
+    () => {
+      teardownEnv();
+      setupEnv({ forceFallback: true });
+
+      // A short/torn master.key must NOT be re-minted: if the real 32-byte key
+      // is merely unreadable right now, overwriting it would destroy the ability
+      // to decrypt everything sealed under it. Fail closed instead.
+      const keyPath = join(testHome, "master.key");
+      writeFileSync(keyPath, Buffer.alloc(10, 7), { mode: 0o600 });
+
+      expect(() => encryptForStorage("must-not-mint-over-corrupt")).toThrow(
+        CredentialsCryptoError,
+      );
+      // The corrupt bytes are left exactly as-is — never clobbered.
+      expect(readFileSync(keyPath).length).toBe(10);
+    },
+  );
+
+  it.skipIf(!POSIX)(
+    "Case 18 — a persistent 0-byte master.key fails closed and is not overwritten",
+    () => {
+      teardownEnv();
+      setupEnv({ forceFallback: true });
+
+      // A 0-byte read is the transient a create-race loser can briefly see while
+      // a winner is mid-write; the settle loop rides that out. But a PERSISTENT
+      // 0-byte file (nothing is writing it) must still fail closed after the
+      // retries rather than being minted over — overwriting could destroy the
+      // real key if it were merely unreadable.
+      const keyPath = join(testHome, "master.key");
+      writeFileSync(keyPath, Buffer.alloc(0), { mode: 0o600 });
+
+      expect(() => encryptForStorage("must-not-mint-over-empty")).toThrow(
+        CredentialsCryptoError,
+      );
+      expect(statSync(keyPath).size).toBe(0); // never overwritten
     },
   );
 });

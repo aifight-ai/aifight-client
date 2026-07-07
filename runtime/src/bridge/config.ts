@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import {
+  AIFIGHT_KEYCHAIN_V1_PREFIX,
   decryptFromStorage,
   deleteFromStorage,
   encryptForStorage,
@@ -149,6 +150,22 @@ function isEncryptedField(value: string): boolean {
   return value.startsWith(ENC_FIELD_PREFIX);
 }
 
+const KEYCHAIN_PREFIX_BYTES = Buffer.byteLength(AIFIGHT_KEYCHAIN_V1_PREFIX, "ascii");
+
+/** True when an on-disk encrypted ref points at a legacy OS-keychain entry
+ *  (AIFIGHT_KEYCHAIN_V1 BLOB) rather than an AES-256-GCM file BLOB — the signal
+ *  to migrate it to the unified file backend on read (D1), so future reads never
+ *  touch the keychain (→ no macOS authorization popup). */
+function isKeychainFormatRef(value: string): boolean {
+  if (!isEncryptedField(value)) return false;
+  try {
+    const blob = Buffer.from(value.slice(ENC_FIELD_PREFIX.length), "base64");
+    return blob.subarray(0, KEYCHAIN_PREFIX_BYTES).toString("ascii") === AIFIGHT_KEYCHAIN_V1_PREFIX;
+  } catch {
+    return false;
+  }
+}
+
 function encryptField(plaintext: string): string {
   return ENC_FIELD_PREFIX + encryptForStorage(plaintext).toString("base64");
 }
@@ -232,9 +249,22 @@ export function writeBridgeConfig(config: BridgeConfig): void {
     // verbatim rather than double-wrapped.
     if (typeof v === "string" && !isEncryptedField(v)) onDisk[field] = encryptField(v);
   }
-  const tmpPath = `${filePath}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(onDisk, null, 2) + "\n", { mode: 0o600 });
-  fs.renameSync(tmpPath, filePath);
+  // Per-process tmp name: two processes writing bridge.json at once (the desktop
+  // bridge + the CLI, e.g. during the keychain→file migration) must not share
+  // one fixed `.tmp` path and clobber each other's staging file or race the
+  // rename to ENOENT. rename() is atomic, so the last writer still wins cleanly.
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(onDisk, null, 2) + "\n", { mode: 0o600 });
+    fs.renameSync(tmpPath, filePath);
+  } catch (e) {
+    try {
+      fs.rmSync(tmpPath, { force: true });
+    } catch {
+      // best effort — never leave a half-written staging file behind
+    }
+    throw e;
+  }
   if (process.platform !== "win32") {
     try {
       fs.chmodSync(filePath, 0o600);
@@ -272,11 +302,13 @@ export function readBridgeConfig(): BridgeConfig {
   const decrypted: Record<string, unknown> = { ...record };
   let anyEncrypted = false;
   let anyPlaintext = false;
+  let anyKeychainFormat = false;
   try {
     for (const field of ENCRYPTED_FIELDS) {
       const v = record[field];
       if (typeof v !== "string") continue;
       if (isEncryptedField(v)) {
+        if (isKeychainFormatRef(v)) anyKeychainFormat = true;
         decrypted[field] = decryptField(v);
         anyEncrypted = true;
       } else {
@@ -297,15 +329,19 @@ export function readBridgeConfig(): BridgeConfig {
   }
   const config = (anyEncrypted ? decrypted : record) as unknown as BridgeConfig;
 
-  // Lazy migration: a pre-F10 install stored these fields in plaintext.
-  // Re-write encrypted on first read; best effort — reading must keep
-  // working even when the keychain refuses, so a failed migration just
-  // leaves the file as-is (the pre-F10 status quo).
-  if (anyPlaintext) {
+  // Lazy migration to the unified file backend, on first read. Two triggers:
+  //   - anyPlaintext: a pre-F10 install stored these fields unencrypted.
+  //   - anyKeychainFormat: a prior install stored them as OS-keychain refs;
+  //     rewriting them as AES-256-GCM file BLOBs means future reads never touch
+  //     the keychain (→ no macOS authorization popup). writeBridgeConfig then
+  //     releases the now-orphaned keychain entries (releaseFieldSecret).
+  // Best effort — reading must keep working even when a rewrite fails, so a
+  // failed migration just leaves the file as-is and the next read retries.
+  if (anyPlaintext || anyKeychainFormat) {
     try {
       writeBridgeConfig(config);
     } catch {
-      // Keep the plaintext file; the next read retries.
+      // Keep the existing file; the next read retries the migration.
     }
   }
 

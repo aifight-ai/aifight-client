@@ -177,23 +177,264 @@ async function runConfigInteractive(env: HandlerEnv): Promise<number> {
   }
 }
 
-async function configureLLMInteractive(slug: string, io: OnboardIO, env: HandlerEnv): Promise<void> {
+/** Interactive LLM step of the config hub. Exported for tests (scripted IO). */
+export async function configureLLMInteractive(slug: string, io: OnboardIO, env: HandlerEnv): Promise<void> {
   // Ensure the agent files exist, quietly. This never reads the environment.
   await runConfigInit({ positional: [slug], flags: {}, jsonMode: false }, { ...env, stdout: () => {} });
-  let reconfigure = false;
-  if (await activeKeyResolves(slug)) {
-    reconfigure = await io.promptYesNo("  An LLM is already set up. Set up a different one?", false);
+
+  // A returning user with at least one working LLM profile gets the full
+  // multi-config manager (list / switch / edit / add / remove / test). A fresh
+  // user — nothing configured that actually resolves — drops straight into the
+  // guided first-time onboarding, exactly as before.
+  if (await hasResolvableProfile(slug)) {
+    await manageLLMProfiles(slug, io, env);
+    return;
   }
   env.stdout("\n");
-  await onboardDirectLLM({ slug, env, io, reconfigure });
+  await onboardDirectLLM({ slug, env, io, reconfigure: false });
+}
+
+// ─── multi-config manager (⑦) ────────────────────────────────────────
+//
+// The interactive counterpart to the headless `config use / update / add /
+// remove / test` commands. Every action DELEGATES to those handlers, so the
+// menu owns no validation, no linkage rules, and no write logic of its own — it
+// only gathers the choice and the changed fields. That keeps the interactive
+// path behaviourally identical to the equivalent one-line command (and keeps it
+// unit-testable with a scripted IO).
+
+/** Drive the profile manager loop until the user backs out. Exported for tests. */
+export async function manageLLMProfiles(slug: string, io: OnboardIO, env: HandlerEnv): Promise<void> {
+  for (;;) {
+    const view = await loadProfileRows(slug);
+    if (view.rows.length === 0) {
+      // Defensive: callers only enter here with ≥1 resolvable profile, but if a
+      // concurrent edit emptied the config, fall back to onboarding.
+      env.stdout("\n");
+      await onboardDirectLLM({ slug, env, io, reconfigure: true });
+      return;
+    }
+
+    renderProfileList(view, env);
+    env.stdout(
+      [
+        "",
+        "  1) Switch which one is active",
+        "  2) Edit a configuration",
+        "  3) Add another configuration",
+        "  4) Remove a configuration",
+        "  5) Test a configuration",
+        "  q) Back",
+        "",
+      ].join("\n"),
+    );
+    const choice = (await io.promptLine("  Choose [1-5, q]: ")).trim().toLowerCase();
+    if (choice === "" || choice === "q" || choice === "quit" || choice === "back" || choice === "b") {
+      return;
+    }
+    try {
+      switch (choice) {
+        case "1":
+          await switchActiveProfile(slug, view, io, env);
+          break;
+        case "2":
+          await editProfileInteractive(slug, view, io, env);
+          break;
+        case "3":
+          env.stdout("\n");
+          await onboardDirectLLM({ slug, env, io, reconfigure: true });
+          break;
+        case "4":
+          await removeProfileInteractive(slug, view, io, env);
+          break;
+        case "5":
+          await testProfileInteractive(slug, view, io, env);
+          break;
+        default:
+          env.stdout("  Please enter 1, 2, 3, 4, 5, or q.\n");
+      }
+    } catch (e) {
+      printActionError(e, env);
+    }
+  }
+}
+
+/** Print the numbered profile list with active / key-status annotations. */
+function renderProfileList(view: ProfileView, env: HandlerEnv): void {
+  env.stdout("\n  Your LLM configurations:\n");
+  view.rows.forEach((r, i) => {
+    const tags = [
+      r.id === view.activeProfile ? "active" : null,
+      r.resolvable ? null : "key not resolvable",
+    ].filter((t): t is string => t !== null);
+    const suffix = tags.length > 0 ? `  [${tags.join(", ")}]` : "";
+    env.stdout(`    ${i + 1}) ${r.id} — ${r.model} (${r.protocol})${suffix}\n`);
+  });
+}
+
+/** Ask the user to pick a profile from the shown list (number or exact id). */
+async function promptProfilePick(
+  view: ProfileView,
+  io: OnboardIO,
+  env: HandlerEnv,
+  verb: string,
+): Promise<string | undefined> {
+  const ans = (await io.promptLine(`  Which profile to ${verb}? [1-${view.rows.length}, Enter to cancel]: `)).trim();
+  if (ans === "") return undefined;
+  const n = Number.parseInt(ans, 10);
+  if (Number.isInteger(n) && n >= 1 && n <= view.rows.length) return view.rows[n - 1]!.id;
+  const byId = view.rows.find((r) => r.id === ans);
+  if (byId) return byId.id;
+  env.stdout("  That is not one of the choices.\n");
+  return undefined;
+}
+
+async function switchActiveProfile(slug: string, view: ProfileView, io: OnboardIO, env: HandlerEnv): Promise<void> {
+  const id = await promptProfilePick(view, io, env, "make active");
+  if (id === undefined) return;
+  await runConfigUse({ positional: [id, slug], flags: {}, jsonMode: false }, env);
+  await offerTest(slug, id, io, env);
+}
+
+async function testProfileInteractive(slug: string, view: ProfileView, io: OnboardIO, env: HandlerEnv): Promise<void> {
+  const id = await promptProfilePick(view, io, env, "test");
+  if (id === undefined) return;
+  await runConfigProbe({ positional: [slug], flags: { profile: id }, jsonMode: false }, env);
+}
+
+async function removeProfileInteractive(slug: string, view: ProfileView, io: OnboardIO, env: HandlerEnv): Promise<void> {
+  const id = await promptProfilePick(view, io, env, "remove");
+  if (id === undefined) return;
+  // runConfigRemove refuses the active profile and (on a real TTY) asks the user
+  // to re-type the id to confirm — the delete safety lives there, not here.
+  await runConfigRemove({ positional: [id, slug], flags: {}, jsonMode: false }, env);
+}
+
+/** Edit one profile field-by-field; Enter keeps the current value. Collects only
+ *  the CHANGED fields and hands them to `config update`, so all validation and
+ *  the effort⇄max-tokens guardrail run exactly once, in one place. */
+async function editProfileInteractive(slug: string, view: ProfileView, io: OnboardIO, env: HandlerEnv): Promise<void> {
+  const id = await promptProfilePick(view, io, env, "edit");
+  if (id === undefined) return;
+  const { config } = await readConfigJson(slug);
+  const p = config.profiles[id];
+  if (!p) {
+    env.stdout(`  Profile "${id}" is no longer there.\n`);
+    return;
+  }
+
+  env.stdout(`\n  Editing "${id}" (${p.protocol}). Press Enter to keep a value unchanged.\n`);
+  env.stdout("  (To change the API key, use option 3 to re-add it, or `aifight config set-key`.)\n");
+
+  const flags: Record<string, string | number | boolean> = { "no-test": true };
+
+  // model — optionally list what the provider offers first
+  if (await io.promptYesNo("  List the models this provider offers first?", false)) {
+    try {
+      await runConfigModels({ positional: [id, slug], flags: {}, jsonMode: false }, env);
+    } catch (e) {
+      env.stdout(`  (could not list models: ${e instanceof Error ? e.message : String(e)})\n`);
+    }
+  }
+  // For every field: submit the flag ONLY when the value actually changes.
+  // Re-typing the current value (rather than pressing Enter) must be a no-op —
+  // otherwise a same-value `--effort` would still hit `update`'s effort⇄max-tokens
+  // guardrail and silently raise a max-tokens the user had deliberately lowered.
+  const model = (await io.promptLine(`  Model [keep ${p.model}]: `)).trim();
+  if (model !== "" && model !== p.model) flags["model"] = model;
+
+  // thinking on/off
+  const thinkingCur = p.thinking?.enabled ?? true;
+  const thinking = (await io.promptLine(`  Thinking on/off [keep ${thinkingCur ? "on" : "off"}]: `)).trim().toLowerCase();
+  const thinkingRecognized =
+    thinking === "on" || thinking === "off" || thinking === "true" || thinking === "false";
+  const wantThinking = thinking === "on" || thinking === "true";
+  // Unrecognized input passes through so `update` can report the error; a
+  // recognized value only counts when it flips the current state.
+  if (thinking !== "" && (!thinkingRecognized || wantThinking !== thinkingCur)) flags["thinking"] = thinking;
+
+  // reasoning effort
+  const effortCur = p.thinking?.effort ?? "";
+  const effort = (await io.promptLine(`  Reasoning effort [keep ${p.thinking?.effort ?? "default"}]: `)).trim();
+  if (effort !== "" && effort.toLowerCase() !== String(effortCur).toLowerCase()) flags["effort"] = effort;
+
+  // max output tokens
+  const mtRaw = (await io.promptLine(`  Max output tokens [keep ${p.request?.maxTokens ?? "default"}]: `)).trim();
+  if (mtRaw !== "") {
+    if (!/^\d+$/.test(mtRaw)) env.stdout("  (max tokens must be a whole number — keeping the current value.)\n");
+    else {
+      const n = Number.parseInt(mtRaw, 10);
+      if (n !== p.request?.maxTokens) flags["max-tokens"] = n;
+    }
+  }
+
+  // base URL
+  const baseURL = (await io.promptLine(`  Base URL [keep ${p.baseURL ?? "(protocol default)"}]: `)).trim();
+  if (baseURL !== "" && baseURL !== (p.baseURL ?? "")) flags["base-url"] = baseURL;
+
+  // streaming
+  const stream = (await io.promptLine(`  Streaming auto/always/never [keep ${p.request?.stream ?? "auto"}]: `)).trim().toLowerCase();
+  if (stream !== "" && stream !== (p.request?.stream ?? "auto")) flags["stream"] = stream;
+
+  // temperature — only meaningful (and only accepted by `update`) when thinking
+  // is off, so mirror the wizard and only ask in that case.
+  const willThink = thinking === "" ? thinkingCur : wantThinking;
+  if (!willThink) {
+    const cur = p.request?.temperature;
+    const tRaw = (await io.promptLine(`  Temperature 0-2 [keep ${cur === null || cur === undefined ? "(omitted)" : cur}]: `)).trim();
+    if (tRaw !== "") {
+      const t = Number.parseFloat(tRaw);
+      if (!Number.isFinite(t)) env.stdout("  (temperature must be a number — keeping the current value.)\n");
+      else if (t !== cur) flags["temperature"] = t;
+    }
+  }
+
+  const changed = Object.keys(flags).filter((k) => k !== "no-test");
+  if (changed.length === 0) {
+    env.stdout("  No changes made.\n");
+    return;
+  }
+
+  await runConfigUpdate({ positional: [id, slug], flags, jsonMode: false }, env);
+  await offerTest(slug, id, io, env);
+}
+
+/** Offer an immediate live test of a profile (reuses `config test`). */
+async function offerTest(slug: string, id: string, io: OnboardIO, env: HandlerEnv): Promise<void> {
+  if (await io.promptYesNo(`  Test "${id}" now?`, true)) {
+    await runConfigProbe({ positional: [slug], flags: { profile: id }, jsonMode: false }, env);
+  }
+}
+
+/** Surface a delegated-handler error inside the menu without aborting the loop. */
+function printActionError(e: unknown, env: HandlerEnv): void {
+  if (e instanceof CommandError || e instanceof UsageError) {
+    env.stdout(`  ${e.message}\n`);
+    if (e.hint) env.stdout(e.hint.split("\n").map((l) => `  ${l}`).join("\n") + "\n");
+  } else {
+    env.stdout(`  Could not complete that step: ${e instanceof Error ? e.message : String(e)}\n`);
+  }
 }
 
 async function configureDailyInteractive(io: OnboardIO, env: HandlerEnv): Promise<void> {
-  const raw = (await io.promptLine("  Automatic ranked matches per day [0-20, 0 = off]: ")).trim();
-  if (!/^\d+$/.test(raw) || Number.parseInt(raw, 10) > 20) {
-    env.stdout("  Enter a whole number between 0 and 20.\n");
+  let current: number | undefined;
+  try {
+    current = readBridgeConfig().autoDailyLimit;
+  } catch {
+    env.stdout("  No agent on this machine yet. Run `aifight setup` first, then set a daily cap.\n");
     return;
   }
+  const shown = current === undefined ? "server default" : String(current);
+  const raw = (await io.promptLine(`  Automatic ranked matches per day [keep ${shown}, 0-50, 0 = off]: `)).trim();
+  if (raw === "") {
+    env.stdout(`  Kept ${shown}.\n`);
+    return;
+  }
+  if (!/^\d+$/.test(raw) || Number.parseInt(raw, 10) > 50) {
+    env.stdout("  Enter a whole number between 0 and 50.\n");
+    return;
+  }
+  // Delegate to `set daily`: it owns the >10 confirmation and the platform sync.
   await runBridgeSet({ positional: ["daily", raw], flags: {}, jsonMode: false }, env);
 }
 
@@ -222,13 +463,47 @@ function showStyle(_slug: string, env: HandlerEnv): void {
   env.stdout("  Templates & how it works: https://aifight.ai/how-to-win#strategy\n");
 }
 
-/** True when the active profile's key currently resolves (env present / file readable). */
-async function activeKeyResolves(slug: string): Promise<boolean> {
+/** One row in the interactive profile manager's list. */
+interface ProfileRow {
+  readonly id: string;
+  readonly protocol: string;
+  readonly model: string;
+  readonly baseURL: string | null;
+  readonly resolvable: boolean;
+}
+interface ProfileView {
+  readonly activeProfile: string;
+  readonly rows: readonly ProfileRow[];
+}
+
+/** Load every profile with its key-resolvability, for the interactive manager. */
+async function loadProfileRows(slug: string): Promise<ProfileView> {
+  const { config } = await readConfigJson(slug);
+  const rows: ProfileRow[] = [];
+  for (const [id, def] of Object.entries(config.profiles)) {
+    const status = await checkSecretStatus(def.apiKeyRef);
+    rows.push({
+      id,
+      protocol: def.protocol,
+      model: def.model,
+      baseURL: def.baseURL ?? null,
+      resolvable: status.available,
+    });
+  }
+  return { activeProfile: config.activeProfile, rows };
+}
+
+/** True when at least one configured profile's key currently resolves — i.e. the
+ *  user already has a working LLM set up (env var present or key file readable),
+ *  so the multi-config manager is more useful than re-running onboarding. A
+ *  fresh machine (only the unresolved default scaffold) returns false. */
+async function hasResolvableProfile(slug: string): Promise<boolean> {
   try {
     const { config } = await readConfigJson(slug);
-    const active = config.activeProfile ? config.profiles[config.activeProfile] : undefined;
-    if (!active) return false;
-    return (await checkSecretStatus(active.apiKeyRef)).available;
+    for (const def of Object.values(config.profiles)) {
+      if ((await checkSecretStatus(def.apiKeyRef)).available) return true;
+    }
+    return false;
   } catch {
     return false;
   }

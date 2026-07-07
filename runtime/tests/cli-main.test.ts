@@ -304,8 +304,22 @@ describe("bridge-first CLI command surface", () => {
 
   it("start explains when the Bridge is not running", async () => {
     configuredBridge();
+    // Pin the service probe to a launchd plist that does not exist. Without this,
+    // the test is environment-coupled: on a dev machine that actually has a real
+    // ai.aifight.service installed and running, statusBridgeService would report
+    // installed+running and the hint would become "it appears to be running"
+    // instead of "aifight service install". A nonexistent unit path makes
+    // statusBridgeService report installed:false deterministically.
+    const noSvcDir = fs.mkdtempSync(path.join(os.tmpdir(), "aifight-nosvc-"));
+    cleanupQueue.push(() => fs.rmSync(noSvcDir, { recursive: true, force: true }));
     const r = await runCapture(["start", "coup"], {
       fetchImpl: async () => versionPolicyResp(),
+      bridgeService: {
+        platform: "darwin",
+        uid: 501,
+        launchdPlistPath: path.join(noSvcDir, "ai.aifight.service.plist"),
+        execFile: async () => ({ stdout: "", stderr: "" }),
+      },
     });
 
     expect(r.code).toBe(1);
@@ -484,7 +498,7 @@ describe("aifight service", () => {
     expect(r.stdout).toContain(unitPath);
   });
 
-  it("installs a macOS launchd service when kickstart fails but the service is loaded", async () => {
+  it("installs a macOS launchd service cleanly — bootstrap + print confirm, no kickstart warning (⑤)", async () => {
     configuredBridge();
     const aifightExec = tempExecutable();
     const nodeExec = tempExecutable();
@@ -494,12 +508,7 @@ describe("aifight service", () => {
     const calls: Array<{ file: string; args: readonly string[] }> = [];
     const execFile: ServiceExecFile = async (file, args) => {
       calls.push({ file, args });
-      if (file === "launchctl" && args[0] === "kickstart") {
-        const err = Object.assign(new Error("kickstart failed"), {
-          stderr: "Bootstrap is already in progress\n",
-        });
-        throw err;
-      }
+      // Every launchctl call (incl. `print`) succeeds — the healthy path.
       return { stdout: "ok\n", stderr: "" };
     };
 
@@ -516,14 +525,16 @@ describe("aifight service", () => {
 
     expect(r.code).toBe(0);
     expect(r.stdout).toContain("aifight.service installed and started");
-    expect(r.stderr).toContain("warning:");
-    expect(r.stderr).toContain("kickstart");
+    // The old `kickstart -k` race warning is gone on a healthy install.
+    expect(r.stderr).not.toContain("warning:");
+    expect(r.stderr).not.toContain("kickstart");
     expect(fs.readFileSync(plistPath, "utf8")).toContain("<string>run</string>");
+    // bootstrap + the plist's RunAtLoad start the job; a single `print` confirms
+    // it registered, so we never fall through to `kickstart`.
     expect(calls.map((c) => [c.file, ...c.args].join(" "))).toEqual([
       "launchctl version",
       "launchctl bootout gui/501 " + plistPath,
       "launchctl bootstrap gui/501 " + plistPath,
-      "launchctl kickstart -k gui/501/ai.aifight.service",
       "launchctl print gui/501/ai.aifight.service",
     ]);
   });
@@ -585,8 +596,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-beta.12",
-          latest_version: "0.1.0-beta.12",
+          recommended_version: "0.1.0-beta.13",
+          latest_version: "0.1.0-beta.13",
           update_command: "npm install -g @aifight/aifight",
         });
       }
@@ -625,8 +636,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-beta.12",
-          latest_version: "0.1.0-beta.12",
+          recommended_version: "0.1.0-beta.13",
+          latest_version: "0.1.0-beta.13",
           update_command: "npm install -g @aifight/aifight",
         });
       }

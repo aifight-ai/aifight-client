@@ -269,6 +269,61 @@ describe("onboardDirectLLM", () => {
     expect(active.request.temperature).toBe(0.2);
   });
 
+  function seedCompatProfile(): void {
+    fs.writeFileSync(
+      path.join(agentDir(), "config.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        activeProfile: "compat",
+        profiles: {
+          compat: {
+            displayName: "OpenAI-compatible provider",
+            protocol: "openai_chat_compat",
+            baseURL: "https://api.deepseek.com/v1",
+            apiKeyRef: { type: "file", path: path.join(agentDir(), "keys", "compat.key") },
+            model: "deepseek-chat",
+          },
+        },
+        routing: { default: "compat" },
+      }),
+    );
+  }
+
+  it("asks before overwriting an existing provider and keeps it on No", async () => {
+    // Every OpenAI-compatible provider shares the fixed id "compat", so adding a
+    // second one (e.g. GLM after DeepSeek) would silently clobber the first.
+    seedCompatProfile();
+    const { io } = makeIO({
+      lines: ["3"], // re-pick provider 3 (compat) → clashes with the existing "compat"
+      yesno: [false], // decline the overwrite
+    });
+    const { env, out } = captureEnv();
+    const result = await onboardDirectLLM({ slug: SLUG, env, io, reconfigure: true });
+    expect(result).toBe("failed");
+    expect(out()).toContain("Kept your existing");
+    // The existing profile is untouched (still DeepSeek), nothing added.
+    const cfg = readConfig();
+    expect(cfg.profiles.compat.model).toBe("deepseek-chat");
+    expect(Object.keys(cfg.profiles)).toEqual(["compat"]);
+  });
+
+  it("overwrites an existing provider after the user confirms", async () => {
+    seedCompatProfile();
+    const { io } = makeIO({
+      lines: ["3", "https://open.bigmodel.cn/api/paas/v4", "glm-4.6"], // provider, base URL, model
+      hidden: ["sk-glm"],
+      yesno: [true], // confirm the overwrite (advanced gate then defaults to No)
+      models: null,
+      probe: [true],
+    });
+    const { env } = captureEnv();
+    const result = await onboardDirectLLM({ slug: SLUG, env, io, reconfigure: true });
+    expect(result).toBe("configured");
+    const cfg = readConfig();
+    expect(cfg.profiles.compat.model).toBe("glm-4.6"); // overwritten in place
+    expect(cfg.profiles.compat.baseURL).toBe("https://open.bigmodel.cn/api/paas/v4");
+  });
+
   it("prunes leftover unresolvable placeholder profiles after a successful setup", async () => {
     const prevAnthropic = process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_API_KEY; // make the placeholder's env ref unresolvable
