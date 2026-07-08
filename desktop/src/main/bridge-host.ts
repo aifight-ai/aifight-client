@@ -20,8 +20,10 @@
 // stored credentials.
 
 import {
+  archiveReplacedBridgeConfig,
   dropClaimCredentialsAfterClaim,
   readBridgeConfig,
+  removeBridgeConfig,
   writeBridgeConfig,
   type BridgeConfig,
 } from "@aifight/aifight/bridge/config";
@@ -505,6 +507,34 @@ export class BridgeHost {
     }
     this.#setStatus({ phase: "stopped", message: undefined });
     return this.#status;
+  }
+
+  /**
+   * Device-mismatch recovery (F1 takeover, button 2): forget THIS device's local
+   * bridge identity. Stops the runner, ARCHIVES the current bridge.json (recoverable
+   * — same helper `aifight setup --replace-local-identity` uses), then removes it so
+   * `readConfigSummary()` reports "unconfigured" and the renderer returns to
+   * onboarding, where the user can re-pair with a Dashboard code. This never touches
+   * the server: the agent, its record, and its rating stay intact; only local
+   * credentials are cleared. Never throws — failures come back as { ok:false }.
+   */
+  async removeLocalIdentity(): Promise<{ ok: boolean; error?: string; status?: BridgeStatus }> {
+    let existing: BridgeConfig | undefined;
+    try {
+      existing = readBridgeConfig();
+    } catch {
+      // No local identity to remove — already unconfigured. Report success so the
+      // UI simply falls through to onboarding.
+      return { ok: true, status: this.readConfigSummary() };
+    }
+    await this.stop();
+    try {
+      archiveReplacedBridgeConfig(existing); // best-effort snapshot before removal
+      removeBridgeConfig();
+    } catch (cause) {
+      return { ok: false, error: describeError(cause), status: this.readConfigSummary() };
+    }
+    return { ok: true, status: this.readConfigSummary() };
   }
 
   /** Live agent snapshot for the status panel (D8). Not part of the IPC status payload. */

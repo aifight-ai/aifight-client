@@ -122,6 +122,8 @@ interface DeepSeekUsage {
   completion_tokens_details?: {
     reasoning_tokens?: number;
   };
+  /** DeepSeek context-caching hit count (C2). Absent on cache miss / older API. */
+  prompt_cache_hit_tokens?: number;
 }
 
 interface DeepSeekResponse {
@@ -508,6 +510,7 @@ export function createDeepSeekChatCompletionsAdapter(): LLMAdapter {
       const outputTokens = usage?.completion_tokens;
       const reasoningTokens =
         usage?.completion_tokens_details?.reasoning_tokens;
+      const cachedTokens = usage?.prompt_cache_hit_tokens; // C2: DeepSeek cache hits
 
       if (isContentFilterReason(choice.finish_reason)) {
         throw new AdapterError("content_filter", PROTOCOL, "DeepSeek blocked the response (finish_reason: content_filter)");
@@ -522,6 +525,7 @@ export function createDeepSeekChatCompletionsAdapter(): LLMAdapter {
         inputTokens,
         outputTokens,
         reasoningTokens,
+        cachedTokens,
         latencyMs: Date.now() - t0,
         reasoningSummary,
         raw: data,

@@ -72,6 +72,14 @@ export async function bridgeStart(): Promise<void> {
 export async function bridgeStop(): Promise<void> {
   await window.aifight?.stop();
 }
+/** Device-mismatch recovery (F1 takeover, button 2): archive + remove THIS device's
+ *  local bridge identity, returning the app to onboarding. Server-side agent/record/
+ *  rating are untouched. */
+export async function removeLocalIdentity(): Promise<{ ok: boolean; error?: string }> {
+  const api = window.aifight;
+  if (api === undefined) return { ok: false, error: "desktop bridge unavailable" };
+  return api.removeLocalIdentity();
+}
 export async function requestMatches(game: string, count: number): Promise<{ ok: boolean; error?: string }> {
   const api = window.aifight;
   if (api === undefined) return { ok: false, error: "desktop bridge unavailable" };

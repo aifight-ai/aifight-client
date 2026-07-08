@@ -31,6 +31,7 @@ export function registerBridgeIpc(host: BridgeHost): void {
   ipcMain.handle(IPC.getStatus, () => host.readConfigSummary());
   ipcMain.handle(IPC.start, () => host.start());
   ipcMain.handle(IPC.stop, () => host.stop());
+  ipcMain.handle(IPC.removeLocalIdentity, () => host.removeLocalIdentity());
 
   // Request manual ranked matches through the in-process bridge. Returns a
   // result instead of throwing so the renderer can surface "not online yet" etc.

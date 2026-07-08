@@ -319,7 +319,7 @@ async function generateDecision(
     );
   }
 
-  const { inputTokens, outputTokens, reasoningTokens } = extractTokens(parsed);
+  const { inputTokens, outputTokens, reasoningTokens, cachedTokens } = extractTokens(parsed);
   const reasoningSummary = extractReasoningSummary(parsed);
   const truncated = computeTruncated(stopReason, text, reasoningTokens);
 
@@ -330,6 +330,7 @@ async function generateDecision(
     inputTokens,
     outputTokens,
     reasoningTokens,
+    cachedTokens,
     latencyMs,
     reasoningSummary,
     raw: parsed,
@@ -427,14 +428,23 @@ function extractTokens(parsed: unknown): {
   inputTokens?: number;
   outputTokens?: number;
   reasoningTokens?: number;
+  cachedTokens?: number;
 } {
   if (!isObject(parsed)) return {};
   const usage = parsed.usage;
   if (!isObject(usage)) return {};
+  // C2: the Responses API nests cached tokens under
+  // input_tokens_details.cached_tokens (Chat Completions uses
+  // prompt_tokens_details.cached_tokens — a different path).
+  const inputDetails = usage.input_tokens_details;
+  const cachedTokens = isObject(inputDetails)
+    ? numOrUndef(inputDetails.cached_tokens)
+    : undefined;
   return {
     inputTokens: numOrUndef(usage.input_tokens),
     outputTokens: numOrUndef(usage.output_tokens),
     reasoningTokens: numOrUndef(usage.reasoning_tokens),
+    cachedTokens,
   };
 }
 

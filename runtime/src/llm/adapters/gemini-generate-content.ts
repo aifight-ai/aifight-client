@@ -177,6 +177,7 @@ async function generateDecision(
     ...(truncated ? { truncated: true } : {}),
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
+    cachedTokens: usage.cachedTokens,
     latencyMs,
     raw: parsed,
   };
@@ -225,6 +226,7 @@ function estimateUsage(output: DecisionOutput, profile: LLMProfile): UsageRecord
     model: profile.model,
     inputTokens: output.inputTokens,
     outputTokens: output.outputTokens,
+    cachedTokens: output.cachedTokens,
     latencyMs: output.latencyMs,
     timestamp: new Date().toISOString(),
   };
@@ -379,15 +381,19 @@ function extractText(parsed: unknown): string | null {
   return texts.length > 0 ? texts.join("") : null;
 }
 
-function extractUsage(parsed: unknown): { inputTokens?: number; outputTokens?: number } {
+function extractUsage(parsed: unknown): { inputTokens?: number; outputTokens?: number; cachedTokens?: number } {
   if (!isObject(parsed)) return {};
   const usage = parsed["usageMetadata"];
   if (!isObject(usage)) return {};
   const prompt = usage["promptTokenCount"];
   const candidates = usage["candidatesTokenCount"];
+  // C2: Gemini reports cached (implicit/explicit context cache) tokens under
+  // usageMetadata.cachedContentTokenCount.
+  const cached = usage["cachedContentTokenCount"];
   return {
     inputTokens: typeof prompt === "number" ? prompt : undefined,
     outputTokens: typeof candidates === "number" ? candidates : undefined,
+    cachedTokens: typeof cached === "number" ? cached : undefined,
   };
 }
 

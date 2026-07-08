@@ -135,6 +135,7 @@ export function installDemoBridge(): void {
     getStatus: () => Promise.resolve(STATUS),
     start: () => Promise.resolve(STATUS),
     stop: () => Promise.resolve(STATUS),
+    removeLocalIdentity: () => Promise.resolve({ ok: true, status: STATUS }),
     requestMatches: () => Promise.resolve({ ok: true }),
     getLiveGames: () => Promise.resolve(["texas_holdem", "liars_dice", "coup"]),
     getConnectionHealth: () =>

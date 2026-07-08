@@ -527,6 +527,7 @@ export const IPC = {
   getStatus: "bridge:get-status",
   start: "bridge:start",
   stop: "bridge:stop",
+  removeLocalIdentity: "bridge:remove-local-identity",
   requestMatches: "bridge:request-matches",
   gamesGet: "games:get",
   getConnection: "bridge:get-connection",
@@ -586,6 +587,12 @@ export interface AifightBridgeApi {
   getStatus(): Promise<BridgeStatus>;
   start(): Promise<BridgeStatus>;
   stop(): Promise<BridgeStatus>;
+  /** Device-mismatch recovery (F1 takeover, button 2): forget THIS device's local
+   *  bridge identity so the app returns to onboarding and can re-pair. The local
+   *  bridge.json is archived (recoverable), then removed; the runner is stopped.
+   *  The server-side agent, its record, and its rating are untouched — this only
+   *  clears local credentials. Returns the resulting (unconfigured) status. */
+  removeLocalIdentity(): Promise<{ ok: boolean; error?: string; status?: BridgeStatus }>;
   /** Request N manual ranked matches through the in-process bridge (must be online). Manual = unlimited (not subject to the daily cap). The SERVER validates that the game is live. */
   requestMatches(game: string, count: number): Promise<{ ok: boolean; error?: string }>;
   /** The platform's CURRENT live games, in canonical order (backend is the single

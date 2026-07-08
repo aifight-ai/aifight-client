@@ -38,6 +38,7 @@ const api: AifightBridgeApi = {
   getStatus: () => ipcRenderer.invoke(IPC.getStatus),
   start: () => ipcRenderer.invoke(IPC.start),
   stop: () => ipcRenderer.invoke(IPC.stop),
+  removeLocalIdentity: () => ipcRenderer.invoke(IPC.removeLocalIdentity),
   requestMatches: (game: string, count: number) => ipcRenderer.invoke(IPC.requestMatches, game, count),
   getLiveGames: () => ipcRenderer.invoke(IPC.gamesGet),
   getConnectionHealth: () => ipcRenderer.invoke(IPC.getConnection),

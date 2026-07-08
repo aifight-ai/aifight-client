@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Swords, MonitorPlay, Trophy, CalendarDays, Cpu, ScrollText, History, Settings, PanelLeft, Sun, Moon, Monitor, FolderOpen, LayoutDashboard, Download } from "lucide-react";
+import { Swords, MonitorPlay, Trophy, CalendarDays, Cpu, ScrollText, History, Settings, PanelLeft, Sun, Moon, Monitor, FolderOpen, LayoutDashboard, Download, ShieldAlert, Link2, Loader2, RefreshCw, ExternalLink, UserPlus, Trash2, ChevronDown } from "lucide-react";
 
 import { useTheme, type ThemeMode } from "./theme";
 import { getLangPref, setLangPref, type LangPref } from "./i18n";
-import { getLaunchAtLogin, setLaunchAtLogin, openConfigDir, openDashboard, cliRun, useBridgeStatus } from "./useBridge";
+import { getLaunchAtLogin, setLaunchAtLogin, openConfigDir, openDashboard, cliRun, bridgeStart, removeLocalIdentity, resultText, useBridgeStatus } from "./useBridge";
+import { localizeServerError } from "./errors";
 import { webOrigin } from "./webOrigin";
 import { useLiveStore } from "./liveStore";
 import { detectMatchAlert } from "./matchNotify";
@@ -188,8 +189,7 @@ export function App() {
             <StatusPill />
           </div>
         </header>
-        <DeviceMismatchBanner />
-        <BridgeErrorBanner />
+        <ConnectionBanners />
         <UpdateReadyBanner />
         <MatchBanner live={live.match} onWatch={() => setActive("watch")} />
         <section className="flex-1 overflow-auto p-6">
@@ -218,57 +218,231 @@ export function App() {
   );
 }
 
-// Surfaces the server's device-binding rejection (a copied credential used from
-// another machine) as a clear, actionable banner — driven by the structured
-// "bridge.device_mismatch" log code, cleared once the bridge connects.
-function DeviceMismatchBanner() {
-  const { t } = useTranslation();
-  const [message, setMessage] = useState<string | null>(null);
-  const [origin, setOrigin] = useState<string | undefined>(undefined);
-
+// Tracks the server's device-binding rejection — the structured
+// "bridge.device_mismatch" log code the runner emits when THIS device's credential
+// no longer matches the agent's bound identity (a copied key, but also a rebuilt
+// device.key: reinstall / cleared data / different OS user, not only a new machine).
+// Cleared once we reconnect (running/starting) or the local identity is gone
+// (config undefined → onboarding). `dismiss` hides the takeover manually.
+function useDeviceMismatch(): { active: boolean; dismiss: () => void } {
+  const [active, setActive] = useState(false);
   useEffect(() => {
     const api = window.aifight;
     if (api === undefined) return;
     const offLog = api.onLog((e) => {
-      if (e.code === "bridge.device_mismatch") setMessage(e.message);
+      if (e.code === "bridge.device_mismatch") setActive(true);
     });
     const offStatus = api.onStatus((s) => {
-      setOrigin(webOrigin(s.config?.baseUrl));
-      if (s.phase === "running" || s.phase === "starting") setMessage(null);
+      if (s.phase === "running" || s.phase === "starting" || s.config === undefined) setActive(false);
     });
     return () => {
       offLog();
       offStatus();
     };
   }, []);
+  return { active, dismiss: () => setActive(false) };
+}
 
-  if (message === null) return null;
+// F2 — a device mismatch used to stack TWO red banners (this takeover's ancestor +
+// the generic BridgeErrorBanner, the latter truncating the same multi-line message
+// mid-sentence). Now exactly one shows: the takeover while a mismatch is active,
+// else the generic error banner.
+function ConnectionBanners() {
+  const { active, dismiss } = useDeviceMismatch();
+  if (active) return <DeviceMismatchTakeover onDismiss={dismiss} />;
+  return <BridgeErrorBanner />;
+}
+
+// F1 — the in-app takeover card for a device mismatch (owner-approved 3-button
+// design, 2026-07-08). The old banner only offered "new agent / retry", forcing
+// the user to a terminal to re-pair. This keeps recovery fully in-app:
+//   1. Confirm identity & take over — paste a Dashboard pairing code (runs
+//      `connect --replace-local-identity`, which the CLI requires when local
+//      credentials already exist).
+//   2. Remove this device's identity — archive+forget local creds (server agent,
+//      record, and rating are untouched; re-pair anytime). Double-confirmed.
+//   3. New agent — register a fresh identity here; the old agent stays on the
+//      server and can be taken over again later.
+// Retry is demoted to a small link (a mismatch is terminal — retry rarely helps).
+function DeviceMismatchTakeover({ onDismiss }: { onDismiss: () => void }) {
+  const { t } = useTranslation();
+  const status = useBridgeStatus();
+  const origin = webOrigin(status?.config?.baseUrl);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState<"connect" | "remove" | "new" | "retry" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const takeOver = async () => {
+    const c = code.trim();
+    if (c === "" || busy !== null) return;
+    setBusy("connect");
+    setError(null);
+    // --replace-local-identity is required: this device already has (rejected)
+    // local credentials, so a bare `connect` would refuse to spend the one-time code.
+    const r = await cliRun(["connect", c, "--replace-local-identity", "--json"]);
+    if (r.exitCode === 0) {
+      // The one-time code was spent and the identity re-bound — the mismatch is
+      // resolved. Bring it online, then leave the takeover unconditionally: if the
+      // follow-up connect hits a TRANSIENT error it now surfaces as the normal
+      // retry banner, not a stale "re-pair" prompt over an already-fixed agent.
+      await bridgeStart();
+      onDismiss();
+      return;
+    }
+    setError(localizeServerError(resultText(r)));
+    setBusy(null);
+  };
+
+  const removeIdentity = async () => {
+    if (busy !== null) return;
+    if (!window.confirm(t("deviceMismatch.takeover.removeConfirm"))) return;
+    setBusy("remove");
+    setError(null);
+    const r = await removeLocalIdentity();
+    if (r.ok) {
+      onDismiss(); // status also broadcasts unconfigured → onboarding
+    } else {
+      setError(r.error ?? t("deviceMismatch.takeover.removeFailed"));
+      setBusy(null);
+    }
+  };
+
+  const newAgent = async () => {
+    if (busy !== null) return;
+    if (!window.confirm(t("play.status.newAgentConfirm"))) return;
+    setBusy("new");
+    setError(null);
+    const r = await cliRun(["setup", "--json", "--replace-local-identity"]);
+    if (r.exitCode === 0) {
+      // Fresh identity registered here — the mismatch no longer applies. Same as
+      // takeOver: leave the takeover even if the follow-up start is transiently down.
+      await bridgeStart();
+      onDismiss();
+      return;
+    }
+    setError(t("play.status.newAgentFailed"));
+    setBusy(null);
+  };
+
+  const retry = async () => {
+    if (busy !== null) return;
+    setBusy("retry");
+    setError(null);
+    await bridgeStart();
+    setBusy(null);
+  };
+
   return (
-    <div className="border-b border-[var(--border)] bg-red-500/10 px-4 py-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-[13px] font-medium text-red-400">{t("deviceMismatch.title")}</div>
-          <div className="mt-1 whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--text-muted)]">
-            {message}
+    <div className="border-b border-[var(--border)] bg-red-500/5">
+      <div className="mx-auto max-w-3xl space-y-3 px-4 py-4">
+        {/* Header: what happened + reassurance (localized; the raw runner message
+            is English-only and is what the CLI surfaces instead). */}
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 items-start gap-2.5">
+            <ShieldAlert size={18} className="mt-0.5 shrink-0 text-red-400" />
+            <div className="min-w-0">
+              <div className="text-[13px] font-medium text-red-400">{t("deviceMismatch.title")}</div>
+              <div className="mt-1 text-[12px] leading-relaxed text-[var(--text-muted)]">{t("deviceMismatch.body")}</div>
+            </div>
           </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {origin !== undefined && (
-            <a
-              href={`${origin}/dashboard`}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-md bg-[var(--accent)] px-2.5 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90"
-            >
-              {t("deviceMismatch.openDashboard")}
-            </a>
-          )}
           <button
-            onClick={() => setMessage(null)}
-            className="rounded-md px-2.5 py-1 text-[12px] text-[var(--text-muted)] transition-colors hover:bg-[var(--hover)]"
+            onClick={onDismiss}
+            className="shrink-0 rounded-md px-2.5 py-1 text-[12px] text-[var(--text-muted)] transition-colors hover:bg-[var(--hover)]"
           >
             {t("match.dismiss")}
           </button>
+        </div>
+
+        {/* Takeover card */}
+        <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+          <div className="text-[13px] font-medium text-[var(--text)]">{t("deviceMismatch.takeover.title")}</div>
+
+          {/* 1 · primary — pairing takeover */}
+          <div className="rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)] px-3.5 py-3">
+            <div className="flex items-center gap-1.5 text-[12.5px] font-medium text-[var(--text)]">
+              <Link2 size={14} className="text-[var(--accent-text)]" />
+              {t("deviceMismatch.takeover.connectTitle")}
+            </div>
+            <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--text-muted)]">
+              {t("deviceMismatch.takeover.connectDesc")}
+            </p>
+            <div className="mt-2.5 flex flex-wrap gap-2">
+              <input
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void takeOver();
+                }}
+                placeholder={t("play.onboard.codePlaceholder")}
+                className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-[13px] text-[var(--text)] outline-none focus:border-[var(--accent)]"
+              />
+              <button
+                onClick={() => void takeOver()}
+                disabled={code.trim() === "" || busy !== null}
+                className="flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3.5 py-2 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                {busy === "connect" ? <Loader2 size={13} className="animate-spin" /> : <Link2 size={13} />}
+                {busy === "connect" ? t("deviceMismatch.takeover.connecting") : t("deviceMismatch.takeover.connectBtn")}
+              </button>
+            </div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--text-faint)]">
+              <span>{t("deviceMismatch.takeover.codeHowTo")}</span>
+              {origin !== undefined && (
+                <a
+                  href={`${origin}/dashboard`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-[var(--accent)] hover:underline"
+                >
+                  <ExternalLink size={11} />
+                  {t("deviceMismatch.openDashboard")}
+                </a>
+              )}
+            </div>
+          </div>
+
+          {/* 2 · 3 — secondary actions */}
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button
+              onClick={() => void removeIdentity()}
+              disabled={busy !== null}
+              className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3.5 py-3 text-left transition-colors hover:border-[var(--accent)]/40 disabled:opacity-50"
+            >
+              <div className="flex items-center gap-1.5 text-[12.5px] font-medium text-[var(--text)]">
+                {busy === "remove" ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} className="text-[var(--text-muted)]" />}
+                {t("deviceMismatch.takeover.removeTitle")}
+              </div>
+              <div className="mt-0.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
+                {t("deviceMismatch.takeover.removeDesc")}
+              </div>
+            </button>
+            <button
+              onClick={() => void newAgent()}
+              disabled={busy !== null}
+              className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3.5 py-3 text-left transition-colors hover:border-[var(--accent)]/40 disabled:opacity-50"
+            >
+              <div className="flex items-center gap-1.5 text-[12.5px] font-medium text-[var(--text)]">
+                {busy === "new" ? <Loader2 size={13} className="animate-spin" /> : <UserPlus size={13} className="text-[var(--text-muted)]" />}
+                {t("deviceMismatch.takeover.newTitle")}
+              </div>
+              <div className="mt-0.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
+                {t("deviceMismatch.takeover.newDesc")}
+              </div>
+            </button>
+          </div>
+
+          {error !== null && <div className="text-[12px] text-red-400">{error}</div>}
+
+          <div className="flex items-center gap-1.5 pt-0.5 text-[11.5px] text-[var(--text-faint)]">
+            <button
+              onClick={() => void retry()}
+              disabled={busy !== null}
+              className="inline-flex items-center gap-1 hover:text-[var(--text-muted)] disabled:opacity-50"
+            >
+              {busy === "retry" ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+              {t("play.status.retry")}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -380,8 +554,14 @@ function BridgeErrorBanner() {
   const status = useBridgeStatus();
   const [retrying, setRetrying] = useState(false);
   const [reRegistering, setReRegistering] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   if (status?.phase !== "error") return null;
   const busy = retrying || reRegistering;
+  // F2 — show a single-line summary (first line), with a details toggle for the
+  // rest instead of truncating a multi-line message mid-sentence.
+  const message = typeof status.message === "string" ? status.message.trim() : "";
+  const firstLine = message.split("\n", 1)[0] ?? "";
+  const hasMore = message.length > firstLine.length;
   const retry = () => {
     setRetrying(true);
     void window.aifight?.start().finally(() => setRetrying(false));
@@ -409,8 +589,17 @@ function BridgeErrorBanner() {
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <span className="shrink-0 text-[13px] font-medium text-red-400">{t("play.status.error")}</span>
-          {typeof status.message === "string" && status.message !== "" && (
-            <span className="truncate text-[12px] text-[var(--text-muted)]">{status.message}</span>
+          {firstLine !== "" && (
+            <span className="truncate text-[12px] text-[var(--text-muted)]">{firstLine}</span>
+          )}
+          {hasMore && (
+            <button
+              onClick={() => setExpanded((v) => !v)}
+              className="inline-flex shrink-0 items-center gap-0.5 text-[11.5px] text-[var(--text-faint)] transition-colors hover:text-[var(--text-muted)]"
+            >
+              <ChevronDown size={12} className={"transition-transform " + (expanded ? "rotate-180" : "")} />
+              {expanded ? t("common.less") : t("common.details")}
+            </button>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -430,6 +619,9 @@ function BridgeErrorBanner() {
           </button>
         </div>
       </div>
+      {expanded && hasMore && (
+        <div className="mt-2 whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--text-muted)]">{message}</div>
+      )}
     </div>
   );
 }

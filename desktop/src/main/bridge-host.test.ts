@@ -111,6 +111,41 @@ describe("shared-config cross-check (CLI writes ↔ desktop reads)", () => {
   });
 });
 
+// ── removeLocalIdentity (device-mismatch takeover, button 2) ─────────────────
+// The takeover's "Remove this device's identity" action archives + removes the
+// LOCAL bridge.json so the app returns to onboarding and can re-pair. The
+// server-side agent is never touched (this is a pure local-credential clear).
+describe("removeLocalIdentity (device-mismatch takeover, button 2)", () => {
+  it("archives then removes the local identity → unconfigured, recoverable", async () => {
+    const home = freshHome();
+    writeBridgeConfig(validConfig());
+    const host = new BridgeHost();
+    expect(host.readConfigSummary().phase).not.toBe("unconfigured"); // sanity: configured
+
+    const r = await host.removeLocalIdentity();
+
+    expect(r.ok).toBe(true);
+    expect(r.status?.phase).toBe("unconfigured");
+    expect(r.status?.config).toBeUndefined();
+    // The shared bridge.json is gone → a fresh read also reports unconfigured.
+    expect(new BridgeHost().readConfigSummary().phase).toBe("unconfigured");
+    // A redacted archive is kept on disk (recoverable pointer; carries no secrets).
+    const archivePath = path.join(home, "bridge.replaced-agent-xcheck.json");
+    expect(fs.existsSync(archivePath)).toBe(true);
+    const archived = fs.readFileSync(archivePath, "utf8");
+    expect(archived).toContain("agent-xcheck");
+    expect(archived).not.toContain(SECRET_KEY);
+    expect(archived).not.toContain(SECRET_TOKEN);
+  });
+
+  it("is a no-op success when there is no local identity", async () => {
+    freshHome(); // empty home — nothing to remove
+    const r = await new BridgeHost().removeLocalIdentity();
+    expect(r.ok).toBe(true);
+    expect(r.status?.phase).toBe("unconfigured");
+  });
+});
+
 // ── Daily-cap two-ledger sync (setAgentPolicy → local bridge.json) ───────────
 // The desktop's cap control writes the SERVER policy (source of truth) AND the
 // local bridge.json autoDailyLimit, so `aifight status` + the diagnostics card

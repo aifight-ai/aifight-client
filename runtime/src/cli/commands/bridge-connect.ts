@@ -43,8 +43,9 @@ export async function runBridgeConnect(
       deviceId: getDeviceId(),
     });
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    throw new CommandError("pairing_failed", message);
+    const raw = e instanceof Error ? e.message : String(e);
+    const { code, message } = classifyPairingError(raw);
+    throw new CommandError(code, message);
   }
   writeBridgeConfig(config);
 
@@ -70,4 +71,62 @@ function readOptionalBridgeConfig(): BridgeConfig | undefined {
     if (message.includes("bridge is not configured")) return undefined;
     throw cause;
   }
+}
+
+/** Refined pairing-exchange error codes. */
+export type PairingErrorCode =
+  | "pairing_invalid"
+  | "pairing_expired"
+  | "pairing_used"
+  | "pairing_network"
+  | "pairing_failed";
+
+// One self-contained, actionable sentence per code. We deliberately fold the
+// next step INTO the message (rather than a separate CommandError hint) so the
+// --json error envelope stays exactly {code, message} — only `code` gets more
+// specific — while the human line still tells the user what to do next.
+const PAIRING_INVALID_MSG =
+  "Pairing failed: that pairing code wasn't recognized. Copy the entire code — including the aifp_ prefix — and try again.";
+const PAIRING_EXPIRED_MSG =
+  "Pairing failed: that pairing code has expired. Pairing codes last 10 minutes — generate a fresh one on your Dashboard and use it right away.";
+const PAIRING_USED_MSG =
+  "Pairing failed: that pairing code was already used. Each code works only once — generate a new one on your Dashboard.";
+const PAIRING_NETWORK_MSG =
+  "Pairing failed: couldn't reach AIFight. Check your internet connection and try again.";
+
+/** Split a pairing-exchange failure into an actionable cause.
+ *
+ * The server (internal/auth ExchangeBridgePairing) and the runtime wrapper
+ * (bridge/pairing.ts) throw plain Error strings that all used to collapse into a
+ * single opaque `pairing_failed`. This re-reads the message — the only seam we own
+ * between the exchange call and the user — and classifies it. It NEVER touches the
+ * exchange request itself; it is a pure string classifier over the message that
+ * request already produced, so it also tolerates future/older server wording by
+ * falling back to `pairing_failed` with the raw text preserved. */
+export function classifyPairingError(rawMessage: string): { code: PairingErrorCode; message: string } {
+  const s = rawMessage.toLowerCase();
+  // Server verdicts first (auth.go: "pairing_code already used" / "pairing_code
+  // expired" / "invalid pairing_code"). These are the actionable, common cases.
+  if (/already used/.test(s)) return { code: "pairing_used", message: PAIRING_USED_MSG };
+  if (/expired/.test(s)) return { code: "pairing_expired", message: PAIRING_EXPIRED_MSG };
+  if (/invalid pairing/.test(s)) return { code: "pairing_invalid", message: PAIRING_INVALID_MSG };
+  // Transport: readErrorMessage's non-JSON HTTP fallback ("pairing failed with
+  // HTTP <status>") OR a raw fetch network exception. Both mean "the request never
+  // completed", so the next step is identical — check the connection and retry.
+  if (/pairing failed with http/.test(s) || isNetworkErrorMessage(s)) {
+    return { code: "pairing_network", message: PAIRING_NETWORK_MSG };
+  }
+  // Everything else (the unsafe-ws guard, response-parse failures, an empty code,
+  // an unrecognized server error string) keeps its raw message so we never hide an
+  // unexpected cause behind friendly copy.
+  return { code: "pairing_failed", message: rawMessage };
+}
+
+/** Heuristic for a thrown fetch/network exception (undici + common DNS/socket
+ *  errors). Conservative on purpose: anything it misses simply stays the raw
+ *  `pairing_failed` message, which is safe — never a wrong actionable claim. */
+function isNetworkErrorMessage(s: string): boolean {
+  return /fetch failed|failed to fetch|network(?:error| error| request failed)|econnrefused|econnreset|econnaborted|enotfound|etimedout|eai_again|getaddrinfo|socket hang up|und_err|request to .* failed|timed out/.test(
+    s,
+  );
 }

@@ -239,6 +239,7 @@ async function generateDecision(
     ...(truncated ? { truncated: true } : {}),
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
+    cachedTokens: usage.cachedTokens,
     latencyMs,
     raw: parsed,
   };
@@ -253,6 +254,7 @@ function estimateUsage(output: DecisionOutput, profile: LLMProfile): UsageRecord
     model: profile.model,
     inputTokens: output.inputTokens,
     outputTokens: output.outputTokens,
+    cachedTokens: output.cachedTokens,
     latencyMs: output.latencyMs,
     timestamp: new Date().toISOString(),
   };
@@ -342,16 +344,25 @@ function extractFinishReason(parsed: unknown): unknown {
 function extractUsage(parsed: unknown): {
   inputTokens?: number;
   outputTokens?: number;
+  cachedTokens?: number;
 } {
   if (!isObject(parsed)) return {};
   const usage = parsed["usage"];
   if (!isObject(usage)) return {};
   const promptTokens = usage["prompt_tokens"];
   const completionTokens = usage["completion_tokens"];
+  // C2: OpenAI-compatible endpoints (Grok/Kimi/GLM/MiniMax/Qwen/Gemini-compat)
+  // report cache hits under prompt_tokens_details.cached_tokens, same as OpenAI.
+  const promptDetails = usage["prompt_tokens_details"];
+  const cachedTokens =
+    isObject(promptDetails) && typeof promptDetails["cached_tokens"] === "number"
+      ? (promptDetails["cached_tokens"] as number)
+      : undefined;
   return {
     inputTokens: typeof promptTokens === "number" ? promptTokens : undefined,
     outputTokens:
       typeof completionTokens === "number" ? completionTokens : undefined,
+    cachedTokens,
   };
 }
 

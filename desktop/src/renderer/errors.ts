@@ -36,6 +36,23 @@ export function isClaimNameError(raw?: string | null): boolean {
   return /must be claimed|official name|claim_url|claim the agent/.test(s) || /认领|正式名字/.test(s);
 }
 
+/** Map a pairing-exchange failure to its specific i18n key, or null when the text
+ *  carries no recognizable pairing cause — so the caller keeps its existing auth
+ *  fallback (old server / a non-pairing 401). Matches BOTH the CLI's refined codes
+ *  (pairing_invalid/expired/used/network, delivered in the --json error envelope)
+ *  and the raw server phrases, and is gated on "pairing" so a stray "expired" from
+ *  some other subsystem never lands here. Expects a lowercased string. */
+function pairingErrorKey(
+  s: string,
+): "errors.pairingUsed" | "errors.pairingExpired" | "errors.pairingInvalid" | "errors.pairingNetwork" | null {
+  if (!/pairing/.test(s)) return null;
+  if (/pairing_used|already used/.test(s)) return "errors.pairingUsed";
+  if (/pairing_expired|expired/.test(s)) return "errors.pairingExpired";
+  if (/pairing_invalid|invalid pairing/.test(s)) return "errors.pairingInvalid";
+  if (/pairing_network|pairing failed with http/.test(s)) return "errors.pairingNetwork";
+  return null;
+}
+
 export function localizeServerError(raw?: string | null, category?: ErrorCategory): string {
   const t = i18n.t.bind(i18n);
   const s = (raw ?? "").toLowerCase().trim();
@@ -46,6 +63,15 @@ export function localizeServerError(raw?: string | null, category?: ErrorCategor
   if (isClaimNameError(s)) return t("errors.needClaim");
   if (/challenge_create_failed/.test(s)) return t("errors.challengeCreate");
   if (/challenge_accept_failed/.test(s)) return t("errors.challengeAccept");
+  // Pairing-exchange failures ("Connect an existing agent"). The CLI now returns a
+  // refined code (pairing_invalid/expired/used/network), carried here inside the
+  // --json error envelope the desktop surfaces; the raw server strings are matched
+  // too (old server / non-JSON paths). Split them into actionable copy so a stale
+  // or reused code no longer reads like a blanket auth failure. This runs BEFORE the
+  // generic auth rule; an unrecognized pairing_failed falls through to errors.auth
+  // below, preserving the existing message for old servers.
+  const pairKey = pairingErrorKey(s);
+  if (pairKey !== null) return t(pairKey);
   if (/\b401\b|unauthor|invalid pairing|pairing code|pairing_failed|invalid api[_ ]?key|授权|配对码/.test(s))
     return t("errors.auth");
   if (/\b429\b|rate[ _-]?limit|too many requests/.test(s)) return t("errors.rateLimit");

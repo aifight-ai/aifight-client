@@ -67,10 +67,19 @@ interface AnthropicMessage {
   content: string;
 }
 
+/** A `system` text block carrying an optional prompt-cache breakpoint (C1). */
+interface AnthropicSystemBlock {
+  type: "text";
+  text: string;
+  cache_control?: { type: "ephemeral" };
+}
+
 interface AnthropicRequestBody {
   model: string;
   max_tokens: number;
-  system?: string;
+  /** String (legacy) or a block array, so a `cache_control` breakpoint can sit
+   *  at the end of the system prefix (C1). */
+  system?: string | AnthropicSystemBlock[];
   messages: AnthropicMessage[];
   thinking?: AnthropicThinkingConfig;
   output_config?: AnthropicOutputConfig;
@@ -120,9 +129,20 @@ function buildRequestBody(
   const body: AnthropicRequestBody = {
     model: profile.model,
     max_tokens: input.maxTokens,
-    system: input.systemPrompt,
     messages: [{ role: "user", content: input.userPrompt }],
   };
+
+  // C1 (prompt-cache): carry the system prompt as a single text block with a
+  // cache_control breakpoint at its end, so the (tools→)system prefix is
+  // cacheable on api.anthropic.com. A prefix below the model's minimum
+  // cacheable length (Opus 4.8 = 4096, Fable 5 = 2048 tokens) silently won't
+  // cache — expected for most users' short system prompts (cache spec §10.1-B2);
+  // long-strategy users benefit immediately. Empty system → omit the field.
+  if (input.systemPrompt) {
+    body.system = [
+      { type: "text", text: input.systemPrompt, cache_control: { type: "ephemeral" } },
+    ];
+  }
 
   const explicitlyDisabled =
     reasoning?.enabled === false || reasoning?.mode === "disabled";

@@ -187,8 +187,8 @@ describe("bridge CLI commands", () => {
       if (textUrl.endsWith("/api/bridge/version")) {
         return new Response(JSON.stringify({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-beta.13",
-          latest_version: "0.1.0-beta.13",
+          recommended_version: "0.1.0-beta.14",
+          latest_version: "0.1.0-beta.14",
           update_command: "npm install -g @aifight/aifight",
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
@@ -248,5 +248,71 @@ describe("bridge CLI commands", () => {
     expect(doctor.stdout).toContain("direct-LLM configured");
     expect(doctor.stdout).toContain("aifight config test");
     expect(doctor.stdout).not.toContain("sk-super-secret-agent-key");
+  });
+});
+
+// T0b②④ — connect end-to-end: prove the refined codes/copy flow through the real
+// pairing.ts → bridge-connect.ts path (incl. readErrorMessage's HTTP fallback and a
+// thrown fetch), and that the --json envelope stays {code,message}.
+describe("connect surfaces refined pairing error codes (T0b②④)", () => {
+  const pairFetch = (respond: () => Response): typeof fetch =>
+    vi.fn(async (url: string | URL | Request) => {
+      if (!String(url).endsWith("/api/bridge/pair")) throw new Error(`unexpected fetch to ${String(url)}`);
+      return respond();
+    }) as unknown as typeof fetch;
+
+  const serverError = (status: number, body: unknown): typeof fetch =>
+    pairFetch(() => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }));
+
+  async function jsonErr(fetchImpl: typeof fetch): Promise<{
+    code: number;
+    error: { code: string; message: string; details?: unknown };
+  }> {
+    useTempHome();
+    const r = await runCapture(["connect", "aifp_x", "--json"], fetchImpl);
+    const parsed = JSON.parse(r.stderr.trim()) as { error: { code: string; message: string; details?: unknown } };
+    return { code: r.code, error: parsed.error };
+  }
+
+  it("invalid pairing_code → pairing_invalid (shape unchanged: no details)", async () => {
+    const { code, error } = await jsonErr(serverError(400, { error: "invalid pairing_code" }));
+    expect(code).toBe(1);
+    expect(error.code).toBe("pairing_invalid");
+    expect(error.message).toContain("aifp_");
+    expect(error.details).toBeUndefined();
+  });
+
+  it("pairing_code expired → pairing_expired", async () => {
+    const { error } = await jsonErr(serverError(400, { error: "pairing_code expired" }));
+    expect(error.code).toBe("pairing_expired");
+    expect(error.message).toContain("10 minutes");
+  });
+
+  it("pairing_code already used → pairing_used", async () => {
+    const { error } = await jsonErr(serverError(400, { error: "pairing_code already used" }));
+    expect(error.code).toBe("pairing_used");
+  });
+
+  it("HTTP 500 with no JSON error field → pairing_network", async () => {
+    const { error } = await jsonErr(pairFetch(() => new Response("upstream boom", { status: 500 })));
+    expect(error.code).toBe("pairing_network");
+    expect(error.message.toLowerCase()).toContain("internet connection");
+  });
+
+  it("a thrown fetch/network exception → pairing_network", async () => {
+    const { error } = await jsonErr(
+      pairFetch(() => {
+        throw new TypeError("fetch failed");
+      }),
+    );
+    expect(error.code).toBe("pairing_network");
+  });
+
+  it("human (non-json) output prints the actionable copy on stderr with exit 1", async () => {
+    useTempHome();
+    const r = await runCapture(["connect", "aifp_x"], serverError(400, { error: "pairing_code expired" }));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("that pairing code has expired");
+    expect(r.stderr).toContain("10 minutes");
   });
 });

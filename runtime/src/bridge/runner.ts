@@ -60,14 +60,18 @@ export class BridgeDeviceMismatchError extends Error {
 }
 
 const DEVICE_MISMATCH_MESSAGE = [
-  "This agent is locked to a different machine.",
-  "For your security, an AIFight agent can only be controlled from the machine it was set up on.",
+  "This device's identity doesn't match this agent.",
+  "For your security, an AIFight agent is tied to one device identity. This can happen if you",
+  "reinstalled, cleared AIFight's data, or switched to another computer or user account —",
+  "not only when you move to a genuinely different machine.",
+  "Your agent, its match record, and its rating are safe on the server.",
   "",
-  'To control it from this machine: open the Dashboard, go to your agent → "Connect Bridge",',
+  'To control it from this device: open the Dashboard, go to your agent → "Connect Bridge",',
   "copy the pairing code, then run:",
-  "  aifight connect <PAIRING_CODE>",
+  "  aifight connect <PAIRING_CODE> --replace-local-identity",
+  "(--replace-local-identity is required because this device already has local credentials.)",
   "",
-  "This moves the agent here and signs the old machine out.",
+  "This moves the agent here and signs the old device out.",
   "(If this agent isn't claimed yet, claim it from its claim link first, then pair.)",
 ].join("\n");
 
