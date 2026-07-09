@@ -22,11 +22,14 @@
 import {
   archiveReplacedBridgeConfig,
   dropClaimCredentialsAfterClaim,
+  getBridgeConfigPath,
   readBridgeConfig,
   removeBridgeConfig,
   writeBridgeConfig,
   type BridgeConfig,
 } from "@aifight/aifight/bridge/config";
+import fs from "node:fs";
+import path from "node:path";
 import type { BridgeRunner as BridgeRunnerInstance } from "@aifight/aifight/bridge/runner";
 import type { BridgeDecisionTrace } from "@aifight/aifight/bridge/provider";
 import type { ServerMessageEnvelope } from "@aifight/aifight/wsclient/frame-handler";
@@ -522,14 +525,41 @@ export class BridgeHost {
     let existing: BridgeConfig | undefined;
     try {
       existing = readBridgeConfig();
-    } catch {
-      // No local identity to remove — already unconfigured. Report success so the
-      // UI simply falls through to onboarding.
+    } catch (cause) {
+      const configPath = getBridgeConfigPath();
+      if (!fs.existsSync(configPath)) {
+        // No local identity to remove — already unconfigured. Report success so the
+        // UI simply falls through to onboarding.
+        return { ok: true, status: this.readConfigSummary() };
+      }
+      await this.stop();
+      try {
+        archiveUnreadableBridgeConfig(configPath);
+        removeBridgeConfig();
+      } catch (archiveOrRemoveCause) {
+        return {
+          ok: false,
+          error: describeError(archiveOrRemoveCause),
+          status: this.readConfigSummary(),
+        };
+      }
+      this.#callbacks.onLog?.({
+        level: "warning",
+        code: "desktop.bridge_identity_quarantined",
+        message: `Unreadable bridge identity was quarantined before removal: ${describeError(cause)}`,
+      });
       return { ok: true, status: this.readConfigSummary() };
     }
     await this.stop();
     try {
-      archiveReplacedBridgeConfig(existing); // best-effort snapshot before removal
+      const archivePath = archiveReplacedBridgeConfig(existing);
+      if (archivePath === null) {
+        return {
+          ok: false,
+          error: "Could not archive the local bridge identity; nothing was removed.",
+          status: this.readConfigSummary(),
+        };
+      }
       removeBridgeConfig();
     } catch (cause) {
       return { ok: false, error: describeError(cause), status: this.readConfigSummary() };
@@ -864,6 +894,21 @@ export class BridgeHost {
     this.#status = { ...this.#status, ...patch };
     this.#callbacks.onStatus?.(this.#status);
   }
+}
+
+function archiveUnreadableBridgeConfig(configPath: string): string {
+  const dir = path.dirname(configPath);
+  const archivePath = path.join(dir, `bridge.unreadable-${Date.now()}-${process.pid}.json`);
+  fs.copyFileSync(configPath, archivePath);
+  if (process.platform !== "win32") {
+    try {
+      fs.chmodSync(archivePath, 0o600);
+    } catch {
+      // Best effort: the runtime home is still private; removal must not fail
+      // solely because chmod is unavailable on the platform/filesystem.
+    }
+  }
+  return archivePath;
 }
 
 /** Pick only non-secret fields. Never include apiKey / runtimeLocalToken / claimToken. */

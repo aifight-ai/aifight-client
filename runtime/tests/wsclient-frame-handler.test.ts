@@ -102,6 +102,7 @@ describe("serializeClientMessage — outbound happy path", () => {
         output_tokens: 80,
         reasoning_tokens: 512,
         cached_tokens: 900,
+        cache_write_tokens: 30,
       },
     });
     const round = JSON.parse(out);
@@ -111,6 +112,7 @@ describe("serializeClientMessage — outbound happy path", () => {
       output_tokens: 80,
       reasoning_tokens: 512,
       cached_tokens: 900,
+      cache_write_tokens: 30,
     });
   });
 

@@ -76,11 +76,15 @@ export function savePriceTable(table: PriceTable): void {
  */
 export function estimateCallCost(
   price: ModelPrice,
-  tokens: { input?: number; output?: number; cached?: number },
+  tokens: { input?: number; output?: number; cached?: number; cacheWrite?: number },
 ): number {
   const input = tokens.input ?? 0;
   const cached = tokens.cached ?? 0;
+  const cacheWrite = tokens.cacheWrite ?? 0;
   const output = tokens.output ?? 0;
-  const nonCachedInput = Math.max(0, input - cached);
-  return (nonCachedInput * price.input + cached * price.cacheHit + output * price.output) / 1_000_000;
+  const nonCachedInput = Math.max(0, input - cached - cacheWrite);
+  return (
+    (nonCachedInput * price.input + cached * price.cacheHit + cacheWrite * price.input + output * price.output) /
+    1_000_000
+  );
 }

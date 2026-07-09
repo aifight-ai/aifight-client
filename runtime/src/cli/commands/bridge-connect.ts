@@ -78,6 +78,7 @@ export type PairingErrorCode =
   | "pairing_invalid"
   | "pairing_expired"
   | "pairing_used"
+  | "pairing_revoked"
   | "pairing_network"
   | "pairing_failed";
 
@@ -91,6 +92,8 @@ const PAIRING_EXPIRED_MSG =
   "Pairing failed: that pairing code has expired. Pairing codes last 10 minutes — generate a fresh one on your Dashboard and use it right away.";
 const PAIRING_USED_MSG =
   "Pairing failed: that pairing code was already used. Each code works only once — generate a new one on your Dashboard.";
+const PAIRING_REVOKED_MSG =
+  "Pairing failed: that pairing code was replaced by a newer one. Generating a code retires any earlier code — use the most recent one from your Dashboard.";
 const PAIRING_NETWORK_MSG =
   "Pairing failed: couldn't reach AIFight. Check your internet connection and try again.";
 
@@ -108,12 +111,17 @@ export function classifyPairingError(rawMessage: string): { code: PairingErrorCo
   // Server verdicts first (auth.go: "pairing_code already used" / "pairing_code
   // expired" / "invalid pairing_code"). These are the actionable, common cases.
   if (/already used/.test(s)) return { code: "pairing_used", message: PAIRING_USED_MSG };
+  // A newly generated code retires older ones (auth.go ErrBridgePairingRevoked).
+  // This is a common outcome of the re-pair flow, so give it its own actionable
+  // copy instead of letting it collapse into the opaque pairing_failed bucket.
+  if (/revoked/.test(s)) return { code: "pairing_revoked", message: PAIRING_REVOKED_MSG };
   if (/expired/.test(s)) return { code: "pairing_expired", message: PAIRING_EXPIRED_MSG };
   if (/invalid pairing/.test(s)) return { code: "pairing_invalid", message: PAIRING_INVALID_MSG };
   // Transport: readErrorMessage's non-JSON HTTP fallback ("pairing failed with
-  // HTTP <status>") OR a raw fetch network exception. Both mean "the request never
-  // completed", so the next step is identical — check the connection and retry.
-  if (/pairing failed with http/.test(s) || isNetworkErrorMessage(s)) {
+  // HTTP <status>"), the server's 503 "pairing temporarily unavailable", OR a raw
+  // fetch network exception. All mean "the request never completed — try again",
+  // so the next step is identical: check the connection and retry.
+  if (/pairing failed with http/.test(s) || /temporarily unavailable/.test(s) || isNetworkErrorMessage(s)) {
     return { code: "pairing_network", message: PAIRING_NETWORK_MSG };
   }
   // Everything else (the unsafe-ws guard, response-parse failures, an empty code,

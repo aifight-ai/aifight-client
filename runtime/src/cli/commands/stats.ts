@@ -60,6 +60,7 @@ export async function runStats(args: HandlerArgs, env: HandlerEnv): Promise<numb
       output_tokens: b.outputTokens,
       reasoning_tokens: b.reasoningTokens,
       cached_tokens: b.cachedTokens,
+      cache_write_tokens: b.cacheWriteTokens,
       avg_output_tokens_per_call: avgOutputPerCall(b),
       ...(b.estimatedCost !== undefined ? { estimated_cost: round4(b.estimatedCost) } : {}),
       unpriced_calls: b.unpricedCalls,
@@ -89,6 +90,7 @@ export async function runStats(args: HandlerArgs, env: HandlerEnv): Promise<numb
   env.stdout(
     `Total: ${t.calls} calls · ${t.matchIds.size} matches · in ${fmtTokens(t.inputTokens)} / out ${fmtTokens(t.outputTokens)}` +
       (t.cachedTokens > 0 ? ` / cached ${fmtTokens(t.cachedTokens)}` : "") +
+      (t.cacheWriteTokens > 0 ? ` / cache writes ${fmtTokens(t.cacheWriteTokens)}` : "") +
       ` · avg out/call ${avgOutputPerCall(t)}\n`,
   );
   if (t.estimatedCost !== undefined) {

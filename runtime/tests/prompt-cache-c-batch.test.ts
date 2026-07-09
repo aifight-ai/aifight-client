@@ -16,6 +16,8 @@ import type { DecisionInput, LLMProfile } from "../src/llm/adapters/types";
 //       fixed in PROMPT_LAYERING_AND_CACHE_SPEC §10.1) into
 //       DecisionOutput.cachedTokens, and estimateUsage forwards it to
 //       UsageRecord.cachedTokens (what the CLI/desktop usage views display).
+//       Anthropic cache_creation_input_tokens is tracked separately as
+//       cacheWriteTokens; it is not a cache hit.
 
 function resolved(
   partial: Pick<LLMProfile, "protocol" | "baseURL" | "model"> & Partial<LLMProfile>,
@@ -118,12 +120,16 @@ interface CacheCase {
   /** Provider response with NO cache field — expect cachedTokens undefined. */
   bodyNoCache: unknown;
   expected: number;
+  expectedCacheWrite?: number;
+  /** Expected total inputTokens after the adapter folds cache read+write in
+   *  (Anthropic: fresh+read+write). Only set where the sum is load-bearing. */
+  expectedInput?: number;
   profileExtra?: Partial<LLMProfile>;
 }
 
 const CASES: CacheCase[] = [
   {
-    // Anthropic: cache_read_input_tokens + cache_creation_input_tokens
+    // Anthropic: cache_read_input_tokens is the hit; cache_creation_input_tokens is a write.
     protocol: "anthropic_messages",
     baseURL: "https://api.anthropic.com",
     model: "claude-opus-4-8",
@@ -132,7 +138,9 @@ const CASES: CacheCase[] = [
       usage: { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 90, cache_creation_input_tokens: 10 },
     },
     bodyNoCache: { content: [{ type: "text", text: "HELLO" }], usage: { input_tokens: 100, output_tokens: 10 } },
-    expected: 100,
+    expected: 90,
+    expectedCacheWrite: 10,
+    expectedInput: 200, // 100 fresh + 90 read + 10 write — guards the fold-in
   },
   {
     // DeepSeek: prompt_cache_hit_tokens
@@ -216,8 +224,19 @@ describe("C2 — adapters parse provider cached-token fields (§10.1)", () => {
       stubFetch(200, c.bodyWithCache);
       const out = await adapter.generateDecision(DECIDE, p);
       expect(out.cachedTokens).toBe(c.expected);
+      if (c.expectedCacheWrite !== undefined) {
+        expect(out.cacheWriteTokens).toBe(c.expectedCacheWrite);
+      }
+      if (c.expectedInput !== undefined) {
+        // Anthropic folds cache read+write into inputTokens (fresh+read+write);
+        // pin the sum so a future edit can't silently drop it.
+        expect(out.inputTokens).toBe(c.expectedInput);
+      }
       // estimateUsage must forward it — this is what the CLI/desktop stats show.
       expect(adapter.estimateUsage(out, p).cachedTokens).toBe(c.expected);
+      if (c.expectedCacheWrite !== undefined) {
+        expect(adapter.estimateUsage(out, p).cacheWriteTokens).toBe(c.expectedCacheWrite);
+      }
     });
 
     it(`${c.protocol}: cachedTokens is undefined when the provider omits the field`, async () => {

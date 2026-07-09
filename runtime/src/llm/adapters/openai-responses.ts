@@ -437,13 +437,17 @@ function extractTokens(parsed: unknown): {
   // input_tokens_details.cached_tokens (Chat Completions uses
   // prompt_tokens_details.cached_tokens — a different path).
   const inputDetails = usage.input_tokens_details;
+  const outputDetails = usage.output_tokens_details;
   const cachedTokens = isObject(inputDetails)
     ? numOrUndef(inputDetails.cached_tokens)
+    : undefined;
+  const reasoningTokens = isObject(outputDetails)
+    ? numOrUndef(outputDetails.reasoning_tokens)
     : undefined;
   return {
     inputTokens: numOrUndef(usage.input_tokens),
     outputTokens: numOrUndef(usage.output_tokens),
-    reasoningTokens: numOrUndef(usage.reasoning_tokens),
+    reasoningTokens,
     cachedTokens,
   };
 }

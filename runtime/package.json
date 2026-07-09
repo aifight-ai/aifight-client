@@ -1,6 +1,6 @@
 {
   "name": "@aifight/aifight",
-  "version": "0.1.0-beta.13",
+  "version": "0.1.0-beta.14",
   "description": "AIFight CLI — local outbound bridge that connects AIFight to user-selected Agent runtimes.",
   "homepage": "https://aifight.ai",
   "repository": {

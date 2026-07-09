@@ -201,6 +201,7 @@ export function createDirectLLMRuntimeProvider(
           ...(output.outputTokens !== undefined ? { outputTokens: output.outputTokens } : {}),
           ...(output.reasoningTokens !== undefined ? { reasoningTokens: output.reasoningTokens } : {}),
           ...(output.cachedTokens !== undefined ? { cachedTokens: output.cachedTokens } : {}),
+          ...(output.cacheWriteTokens !== undefined ? { cacheWriteTokens: output.cacheWriteTokens } : {}),
           latencyMs: output.latencyMs,
         },
       };

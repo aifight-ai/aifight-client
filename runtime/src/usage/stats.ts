@@ -14,6 +14,7 @@ export interface UsageBucket {
   outputTokens: number;
   reasoningTokens: number;
   cachedTokens: number;
+  cacheWriteTokens: number;
   /** Estimated cost over PRICED calls only; undefined when no call was priced. */
   estimatedCost?: number;
   /** Calls that had no price entry (cost unknown). */
@@ -37,6 +38,7 @@ function newBucket(key: string): UsageBucket {
     outputTokens: 0,
     reasoningTokens: 0,
     cachedTokens: 0,
+    cacheWriteTokens: 0,
     unpricedCalls: 0,
     matchIds: new Set<string>(),
   };
@@ -48,6 +50,7 @@ function addRecord(b: UsageBucket, r: UsageRecord, price: ModelPrice | undefined
   b.outputTokens += r.output_tokens ?? 0;
   b.reasoningTokens += r.reasoning_tokens ?? 0;
   b.cachedTokens += r.cached_tokens ?? 0;
+  b.cacheWriteTokens += r.cache_write_tokens ?? 0;
   if (r.match_id) b.matchIds.add(r.match_id);
   if (price === undefined) {
     b.unpricedCalls++;
@@ -57,6 +60,7 @@ function addRecord(b: UsageBucket, r: UsageRecord, price: ModelPrice | undefined
     ...(r.input_tokens !== undefined ? { input: r.input_tokens } : {}),
     ...(r.output_tokens !== undefined ? { output: r.output_tokens } : {}),
     ...(r.cached_tokens !== undefined ? { cached: r.cached_tokens } : {}),
+    ...(r.cache_write_tokens !== undefined ? { cacheWrite: r.cache_write_tokens } : {}),
   });
   b.estimatedCost = (b.estimatedCost ?? 0) + cost;
 }

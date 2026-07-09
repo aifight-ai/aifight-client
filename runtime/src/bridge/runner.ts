@@ -80,7 +80,14 @@ function isDeviceMismatchError(err: unknown): boolean {
   let cur: unknown = err;
   for (let depth = 0; depth < 8 && cur != null; depth++) {
     if (cur instanceof WSDeviceMismatchError) return true;
-    if (cur instanceof Error && cur.message.includes("device_mismatch")) return true;
+    // Fallbacks for when `instanceof` fails (duplicated error class across
+    // bundles): match the real "device mismatch" message (a space) and the
+    // server "device_mismatch" token, plus the 403 handshake responseBody.
+    if (cur instanceof Error && /device[ _]mismatch/i.test(cur.message)) return true;
+    if (typeof cur === "object" && cur !== null && "responseBody" in cur) {
+      const body = (cur as { readonly responseBody?: unknown }).responseBody;
+      if (typeof body === "string" && body.includes("device_mismatch")) return true;
+    }
     cur = (cur as { cause?: unknown }).cause;
   }
   return false;
@@ -128,6 +135,10 @@ export class BridgeRunner {
       },
       onReadinessCheck: async (data) => this.#buildRuntimeStatus(provider, data),
       onNotify: (event) => {
+        if (event.code === "agent.device_mismatch") {
+          this.#log("error", "bridge.device_mismatch", DEVICE_MISMATCH_MESSAGE);
+          return;
+        }
         this.#log(event.level, event.code, event.message);
       },
       onResult: (gameOver, context) => {
@@ -323,6 +334,9 @@ export class BridgeRunner {
                 ? { reasoning_tokens: e.usage.reasoningTokens }
                 : {}),
               ...(e.usage.cachedTokens !== undefined ? { cached_tokens: e.usage.cachedTokens } : {}),
+              ...(e.usage.cacheWriteTokens !== undefined
+                ? { cache_write_tokens: e.usage.cacheWriteTokens }
+                : {}),
               ...(e.usage.latencyMs !== undefined ? { latency_ms: e.usage.latencyMs } : {}),
               decision_source: e.decisionSource,
             });

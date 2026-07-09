@@ -1,7 +1,7 @@
 {
   "name": "aifight-desktop",
   "private": true,
-  "version": "0.1.0-beta.13",
+  "version": "0.1.0-beta.14",
   "description": "AIFight desktop — a GUI over the AIFight bridge with live, full-information game rendering.",
   "author": "AIFight",
   "type": "module",

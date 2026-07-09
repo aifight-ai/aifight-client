@@ -76,6 +76,7 @@ export interface BridgeRuntimeDecisionUsage {
   readonly outputTokens?: number;
   readonly reasoningTokens?: number;
   readonly cachedTokens?: number;
+  readonly cacheWriteTokens?: number;
   readonly latencyMs?: number;
 }
 
@@ -136,12 +137,14 @@ function toWireUsage(calls: readonly BridgeRuntimeDecisionUsage[]): AgentDecisio
   const outputTokens = sum((c) => c.outputTokens);
   const reasoningTokens = sum((c) => c.reasoningTokens);
   const cachedTokens = sum((c) => c.cachedTokens);
+  const cacheWriteTokens = sum((c) => c.cacheWriteTokens);
   return {
     model,
     ...(inputTokens !== undefined ? { input_tokens: inputTokens } : {}),
     ...(outputTokens !== undefined ? { output_tokens: outputTokens } : {}),
     ...(reasoningTokens !== undefined ? { reasoning_tokens: reasoningTokens } : {}),
     ...(cachedTokens !== undefined ? { cached_tokens: cachedTokens } : {}),
+    ...(cacheWriteTokens !== undefined ? { cache_write_tokens: cacheWriteTokens } : {}),
   };
 }
 

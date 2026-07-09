@@ -39,6 +39,12 @@ describe("usage stats (§7A)", () => {
       (5_000 * 0.3) / 1_000_000,
       9,
     );
+    // Cache writes are not cache hits; absent a separate write price, estimate
+    // them at the ordinary input rate rather than the discounted cache-hit rate.
+    expect(estimateCallCost(price, { input: 1_100, cached: 100, cacheWrite: 200 })).toBeCloseTo(
+      (800 * 3 + 100 * 0.3 + 200 * 3) / 1_000_000,
+      9,
+    );
   });
 
   it("no built-in price table: default is empty, costs stay undefined", () => {

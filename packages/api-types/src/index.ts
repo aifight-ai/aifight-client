@@ -136,6 +136,7 @@ export interface AgentProfileInfo {
     output_tokens: number;
     reasoning_tokens: number;
     cached_tokens: number;
+    cache_write_tokens?: number;
   }>;
   description: string;
   is_active: boolean;

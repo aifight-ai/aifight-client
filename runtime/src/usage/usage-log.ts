@@ -25,6 +25,7 @@ export interface UsageRecord {
   readonly output_tokens?: number;
   readonly reasoning_tokens?: number;
   readonly cached_tokens?: number;
+  readonly cache_write_tokens?: number;
   readonly latency_ms?: number;
   /**
    * What kind of call this was: "model" = a decision's first call,

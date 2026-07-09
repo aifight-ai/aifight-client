@@ -44,12 +44,19 @@ export function isClaimNameError(raw?: string | null): boolean {
  *  some other subsystem never lands here. Expects a lowercased string. */
 function pairingErrorKey(
   s: string,
-): "errors.pairingUsed" | "errors.pairingExpired" | "errors.pairingInvalid" | "errors.pairingNetwork" | null {
+):
+  | "errors.pairingUsed"
+  | "errors.pairingRevoked"
+  | "errors.pairingExpired"
+  | "errors.pairingInvalid"
+  | "errors.pairingNetwork"
+  | null {
   if (!/pairing/.test(s)) return null;
   if (/pairing_used|already used/.test(s)) return "errors.pairingUsed";
+  if (/pairing_revoked|revoked/.test(s)) return "errors.pairingRevoked";
   if (/pairing_expired|expired/.test(s)) return "errors.pairingExpired";
   if (/pairing_invalid|invalid pairing/.test(s)) return "errors.pairingInvalid";
-  if (/pairing_network|pairing failed with http/.test(s)) return "errors.pairingNetwork";
+  if (/pairing_network|pairing failed with http|temporarily unavailable/.test(s)) return "errors.pairingNetwork";
   return null;
 }
 

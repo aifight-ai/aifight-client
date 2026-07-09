@@ -451,10 +451,15 @@ export function createAnthropicMessagesAdapter(): LLMAdapter {
       const { text, reasoningSummary, stopReason } = parseResponse(raw);
 
       const usage = raw.usage ?? {};
-      const inputTokens = usage.input_tokens;
+      const cacheReadTokens = usage.cache_read_input_tokens ?? 0;
+      const cacheWriteTokens = usage.cache_creation_input_tokens ?? 0;
+      const inputTokens =
+        typeof usage.input_tokens === "number"
+          ? usage.input_tokens + cacheReadTokens + cacheWriteTokens
+          : undefined;
       const outputTokens = usage.output_tokens;
-      const cachedTokens =
-        (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) || undefined;
+      const cachedTokens = cacheReadTokens || undefined;
+      const cacheCreationTokens = cacheWriteTokens || undefined;
       const truncated = computeTruncated(stopReason, text, undefined);
 
       return {
@@ -464,6 +469,7 @@ export function createAnthropicMessagesAdapter(): LLMAdapter {
         inputTokens,
         outputTokens,
         cachedTokens,
+        cacheWriteTokens: cacheCreationTokens,
         latencyMs,
         reasoningSummary,
         raw,
@@ -475,11 +481,13 @@ export function createAnthropicMessagesAdapter(): LLMAdapter {
       const inputTokens = output.inputTokens ?? 0;
       const outputTokens = output.outputTokens ?? 0;
       const cachedTokens = output.cachedTokens ?? 0;
+      const cacheWriteTokens = output.cacheWriteTokens ?? 0;
 
-      const billableInput = inputTokens - cachedTokens;
+      const billableInput = inputTokens - cachedTokens - cacheWriteTokens;
       const estimatedCostUSD =
         (Math.max(0, billableInput) * pricing.input +
           (cachedTokens * (pricing.cached ?? pricing.input)) +
+          cacheWriteTokens * pricing.input +
           outputTokens * pricing.output) /
         1_000_000;
 
@@ -491,6 +499,7 @@ export function createAnthropicMessagesAdapter(): LLMAdapter {
         outputTokens,
         reasoningTokens: output.reasoningTokens,
         cachedTokens,
+        cacheWriteTokens,
         estimatedCostUSD,
         latencyMs: output.latencyMs,
         timestamp: new Date().toISOString(),

@@ -144,6 +144,22 @@ describe("removeLocalIdentity (device-mismatch takeover, button 2)", () => {
     expect(r.ok).toBe(true);
     expect(r.status?.phase).toBe("unconfigured");
   });
+
+  it("quarantines an unreadable bridge.json instead of pretending there was no identity", async () => {
+    const home = freshHome();
+    fs.writeFileSync(path.join(home, "bridge.json"), "{not json", { mode: 0o600 });
+    const logs: Array<{ code: string }> = [];
+
+    const r = await new BridgeHost({ onLog: (event) => logs.push(event) }).removeLocalIdentity();
+
+    expect(r.ok).toBe(true);
+    expect(r.status?.phase).toBe("unconfigured");
+    expect(fs.existsSync(path.join(home, "bridge.json"))).toBe(false);
+    const quarantined = fs.readdirSync(home).filter((name) => name.startsWith("bridge.unreadable-"));
+    expect(quarantined).toHaveLength(1);
+    expect(fs.readFileSync(path.join(home, quarantined[0]!), "utf8")).toBe("{not json");
+    expect(logs.some((event) => event.code === "desktop.bridge_identity_quarantined")).toBe(true);
+  });
 });
 
 // ── Daily-cap two-ledger sync (setAgentPolicy → local bridge.json) ───────────

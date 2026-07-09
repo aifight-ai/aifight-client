@@ -43,6 +43,14 @@ describe("localizeServerError — pairing split (EN)", () => {
     expect(out).toBe(i18n.t("errors.pairingUsed"));
   });
 
+  it("pairing_revoked envelope → errors.pairingRevoked", async () => {
+    await i18n.changeLanguage("en");
+    const out = localizeServerError(
+      envelope("pairing_revoked", "Pairing failed: that pairing code was replaced by a newer one. Generating a code retires any earlier code — use the most recent one from your Dashboard."),
+    );
+    expect(out).toBe(i18n.t("errors.pairingRevoked"));
+  });
+
   it("pairing_network envelope → errors.pairingNetwork", async () => {
     await i18n.changeLanguage("en");
     const out = localizeServerError(envelope("pairing_network", "Pairing failed: couldn't reach AIFight. Check your internet connection and try again."));

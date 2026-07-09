@@ -1102,6 +1102,7 @@ export interface MsgAction {
     output_tokens?: number;
     reasoning_tokens?: number;
     cached_tokens?: number;
+    cache_write_tokens?: number;
   };
 }
 

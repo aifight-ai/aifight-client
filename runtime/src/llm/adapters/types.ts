@@ -96,6 +96,8 @@ export interface DecisionOutput {
   readonly reasoningTokens?: number;
   /** Cached tokens (if provider reports) */
   readonly cachedTokens?: number;
+  /** Cache-write / cache-creation tokens (if provider reports separately) */
+  readonly cacheWriteTokens?: number;
   /** Response latency in ms */
   readonly latencyMs: number;
   /** Short reasoning summary if provider supports it */
@@ -116,6 +118,7 @@ export interface UsageRecord {
   readonly outputTokens?: number;
   readonly reasoningTokens?: number;
   readonly cachedTokens?: number;
+  readonly cacheWriteTokens?: number;
   readonly estimatedCostUSD?: number;
   readonly latencyMs: number;
   readonly timestamp: string;

@@ -13,7 +13,7 @@ import {
 } from "../wsclient/reconnect";
 import type { WSClientMessage } from "../wsclient/client";
 import type { ServerMessageEnvelope } from "../wsclient/frame-handler";
-import type { WSClientError } from "../wsclient/errors";
+import { WSDeviceMismatchError, type WSClientError } from "../wsclient/errors";
 import {
   createInitialAgentFSM,
   transitionAgentFSM,
@@ -262,6 +262,14 @@ export class AgentInstance {
         this.#apply({ type: "reconnect.event", event });
       }),
       client.onClose((info) => {
+        if (isDeviceMismatchCause(info.cause)) {
+          this.#notify({
+            level: "error",
+            code: "agent.device_mismatch",
+            message: "device_mismatch",
+            cause: info.cause,
+          });
+        }
         this.#apply({ type: "reconnect.close", info });
       }),
       client.onError((cause) => {
@@ -520,6 +528,30 @@ function stringifyCause(cause: unknown): string {
   } catch {
     return String(cause);
   }
+}
+
+function isDeviceMismatchCause(cause: unknown): boolean {
+  let cur: unknown = cause;
+  const seen = new Set<unknown>();
+  while (cur !== null && cur !== undefined && !seen.has(cur)) {
+    seen.add(cur);
+    if (cur instanceof WSDeviceMismatchError) return true;
+    // Fallbacks for when `instanceof` fails (the error class can be duplicated
+    // across bundles): match the actual message ("device mismatch: ...", a
+    // space) as well as the server's "device_mismatch" token, and duck-type the
+    // 403 handshake body which always carries "device_mismatch".
+    if (cur instanceof Error && /device[ _]mismatch/i.test(cur.message)) return true;
+    if (typeof cur === "object" && cur !== null && "responseBody" in cur) {
+      const body = (cur as { readonly responseBody?: unknown }).responseBody;
+      if (typeof body === "string" && body.includes("device_mismatch")) return true;
+    }
+    if (typeof cur === "object" && "cause" in cur) {
+      cur = (cur as { readonly cause?: unknown }).cause;
+      continue;
+    }
+    break;
+  }
+  return false;
 }
 
 function readRequestId(data: unknown): string {

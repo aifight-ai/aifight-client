@@ -19,6 +19,12 @@ describe("classifyPairingError", () => {
     expect(r.message.toLowerCase()).toContain("already used");
   });
 
+  it("maps the server 'pairing_code revoked' verdict (new code retires old)", () => {
+    const r = classifyPairingError("pairing_code revoked");
+    expect(r.code).toBe("pairing_revoked");
+    expect(r.message.toLowerCase()).toContain("replaced by a newer one");
+  });
+
   it("maps the server 'pairing_code expired' verdict", () => {
     const r = classifyPairingError("pairing_code expired");
     expect(r.code).toBe("pairing_expired");
@@ -29,6 +35,11 @@ describe("classifyPairingError", () => {
     const r = classifyPairingError("pairing failed with HTTP 500");
     expect(r.code).toBe("pairing_network");
     expect(r.message.toLowerCase()).toContain("internet connection");
+  });
+
+  it("maps the server 503 'pairing temporarily unavailable' to network (retryable)", () => {
+    const r = classifyPairingError("pairing temporarily unavailable");
+    expect(r.code).toBe("pairing_network");
   });
 
   it.each([

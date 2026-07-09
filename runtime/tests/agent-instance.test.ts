@@ -20,6 +20,7 @@ import type {
   ReconnectingWSClient,
   ReconnectingWSClientOptions,
   ReconnectCloseHandler,
+  ReconnectCloseInfo,
   ReconnectEvent,
   ReconnectEventHandler,
 } from "../src/wsclient/reconnect";
@@ -29,7 +30,7 @@ import type {
   WSErrorHandler,
   WSWelcome,
 } from "../src/wsclient/client";
-import { WSClosedError } from "../src/wsclient/errors";
+import { WSClosedError, WSDeviceMismatchError } from "../src/wsclient/errors";
 
 const welcome: WSWelcome = {
   type: "welcome",
@@ -93,9 +94,9 @@ class FakeReconnectClient implements ReconnectingWSClient {
     for (const handler of [...this.reconnectHandlers]) handler(event);
   }
 
-  emitClose(): void {
+  emitClose(info: ReconnectCloseInfo = { kind: "fatal-close", code: 1006 }): void {
     this.state = "closed";
-    for (const handler of [...this.closeHandlers]) handler({ kind: "fatal-close", code: 1006 });
+    for (const handler of [...this.closeHandlers]) handler(info);
   }
 
   emitError(err = new WSClosedError("frame error")): void {
@@ -467,6 +468,24 @@ describe("AgentInstance", () => {
 
     expect(agent.snapshot().state?.phase).toBe("closed");
     expect(() => agent.joinQueue("coup")).toThrow(AgentInstanceStoppedError);
+  });
+
+  it("reconnect close with device_mismatch emits a structured takeover notify", async () => {
+    const { agent, client, onNotify } = makeHarness();
+    await agent.start();
+
+    client.emitClose({
+      kind: "fatal-error",
+      cause: new WSDeviceMismatchError(
+        '{"error":"device_mismatch"}',
+        "device_mismatch: agent key is bound to another device",
+      ),
+    });
+    await flushEffects();
+
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "agent.device_mismatch", level: "error" }),
+    );
   });
 
   it("send failure reports notify(error) without throwing command", async () => {
