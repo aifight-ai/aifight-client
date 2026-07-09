@@ -47,8 +47,14 @@ jobs:
           registry-url: "https://registry.npmjs.org"
       - name: Upgrade npm (Trusted Publishing needs >= 11.5.1)
         run: npm install -g npm@latest
-      - name: Install workspace deps (root)
-        run: npm install
+      - name: Install CLI workspace deps (runtime only)
+        # Root `npm install` also resolves desktop's transitive git dep
+        # (@electron/node-gyp, git+ssh), which npm >= 12 refuses by default
+        # (allow-git defaults to none) → EALLOWGIT. Publishing the CLI never
+        # needs desktop: scope the install to the runtime workspace + root.
+        # runtime/build.sh reads ../protocol/* from the checkout, not from
+        # node_modules, so no other workspace is required here.
+        run: npm install -w @aifight/aifight --include-workspace-root
       - name: Publish @aifight/aifight (OIDC + provenance)
         # prepublishOnly runs runtime/build.sh; BUILD_ONLY=1 skips the
         # env-dependent test suite + scratch install (same as the release build).
