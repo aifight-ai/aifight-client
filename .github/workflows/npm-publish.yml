@@ -45,15 +45,20 @@ jobs:
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
-      - name: Upgrade npm (Trusted Publishing needs >= 11.5.1)
-        run: npm install -g npm@latest
-      - name: Install CLI workspace deps (runtime only)
-        # Root `npm install` also resolves desktop's transitive git dep
-        # (@electron/node-gyp, git+ssh), which npm >= 12 refuses by default
-        # (allow-git defaults to none) → EALLOWGIT. Publishing the CLI never
-        # needs desktop: scope the install to the runtime workspace + root.
-        # runtime/build.sh reads ../protocol/* from the checkout, not from
-        # node_modules, so no other workspace is required here.
+      - name: Pin npm 11.x (Trusted Publishing >= 11.5.1; npm 12 defaults allow-git=none)
+        # npm 12 (shipped 2026-07) flips allow-git to `none` and refuses to
+        # resolve desktop's transitive git dep (@electron/node-gyp) that sits
+        # in the root lockfile — even a `-w @aifight/aifight` install still
+        # builds the idealTree from the whole lock and trips EALLOWGIT.
+        # npm 11.x keeps allow-git=all (the exact environment beta.1–13
+        # published under) and still supports Trusted Publishing (>= 11.5.1),
+        # so pin to 11.x to unblock. A future move to npm 12 requires
+        # removing/vendoring that git dependency out of the lockfile first.
+        run: npm install -g npm@11
+      - name: Install CLI workspace deps (runtime + root)
+        # Publishing the CLI never needs desktop; scope to the runtime
+        # workspace + root. build.sh reads ../protocol/* from the checkout,
+        # not node_modules, so no other workspace is required here.
         run: npm install -w @aifight/aifight --include-workspace-root
       - name: Publish @aifight/aifight (OIDC + provenance)
         # prepublishOnly runs runtime/build.sh; BUILD_ONLY=1 skips the
