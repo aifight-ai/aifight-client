@@ -8,6 +8,7 @@ import type {
   AgentPolicy,
   AifightBridgeApi,
   BridgeStatus,
+  CliOp,
   CliRunResult,
   UsageOverview,
 } from "../shared/ipc";
@@ -181,16 +182,16 @@ export function installDemoBridge(): void {
     getLaunchAtLogin: () => Promise.resolve(false),
     setLaunchAtLogin: () => Promise.resolve({ ok: true }),
     focusWindow: () => Promise.resolve(),
-    cliRun: (args: string[]) => {
-      if (args[0] === "sessions" && args[1] === "list") return Promise.resolve(cliResult({ sessions: SESSIONS }));
-      if (args[0] === "status") return Promise.resolve(cliResult({ platformAgentStatus: { kind: "ok", isClaimed: true } }));
-      if (args[0] === "challenge") return Promise.resolve(cliResult({ join_url: "https://aifight.ai/challenge/demo-token" }));
+    runCli: (op: CliOp) => {
+      if (op.kind === "sessionsList") return Promise.resolve(cliResult({ sessions: SESSIONS }));
+      if (op.kind === "status") return Promise.resolve(cliResult({ platformAgentStatus: { kind: "ok", isClaimed: true } }));
+      if (op.kind === "challenge") return Promise.resolve(cliResult({ join_url: "https://aifight.ai/challenge/demo-token" }));
       // Self-review settings (Settings tri-state reads autoMode).
-      if (args[0] === "config" && args[1] === "review")
+      if (op.kind === "configReviewGet")
         return Promise.resolve(cliResult({ agentSlug: "default", selfReview: { autoMode: "off", model: "", maxTurns: null } }));
       // Post-match self-review — a lively populated review for both the read-only
-      // check (--no-generate) and the explicit generate, so screenshots are useful.
-      if (args[0] === "review")
+      // check (no-generate) and the explicit generate, so screenshots are useful.
+      if (op.kind === "review")
         return Promise.resolve(
           cliResult({
             review: {
@@ -232,6 +233,8 @@ export function installDemoBridge(): void {
     getUsageOverview: () => Promise.resolve(USAGE),
     checkForUpdates: () => Promise.resolve(),
     installUpdate: () => Promise.resolve(),
+    getAutoUpdate: () => Promise.resolve(false),
+    setAutoUpdate: () => Promise.resolve({ ok: true }),
     onUpdateStatus: noopOff,
   };
   Object.defineProperty(window, "aifight", { value: api, configurable: true });

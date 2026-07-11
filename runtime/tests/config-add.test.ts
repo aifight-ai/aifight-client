@@ -204,9 +204,12 @@ describe("config add (end-to-end)", () => {
   });
 
   it("second add does not steal active when the first profile's key resolves (D8)", async () => {
-    // Write a real key file so the first profile resolves.
+    // Write a real, private (0600) key file so the first profile resolves.
+    // R13 F-07: a group/other-readable secret file is now refused, so the file
+    // must be chmod 600 for its key to resolve (matches storeSecretFile).
     const keyFile = path.join(tmpDir, "k1.txt");
-    fs.writeFileSync(keyFile, "sk-first\n");
+    fs.writeFileSync(keyFile, "sk-first\n", { mode: 0o600 });
+    fs.chmodSync(keyFile, 0o600);
     await runCapture(["config", "add", "first", "--protocol", "claude", "--file", keyFile, "--no-test"]);
     await runCapture(["config", "add", "second", "--protocol", "claude", "--file", keyFile, "--no-test"]);
     const cfg = readConfig();

@@ -366,4 +366,27 @@ describe("LocalMatchSessionStore", () => {
     const summary = store.listSessions().find((s) => s.session_id === "session-1")!;
     expect(summary.error_class_counts).toEqual({ auth: 2 }); // server recovered → not counted
   });
+
+  it("R13-F03: decisions.jsonl stores a bounded state_summary, not the full state object", () => {
+    const store = new LocalMatchSessionStore({ runtimeHome: tempHome(), now: () => new Date("2026-05-18T01:02:03.000Z") });
+    const config = bridgeConfig();
+    const ctx = { actionRequest: actionRequest(), matchId: "session-1", game: "liars_dice", state: null } as never;
+    store.recordDecision({
+      config,
+      context: ctx,
+      startedAt: new Date("2026-05-18T01:02:03.000Z"),
+      completedAt: new Date("2026-05-18T01:02:04.000Z"),
+      traces: [],
+      action: { type: "challenge" },
+    });
+
+    const decisions = store.exportSession("session-1")!.decisions as Array<{ action_request?: Record<string, unknown> }>;
+    const ar = decisions[0]!.action_request!;
+    // The full state object is NOT re-embedded (it already lives in inbound.jsonl).
+    expect(ar.state).toBeUndefined();
+    // A compact reference remains: the content hash plus a bounded summary string.
+    expect(typeof ar.state_sha256).toBe("string");
+    expect(typeof ar.state_summary).toBe("string");
+    expect((ar.state_summary as string).length).toBeLessThanOrEqual(4096 + 32);
+  });
 });

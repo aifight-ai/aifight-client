@@ -184,9 +184,31 @@ export interface CliRunResult {
   readonly stderr: string;
   /** Parsed JSON when the command emitted a JSON envelope (run with --json). */
   readonly json?: unknown;
-  /** Set when the desktop rejected the call before running (e.g. command not allowed). */
+  /** Set when the desktop rejected the call before running (e.g. invalid operation). */
   readonly error?: string;
 }
+
+/**
+ * The ENUMERATED set of CLI operations the desktop renderer may trigger. The
+ * renderer names an operation + its typed parameters; the MAIN process builds the
+ * concrete argv from a fixed template per kind (cli-host.ts argvForCliOp) and
+ * validates every interpolated value. This is deliberately NOT a generic
+ * `string[]` of argv — a renderer-side injection must never be able to compose
+ * arbitrary CLI flags/commands. Add a new kind here (and a template in cli-host)
+ * to expose a new command; nothing else is reachable.
+ */
+export type CliOp =
+  | { readonly kind: "setup"; readonly replaceLocalIdentity?: boolean }
+  | { readonly kind: "connect"; readonly code: string; readonly replaceLocalIdentity?: boolean }
+  | { readonly kind: "status" }
+  | { readonly kind: "challenge"; readonly game: string }
+  | { readonly kind: "accept"; readonly url: string }
+  | { readonly kind: "configReviewGet" }
+  | { readonly kind: "configReviewSet"; readonly mode: "off" | "all" | "losses_only" }
+  | { readonly kind: "configTest"; readonly slug: string; readonly profileId: string }
+  | { readonly kind: "review"; readonly sessionId: string; readonly mode: "default" | "regen" | "no-generate" }
+  | { readonly kind: "sessionsList" }
+  | { readonly kind: "sessionsExport"; readonly sessionId: string };
 
 /**
  * The games THIS BUILD knows how to RENDER (board / own-hand / private-state
@@ -551,7 +573,7 @@ export const IPC = {
   loginItemSet: "login-item:set",
   focusWindow: "app:focus",
   openConfigDir: "app:open-config-dir",
-  cliRun: "cli:run",
+  cliOp: "cli:op",
   strategyRead: "strategy:read",
   strategyWrite: "strategy:write",
   configGet: "config:get",
@@ -565,6 +587,8 @@ export const IPC = {
   usageGet: "usage:get",
   updateCheck: "update:check",
   updateInstall: "update:install",
+  getAutoUpdate: "update:get-auto",
+  setAutoUpdate: "update:set-auto",
   // main → renderer (send)
   status: "bridge:status",
   log: "bridge:log",
@@ -652,8 +676,10 @@ export interface AifightBridgeApi {
   setLaunchAtLogin(enabled: boolean): Promise<{ ok: boolean; error?: string }>;
   /** Bring the app window to the foreground (used when an OS match notification is clicked). */
   focusWindow(): Promise<void>;
-  /** Run an `aifight` CLI command in-process (register/connect/config/set/challenge/accept/status/…). */
-  cliRun(args: string[]): Promise<CliRunResult>;
+  /** Run an ENUMERATED `aifight` CLI operation in-process. The renderer names the
+   * operation (CliOp); main builds the fixed argv template + validates every value,
+   * so no arbitrary argv/flags can be composed from the renderer. */
+  runCli(op: CliOp): Promise<CliRunResult>;
   /** Read the agent's own strategy docs (global + per-game). Reads the SAME files the runtime injects in matches. */
   readStrategy(): Promise<StrategyReadResult>;
   /** Write one strategy doc (Markdown). Local file only; rejected if not configured or over the size cap. */
@@ -686,6 +712,12 @@ export interface AifightBridgeApi {
   checkForUpdates(): Promise<void>;
   /** Quit and install a downloaded update (after onUpdateStatus reports "downloaded"). */
   installUpdate(): Promise<void>;
+  /** Whether automatic updates are enabled (default false = fail-closed: nothing
+   * auto-downloads or installs unless the user opts in). */
+  getAutoUpdate(): Promise<boolean>;
+  /** Enable/disable automatic updates. When enabled, electron-updater auto-downloads
+   * and installs-on-quit; when disabled nothing happens automatically. */
+  setAutoUpdate(enabled: boolean): Promise<{ ok: boolean }>;
   /** Subscribe to the auto-update lifecycle (checking / available / downloading / downloaded / error). */
   onUpdateStatus(listener: (status: UpdateStatus) => void): () => void;
 }

@@ -1,4 +1,5 @@
 import { AgentInstance, type AgentInstanceSnapshot } from "../agents/agent";
+import { MAX_CONCURRENT_MATCHES } from "../agents/limits";
 import { getDeviceId } from "../account/device-id";
 import { WSDeviceMismatchError } from "../wsclient/errors";
 import type { ReconnectingWSClientOptions } from "../wsclient/reconnect";
@@ -22,6 +23,7 @@ import { createDirectLLMRuntimeProvider } from "./direct-llm-provider";
 import { appendUsageRecord } from "../usage/usage-log";
 import { loadAgentProfile, resolveAgentDir } from "../profile/profile-loader";
 import { runSelfReview } from "../review/self-review";
+import { fetchNoFollow } from "../net/guarded-fetch";
 import type { LLMConfig } from "../profile/config-schema";
 
 export interface BridgeRunnerOptions {
@@ -197,7 +199,7 @@ export class BridgeRunner {
   async #warnIfTermsPending(): Promise<void> {
     try {
       const base = this.#opts.config.baseUrl.replace(/\/+$/, "");
-      const res = await fetch(`${base}/api/agents/me/status`, {
+      const res = await fetchNoFollow(`${base}/api/agents/me/status`, {
         headers: { "X-API-Key": this.#opts.config.apiKey },
         signal: AbortSignal.timeout(8000),
       });
@@ -491,8 +493,9 @@ export class BridgeRunner {
       checked_at: checkedAt,
     };
     // Generous cap: catches a stuck pile-up, not normal concurrent play. A local
-    // "is the user accepting matches?" pause toggle can refine this later.
-    const maxConcurrent = 8;
+    // "is the user accepting matches?" pause toggle can refine this later. Shared
+    // ONE source of truth with the FSM's game_start admission gate (R13-F02).
+    const maxConcurrent = MAX_CONCURRENT_MATCHES;
     const activeMatches = this.#agent?.activeMatchCount ?? 0;
     if (activeMatches >= maxConcurrent) {
       return {

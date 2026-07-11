@@ -59,8 +59,9 @@ echo "==[1.7] README command coverage"
 node scripts/verify-readme-commands.mjs
 
 echo "==[2] tsc --noEmit strict type-check"
-if [ ! -d node_modules ]; then
-    npm_config_dry_run=false NPM_CONFIG_DRY_RUN=false npm install --no-audit --no-fund >/dev/null
+if [ ! -x ../node_modules/.bin/tsc ]; then
+    echo "  FAIL: frozen workspace dependencies are missing — run 'npm ci' at the repository root"
+    exit 1
 fi
 npm run check-types
 

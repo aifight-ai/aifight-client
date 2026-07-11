@@ -29,6 +29,13 @@ export interface BridgeRuntimeDecisionRequest {
    * correct itself instead of the bridge silently substituting a fallback.
    */
   readonly illegalFeedback?: BridgeIllegalFeedback;
+  /**
+   * Aborts when this decision is superseded by a newer action_request for the
+   * same match (R13-F02). A provider making a paid network call SHOULD combine
+   * this with its own turn-deadline timeout and forward the pair to the request,
+   * so a superseded decision cancels its in-flight HTTP call.
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface BridgeIllegalFeedback {
@@ -45,6 +52,14 @@ export interface BridgeRuntimeProvider {
   readonly name: string;
   decide(req: BridgeRuntimeDecisionRequest): Promise<BridgeRuntimeDecideOutput>;
   healthCheck?(): Promise<boolean>;
+  /**
+   * R13-F06: the provider's declared transient-retry budget for a decision on
+   * this game — the resolved profile's `retries.maxAttempts` — so the decision
+   * loop honors the user's configured retry policy instead of the built-in
+   * default. Optional: a provider that doesn't declare one (mock / localhost)
+   * leaves the loop on its default. The returned value is clamped to [0, 4].
+   */
+  transientRetryCount?(game: GameType): Promise<number | undefined> | number | undefined;
 }
 
 /**
@@ -337,6 +352,9 @@ export function buildBridgeDecisionProvider(
         legalActions,
         publicState: ar.state,
         timeoutMs: typeof ar.timeout_ms === "number" ? ar.timeout_ms : 0,
+        // R13-F02: forward the supersede signal so the provider can cancel a
+        // paid call the moment a newer action_request replaces this one.
+        ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
       };
 
       const strategy = loadStrategySafely(opts, {
@@ -374,7 +392,13 @@ export function buildBridgeDecisionProvider(
         });
       };
 
-      const maxAttempts = 1 + clampTransientRetryCount(opts.transientRetryCount);
+      // R13-F06: honor the profile's declared retry budget. Precedence: an
+      // explicit opts override, else the provider's declared per-profile value
+      // (resolved.retries.maxAttempts), else the built-in default — all funneled
+      // through clampTransientRetryCount [0, 4] so a bad value can't run away.
+      const declaredTransientRetries =
+        opts.transientRetryCount ?? (await runtimeProvider.transientRetryCount?.(game));
+      const maxAttempts = 1 + clampTransientRetryCount(declaredTransientRetries);
       let callIndex = 0;
       let raw: string | LegalAction | undefined;
       while (callIndex < maxAttempts) {
@@ -394,6 +418,12 @@ export function buildBridgeDecisionProvider(
           });
           break;
         } catch (cause) {
+          // R13-F02: superseded (or the agent stopped) mid-call — this is not a
+          // decision failure. Bubble the abort so the agent discards it as stale;
+          // do NOT emit a runtime_failure trace, transient-retry, or fall back (a
+          // fresh decision for the newer action_request is already running, and
+          // retrying would burn more of the user's tokens for a discarded result).
+          if (ctx.signal?.aborted === true) throw cause;
           const profileId = profileIdFromCause(cause);
           const errClass = classifyDecisionError(cause);
           opts.onTrace?.({
@@ -452,6 +482,8 @@ export function buildBridgeDecisionProvider(
       const retryBudget = clampIllegalRetryCount(opts.illegalRetryCount);
       let illegalAttempt = 0;
       while (coerced.source === "fallback" && coerced.reason !== undefined && illegalAttempt < retryBudget) {
+        // R13-F02: don't spend another corrective call on a superseded decision.
+        if (ctx.signal?.aborted === true) throw ctx.signal.reason ?? new Error("decision superseded");
         const remainingMs = deadlineMs === undefined ? undefined : deadlineMs - Date.now();
         if (remainingMs !== undefined && remainingMs < MIN_ILLEGAL_RETRY_BUDGET_MS) {
           break; // not enough turn budget left for another model call

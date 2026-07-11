@@ -4,8 +4,8 @@
 //     via `aifight sessions export <id>`, folded through sessionReplay.
 // Each open is an isolated, independent fold — no global merge across matches.
 //
-// Everything runs through the already-allowlisted in-process `cli:run`, so the
-// desktop and CLI read the exact same local store; no new IPC surface.
+// Everything runs through the enumerated in-process `cli:op`, so the desktop and
+// CLI read the exact same local store; no new IPC surface.
 //
 // 🔒 Replays inherit the live cockpit's information hiding (see sessionReplay).
 
@@ -13,7 +13,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronLeft, ExternalLink, RotateCw } from "lucide-react";
 
-import { cliRun } from "../useBridge";
+import { runCli } from "../useBridge";
 import { buildReplayFromExport, type SessionReplay } from "../sessionReplay";
 import { Chip, PageHeader } from "../components/ui";
 import { gameLabel } from "../../shared/games";
@@ -67,7 +67,7 @@ export function HistoryView() {
 
   const loadList = () => {
     setList({ kind: "loading" });
-    void cliRun(["sessions", "list", "--json"]).then((r) => {
+    void runCli({ kind: "sessionsList" }).then((r) => {
       if (r.error !== undefined || r.exitCode !== 0) {
         setList({ kind: "error", message: r.error ?? r.stderr ?? `exit ${r.exitCode}` });
         return;
@@ -83,7 +83,7 @@ export function HistoryView() {
   const openSession = (item: SessionListItem) => {
     setOpening(item.session_id);
     // Lazy: fetch this one session's full detail only now.
-    void cliRun(["sessions", "export", item.session_id]).then((r) => {
+    void runCli({ kind: "sessionsExport", sessionId: item.session_id }).then((r) => {
       setOpening(null);
       if (r.error !== undefined || r.exitCode !== 0 || r.json === undefined) return;
       setSelected({ item, replay: buildReplayFromExport(r.json) });

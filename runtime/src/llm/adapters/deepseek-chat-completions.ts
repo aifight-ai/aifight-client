@@ -26,6 +26,8 @@ import type {
 import { AdapterError } from "./types.js";
 import { looksLikeTokenLimit, normalizeOpenAIFinish, computeTruncated } from "./token-limit.js";
 import { parseRetryAfterMs, isContentFilterReason } from "./error-class.js";
+import { boundedErrorBody } from "./redact.js";
+import { fetchNoFollow } from "../../net/guarded-fetch.js";
 
 const PROTOCOL = "deepseek_chat_completions" as const;
 
@@ -144,7 +146,7 @@ async function sendRequest(
 
   let resp: Response;
   try {
-    resp = await globalThis.fetch(url, {
+    resp = await fetchNoFollow(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -178,7 +180,7 @@ async function sendRequest(
     throw new AdapterError(
       kind,
       PROTOCOL,
-      `DeepSeek API ${resp.status}: ${text.slice(0, 300)}`,
+      `DeepSeek API ${resp.status}: ${boundedErrorBody(text, apiKey, 512)}`,
       { retryable: kind === "rate_limited" || kind === "server_error", tokenLimit: looksLikeTokenLimit(text), status: resp.status, retryAfterMs: parseRetryAfterMs(resp.headers.get("retry-after")) },
     );
   }

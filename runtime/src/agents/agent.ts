@@ -23,6 +23,7 @@ import {
   type AgentFSMInput,
   type AgentFSMState,
 } from "./state-machine";
+import { DecisionSupersededError } from "./decision-abort";
 
 export type { AgentDecisionWireDecision, AgentDecisionWireUsage } from "./state-machine";
 
@@ -31,6 +32,14 @@ export interface AgentDecisionContext {
   readonly matchId: string;
   readonly game?: string;
   readonly state: AgentFSMState;
+  /**
+   * Aborts when this decision is superseded by a newer action_request for the
+   * same match (or the agent stops). Providers that make a paid network call
+   * SHOULD forward this to the request so a superseded decision cancels its
+   * in-flight HTTP call instead of running to completion (R13-F02). Optional so
+   * existing/mock providers keep working unchanged.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -141,6 +150,11 @@ type StateHandler = (snapshot: AgentInstanceSnapshot) => void;
 interface ActiveDecision {
   readonly token: number;
   readonly matchId: string;
+  /** Aborted when this decision is superseded (or the agent stops) so the
+   *  in-flight provider call can cancel its paid HTTP request (R13-F02). */
+  readonly controller: AbortController;
+  /** The action_request `request_id` this decision answers, when present. */
+  readonly requestId?: string;
 }
 
 export class AgentInstance {
@@ -203,6 +217,11 @@ export class AgentInstance {
     const client = this.#client;
     if (client !== null && client.state !== "closed") {
       await client.close(1000, reason);
+    }
+    // R13-F02: cancel any in-flight decisions so their paid provider calls stop
+    // rather than run to completion after the agent is gone.
+    for (const decision of this.#activeDecisions.values()) {
+      decision.controller.abort(new DecisionSupersededError(decision.matchId, "stopped"));
     }
     this.#activeDecisions.clear();
     if (this.#state !== null) {
@@ -398,7 +417,22 @@ export class AgentInstance {
 
   async #requestDecision(effect: Extract<AgentFSMEffect, { type: "request_decision" }>): Promise<void> {
     const token = ++this.#decisionSeq;
-    this.#activeDecisions.set(effect.matchId, { token, matchId: effect.matchId });
+    // R13-F02 abort-on-supersede: a newer action_request for THIS match replaces
+    // the map entry; abort the previous decision's controller first so its
+    // in-flight (paid) provider call is cancelled rather than left running and
+    // its result discarded. Separate controllers per decision — aborting the old
+    // one never touches the new one.
+    const previous = this.#activeDecisions.get(effect.matchId);
+    if (previous !== undefined) {
+      previous.controller.abort(new DecisionSupersededError(effect.matchId));
+    }
+    const controller = new AbortController();
+    this.#activeDecisions.set(effect.matchId, {
+      token,
+      matchId: effect.matchId,
+      controller,
+      ...(effect.requestId !== undefined ? { requestId: effect.requestId } : {}),
+    });
     const stateAtRequest = this.#requireState();
     try {
       const decided = await this.#opts.decisionProvider.decide({
@@ -406,6 +440,7 @@ export class AgentInstance {
         matchId: effect.matchId,
         game: effect.game,
         state: stateAtRequest,
+        signal: controller.signal,
       });
       const { action, usage, decision } = isAgentDecisionOutput(decided)
         ? { action: decided.action, usage: decided.usage, decision: decided.decision }

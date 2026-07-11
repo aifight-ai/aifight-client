@@ -37,6 +37,15 @@ import type {
  *  deterministic fallback play in time rather than risk a timeout loss. */
 const MIN_SELF_HEAL_BUDGET_MS = 10_000;
 
+// R13-F06 wall-time bounds for a single decision call.
+const GLOBAL_DECISION_HARD_CAP_MS = 600_000; // 10 min absolute ceiling per call
+const MIN_DECISION_TIMEOUT_MS = 1_000; // floor so a call always gets some time
+
+// R13-F06 per-match output-token guard bounds (a full USD ledger is a follow-up).
+const MATCH_OUTPUT_TOKEN_GUARD_DECISIONS = 400; // generous decisions-per-match multiplier
+const MATCH_OUTPUT_TOKEN_GUARD_ABSOLUTE = 8_000_000; // absolute per-match output-token ceiling
+const MAX_TRACKED_MATCHES = 512; // cap on the per-match token map so it can't grow unbounded
+
 export interface DirectLLMProviderOptions {
   /** Agent profile slug under <aifight-home>/agents/. Defaults to "default". */
   readonly agentSlug: string;
@@ -60,6 +69,21 @@ export function createDirectLLMRuntimeProvider(
   // file). The strategy file was already re-read per decision; this brings
   // provider/model/key to the same behavior.
   let configCacheStamp: { mtimeMs: number; size: number } | null = null;
+
+  // R13-F06 lightweight per-match spend guard: cumulative model OUTPUT tokens
+  // per match, so a pathological loop (a wedged model emitting max-token replies
+  // turn after turn) can be stopped before it silently drains the user's balance.
+  // Insertion-ordered and size-capped so it can never grow without bound over a
+  // long-lived bridge's many matches (a full USD ledger is a follow-up).
+  const matchOutputTokens = new Map<string, number>();
+  const addMatchOutputTokens = (matchId: string, tokens: number | undefined): void => {
+    if (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens <= 0) return;
+    if (!matchOutputTokens.has(matchId) && matchOutputTokens.size >= MAX_TRACKED_MATCHES) {
+      const oldest = matchOutputTokens.keys().next().value;
+      if (oldest !== undefined) matchOutputTokens.delete(oldest);
+    }
+    matchOutputTokens.set(matchId, (matchOutputTokens.get(matchId) ?? 0) + tokens);
+  };
 
   const ensureAdapters = (): Promise<void> =>
     (adaptersReady ??= (opts.registerAdapters ?? registerBuiltinAdapters)());
@@ -118,18 +142,23 @@ export function createDirectLLMRuntimeProvider(
       const adapter = requireAdapter(resolved.protocol);
       const { systemPrompt, userPrompt } = buildDirectPrompt(req);
 
-      const callWith = (maxTokens: number, timeoutMs: number) =>
-        adapter.generateDecision(
+      const callWith = (maxTokens: number, timeoutMs: number) => {
+        // R13-F02: cancel the paid HTTP call on EITHER the turn-deadline timeout
+        // OR a supersede (a newer action_request replaced this decision). Same
+        // AbortSignal.any pattern as account/registration.ts.
+        const signal = combineDecisionSignals(timeoutMs, req.signal);
+        return adapter.generateDecision(
           {
             systemPrompt,
             userPrompt,
             maxTokens,
             temperature: resolved.temperature,
             responseFormat: "json",
-            ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+            ...(signal !== undefined ? { signal } : {}),
           },
           resolved,
         );
+      };
 
       // Batch C — bounded self-heal: if the first call is cut off by the token
       // cap (truncated output, or a max_tokens 4xx), retry AT MOST ONCE at a
@@ -146,33 +175,69 @@ export function createDirectLLMRuntimeProvider(
       // actually exceeds the current cap. Cost is incurred only on an already-
       // wasted truncated turn.
       const ceiling = resolveModelCapabilities(resolved.protocol, resolved.model).maxOutputTokens;
+      // R13-F06: enforce the declared per-decision output-token budget, not just
+      // display it. `budget` is what the FIRST call actually requests — clamped
+      // down when the profile's maxTokens exceeds budgets.maxOutputTokensPerDecision
+      // or the model's own ceiling. `perDecisionCap` is the hard limit self-heal
+      // may raise toward but never past (the ceiling and the declared budget,
+      // WITHOUT the starting maxTokens term so a raise above maxTokens is allowed).
+      const budget = effectiveDecisionBudget(resolved, ceiling);
+      const perDecisionCap = perDecisionHardCap(resolved, ceiling);
       const raiseTarget = (cur: number): number | undefined => {
-        const to = ceiling ?? Math.max(65536, cur * 2);
+        const to = Math.min(ceiling ?? Math.max(65536, cur * 2), perDecisionCap);
         return to > cur ? to : undefined;
       };
+      // R13-F06 wall-time: a single decision call may run no longer than the
+      // smallest of the server turn deadline (when set), the profile's request
+      // timeout, and a global hard cap — never unbounded — with a floor so a
+      // tiny/zero config can't starve the call to nothing.
+      const effectiveTimeoutMs = clampDecisionTimeout(req.timeoutMs, resolved.timeouts.requestMs);
+      // R13-F06 per-match guard: refuse to spend once this match's cumulative
+      // output tokens reach a generous ceiling — play the deterministic legal
+      // fallback instead (non-retryable, so the decision loop does not retry).
+      const matchCap = matchOutputTokenCap(resolved, ceiling);
       const startedAtMs = Date.now();
-      const remainingMs = (): number =>
-        req.timeoutMs > 0 ? req.timeoutMs - (Date.now() - startedAtMs) : 0;
+      const remainingMs = (): number => effectiveTimeoutMs - (Date.now() - startedAtMs);
+
+      if ((matchOutputTokens.get(req.matchId) ?? 0) >= matchCap) {
+        throw makeNonRetryableBudgetError(
+          `direct: per-match output-token budget reached for ${req.matchId} (>= ${matchCap}); ` +
+            "playing the legal fallback to protect your balance",
+          resolved.profileId,
+        );
+      }
 
       let selfHealed: { from: number; to: number } | undefined;
       let output: Awaited<ReturnType<typeof callWith>> | undefined;
       let firstError: unknown;
       try {
-        output = await callWith(resolved.maxTokens, req.timeoutMs);
+        output = await callWith(budget, effectiveTimeoutMs);
+        addMatchOutputTokens(req.matchId, output.outputTokens);
       } catch (err) {
+        // R13-F02: a supersede-abort is not a token-limit; bubble it so the
+        // decision is discarded WITHOUT a self-heal retry (the result is unused).
+        if (req.signal?.aborted === true) throw tagProfile(err, resolved.profileId);
         if (!isTokenLimitError(err)) throw tagProfile(err, resolved.profileId); // non-token → fallback
         firstError = err; // token-limit throw (e.g. empty-because-truncated)
       }
 
-      // Self-heal exactly once, only when the first call was cut off by the cap.
-      if (output?.truncated === true || firstError !== undefined) {
-        const to = raiseTarget(resolved.maxTokens);
-        // timeoutMs === 0 means "no turn deadline" → always allowed.
-        const budgetOk = req.timeoutMs === 0 || remainingMs() >= MIN_SELF_HEAL_BUDGET_MS;
+      // Self-heal exactly once, only when the first call was cut off by the cap,
+      // the decision has not been superseded (no point paying for a retry whose
+      // answer will be thrown away), and the match is still within its token
+      // guard (don't raise the cap on a match that has already overspent).
+      if (
+        (output?.truncated === true || firstError !== undefined) &&
+        req.signal?.aborted !== true &&
+        (matchOutputTokens.get(req.matchId) ?? 0) < matchCap
+      ) {
+        const to = raiseTarget(budget);
+        // Enough of the (clamped) wall-time budget left for a second full call?
+        const budgetOk = remainingMs() >= MIN_SELF_HEAL_BUDGET_MS;
         if (to !== undefined && budgetOk) {
-          selfHealed = { from: resolved.maxTokens, to };
+          selfHealed = { from: budget, to };
           try {
             output = await callWith(to, remainingMs()); // the one and only retry
+            addMatchOutputTokens(req.matchId, output.outputTokens);
           } catch (retryErr) {
             selfHealed = undefined; // the retry didn't land
             if (output === undefined) throw tagProfile(retryErr, resolved.profileId); // nothing usable
@@ -218,6 +283,20 @@ export function createDirectLLMRuntimeProvider(
         return false;
       }
     },
+
+    // R13-F06: surface the routed profile's retries.maxAttempts so the decision
+    // loop honors the user's configured retry policy instead of its built-in
+    // default. Reads the RAW config value (not the resolved default) and never
+    // resolves the API key — a cheap cached config read. undefined → the loop
+    // keeps its default; the loop clamps the value to [0, 4] regardless.
+    async transientRetryCount(game): Promise<number | undefined> {
+      try {
+        const config = await loadConfig();
+        return config.profiles[pickProfileName(config, game)]?.retries?.maxAttempts;
+      } catch {
+        return undefined;
+      }
+    },
   };
 }
 
@@ -229,6 +308,110 @@ export function createDirectLLMRuntimeProvider(
 /** Duck-typed AdapterError.tokenLimit check (avoids importing the adapter layer). */
 function isTokenLimitError(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as { tokenLimit?: unknown }).tokenLimit === true;
+}
+
+/** Minimal view of the resolved profile fields the token/budget clamps read. */
+interface BudgetedProfile {
+  readonly maxTokens: number;
+  readonly budgets?: { readonly maxOutputTokensPerDecision?: number };
+}
+
+/** A finite, positive number or `Infinity` (the "no cap" identity for min). */
+function positiveOrInfinity(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : Infinity;
+}
+
+/**
+ * R13-F06: the max output tokens the FIRST decision call may request — the
+ * smallest of the profile's configured maxTokens, its declared per-decision
+ * budget, and the model's own output ceiling. So a profile that sets a huge
+ * maxTokens but a small budgets.maxOutputTokensPerDecision actually asks for the
+ * budgeted amount, not the huge one.
+ */
+export function effectiveDecisionBudget(
+  resolved: BudgetedProfile,
+  modelCeiling: number | undefined,
+): number {
+  return Math.min(
+    positiveOrInfinity(resolved.maxTokens),
+    positiveOrInfinity(resolved.budgets?.maxOutputTokensPerDecision),
+    positiveOrInfinity(modelCeiling),
+  );
+}
+
+/**
+ * R13-F06: the hard ceiling a self-heal retry may raise toward but never past —
+ * the declared per-decision budget and the model ceiling, WITHOUT the starting
+ * maxTokens (self-heal legitimately raises above maxTokens, just not above the
+ * user's declared budget).
+ */
+function perDecisionHardCap(resolved: BudgetedProfile, modelCeiling: number | undefined): number {
+  return Math.min(
+    positiveOrInfinity(resolved.budgets?.maxOutputTokensPerDecision),
+    positiveOrInfinity(modelCeiling),
+  );
+}
+
+/**
+ * R13-F02: combine the turn-deadline timeout (when > 0) with the supersede
+ * signal (when present) into one signal for the adapter fetch. Either firing
+ * cancels the paid HTTP call. Returns undefined when there is nothing to bind.
+ */
+function combineDecisionSignals(
+  timeoutMs: number,
+  supersede: AbortSignal | undefined,
+): AbortSignal | undefined {
+  const signals: AbortSignal[] = [];
+  if (timeoutMs > 0) signals.push(AbortSignal.timeout(timeoutMs));
+  if (supersede !== undefined) signals.push(supersede);
+  if (signals.length === 0) return undefined;
+  if (signals.length === 1) return signals[0];
+  return AbortSignal.any(signals);
+}
+
+/**
+ * R13-F06 wall-time: bound the per-call timeout so a missing or absurd server
+ * value can never run unbounded, WITHOUT undercutting a legitimate turn budget.
+ * The server's `timeout_ms` is the authoritative per-turn deadline (a slow
+ * reasoning model may legitimately need most of it), so when the server
+ * specifies one we honor it, capped only by an absolute ceiling. The profile's
+ * requestMs is the fallback used when the server does not send a deadline
+ * (previously that path was unbounded). Floored so a zero/tiny input never
+ * starves the call. Exported for unit testing.
+ */
+export function clampDecisionTimeout(serverMs: number, profileRequestMs: number | undefined): number {
+  const hasServer = typeof serverMs === "number" && Number.isFinite(serverMs) && serverMs > 0;
+  const base = hasServer
+    ? serverMs
+    : typeof profileRequestMs === "number" && Number.isFinite(profileRequestMs) && profileRequestMs > 0
+      ? profileRequestMs
+      : GLOBAL_DECISION_HARD_CAP_MS;
+  return Math.max(Math.min(base, GLOBAL_DECISION_HARD_CAP_MS), MIN_DECISION_TIMEOUT_MS);
+}
+
+/**
+ * R13-F06: a generous cumulative OUTPUT-token ceiling for one match — far above
+ * any honest game, so it only trips on a pathological loop. Derived from the
+ * declared per-decision budget (or the model ceiling) times a generous
+ * decisions-per-match multiplier, capped by an absolute ceiling.
+ */
+function matchOutputTokenCap(resolved: BudgetedProfile, modelCeiling: number | undefined): number {
+  const declared = resolved.budgets?.maxOutputTokensPerDecision;
+  const perDecision =
+    typeof declared === "number" && Number.isFinite(declared) && declared > 0
+      ? declared
+      : typeof modelCeiling === "number" && Number.isFinite(modelCeiling) && modelCeiling > 0
+        ? modelCeiling
+        : 32_000;
+  return Math.min(MATCH_OUTPUT_TOKEN_GUARD_ABSOLUTE, perDecision * MATCH_OUTPUT_TOKEN_GUARD_DECISIONS);
+}
+
+/** A non-retryable decision error: the transient-retry loop treats
+ *  `retryable === false` as terminal (classifyDecisionError), so the bridge
+ *  takes the deterministic legal fallback instead of retrying. */
+function makeNonRetryableBudgetError(message: string, profileId: string): Error {
+  const err = Object.assign(new Error(message), { retryable: false });
+  return tagProfile(err, profileId) as Error;
 }
 
 /**

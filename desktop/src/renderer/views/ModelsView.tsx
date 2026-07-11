@@ -17,7 +17,7 @@ import { useTranslation } from "react-i18next";
 import { RotateCw, KeyRound, Check, X, Plus, Trash2, Zap, Star } from "lucide-react";
 
 import {
-  cliRun,
+  runCli,
   getLLMConfig,
   llmRecommendMaxTokens,
   saveLLMProfile,
@@ -266,7 +266,7 @@ export function ModelsView() {
     // Use the config's real agent slug (not a hardcoded "default") so Test works
     // for any agent. `||` (not `??`) so an empty stderr falls through to the
     // localized fallback instead of leaving a blank chip.
-    const r = await cliRun(["config", "test", view?.slug ?? "default", "--profile", id, "--json"]);
+    const r = await runCli({ kind: "configTest", slug: view?.slug ?? "default", profileId: id });
     const j = r.json as { success?: boolean; latencyMs?: number; jsonValid?: boolean; error?: string } | undefined;
     const ok = j?.success === true;
     const msg = ok

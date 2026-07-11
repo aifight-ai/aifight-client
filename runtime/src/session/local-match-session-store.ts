@@ -11,7 +11,7 @@ import type {
   MsgGameStart,
   MsgGameState,
 } from "../protocol/types";
-import { ensureRuntimeHome, getRuntimeHome } from "../store/paths";
+import { ensureRuntimeHome, getRuntimeHome, safePathSegment } from "../store/paths";
 import type { ServerMessageEnvelope } from "../wsclient/frame-handler";
 import type { WSClientMessage } from "../wsclient/client";
 
@@ -90,9 +90,17 @@ export interface LocalSessionExport {
   readonly selfReview: unknown;
 }
 
+// R13-F03 ledger bounds: keep one match's on-disk telemetry finite.
+const APPEND_FILE_MAX_BYTES = 16 * 1024 * 1024; // 16 MiB per ledger file
+const APPEND_LINE_MAX_BYTES = 4 * 1024 * 1024; // 4 MiB per single record
+
 export class LocalMatchSessionStore {
   readonly #runtimeHome: string;
   readonly #now: () => Date;
+  /** R13-F03: ledger files that hit the per-file byte cap (skip all further
+   *  appends) and files already warned about (avoid repeat warnings). */
+  readonly #cappedLedgerFiles = new Set<string>();
+  readonly #warnedLedgerFiles = new Set<string>();
 
   constructor(opts: LocalMatchSessionStoreOptions = {}) {
     this.#runtimeHome = opts.runtimeHome ?? getRuntimeHome();
@@ -384,8 +392,36 @@ export class LocalMatchSessionStore {
 
   #appendJSONLine(summary: LocalMatchSessionSummary, filename: string, value: unknown): void {
     const file = path.join(this.#sessionDir(summary.agent_id, summary.session_id), filename);
-    fs.appendFileSync(file, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+    // R13-F03: keep one match's ledger finite. A pathological loop or a wedged
+    // match must not grow a JSONL file without bound. Recording is best-effort
+    // telemetry — on any cap we skip and warn ONCE, never throw into the match.
+    if (this.#cappedLedgerFiles.has(file)) return;
+    const line = `${JSON.stringify(value)}\n`;
+    if (Buffer.byteLength(line, "utf8") > APPEND_LINE_MAX_BYTES) {
+      // One oversized record: skip it, but keep accepting normal records after.
+      this.#warnLedgerCap(file, "a record exceeded the per-line size cap; skipping it");
+      return;
+    }
+    try {
+      if (fs.statSync(file).size >= APPEND_FILE_MAX_BYTES) {
+        this.#cappedLedgerFiles.add(file);
+        this.#warnLedgerCap(file, `reached the ${APPEND_FILE_MAX_BYTES}-byte per-file cap; no longer recording to it`);
+        return;
+      }
+    } catch {
+      // File does not exist yet (first append) — proceed.
+    }
+    fs.appendFileSync(file, line, { mode: 0o600 });
     chmodPrivateFile(file);
+  }
+
+  /** Warn at most once per ledger file that a size cap was hit. */
+  #warnLedgerCap(file: string, reason: string): void {
+    if (this.#warnedLedgerFiles.has(file)) return;
+    this.#warnedLedgerFiles.add(file);
+    // eslint-disable-next-line no-console -- rare best-effort telemetry cap; the
+    // store has no injected logger and this must never throw into the match.
+    console.warn(`aifight: local match ledger ${path.basename(file)} ${reason}`);
   }
 
   #writeSummary(summary: LocalMatchSessionSummary): void {
@@ -524,6 +560,14 @@ function backfillWholeMatchCounts(
   return next;
 }
 
+// R13-F03: the full action_request.state is already persisted verbatim in
+// inbound.jsonl (recordServerMessage). Re-embedding it here doubled the on-disk
+// footprint of every match. decisions.jsonl now keeps only a content hash (to
+// correlate with the inbound frame) plus a BOUNDED state summary — enough for
+// the self-review context (which truncates to ~320 chars anyway) without
+// storing the whole object a second time.
+const STATE_LEDGER_SUMMARY_MAX = 4096;
+
 function summarizeActionRequest(actionRequest: MsgActionRequest): Record<string, unknown> {
   const data = actionRequest.data;
   return {
@@ -532,10 +576,22 @@ function summarizeActionRequest(actionRequest: MsgActionRequest): Record<string,
     legal_action_count: (data.legal_actions ?? []).length,
     legal_actions: data.legal_actions ?? [],
     state_sha256: sha256JSON(data.state),
-    state: data.state,
+    state_summary: truncateString(safeJSONString(data.state), STATE_LEDGER_SUMMARY_MAX),
     new_events_count: Array.isArray(data.new_events) ? data.new_events.length : 0,
     new_events: data.new_events,
   };
+}
+
+function safeJSONString(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function truncateString(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max)}…[truncated]`;
 }
 
 function collectStrategySections(traces: readonly BridgeDecisionTrace[]): BridgeDecisionStrategySection[] {
@@ -752,11 +808,6 @@ function chmodPrivateFile(file: string): void {
   } catch {
     // Best effort only.
   }
-}
-
-function safePathSegment(value: string): string {
-  const safe = value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 128);
-  return safe.length > 0 ? safe : "unknown";
 }
 
 function mergeHashes(existing: readonly string[], next: readonly string[]): readonly string[] {

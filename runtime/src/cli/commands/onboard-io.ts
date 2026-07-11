@@ -7,6 +7,7 @@ import type { OnboardIO } from "./onboard-llm.js";
 import type { Protocol } from "../../profile/config-schema.js";
 import { storeSecretFile } from "../../profile/secret-ref.js";
 import { runConfigProbe } from "./config-probe.js";
+import { fetchNoFollow } from "../../net/guarded-fetch.js";
 
 const CTRL_C = String.fromCharCode(3); // ETX
 const CTRL_D = String.fromCharCode(4); // EOT
@@ -105,7 +106,15 @@ export async function discoverModels(
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 8000);
     try {
-      const res = await fetchImpl(url, { method: "GET", headers, signal: ctrl.signal });
+      // Guard the credential-bearing discovery GET against redirect-based key
+      // exfiltration. Model-discovery legitimately follows same-origin redirects
+      // (e.g. /models → /v1/models), so allow a bounded few; cross-origin is
+      // always refused. The injected fetchImpl is threaded through unchanged.
+      const res = await fetchNoFollow(
+        url,
+        { method: "GET", headers, signal: ctrl.signal },
+        { allowSameOriginRedirects: true, fetchImpl },
+      );
       if (!res.ok) return null;
       const ids = parseIds(await res.json());
       return ids.length > 0 ? ids : null;

@@ -2,7 +2,7 @@
 // react-dom/server static markup (no jsdom), importing ./i18n so labels resolve.
 //
 // ReviewSection fetches on mount via window.aifight, which is undefined in SSR —
-// cliRun returns an error result there and useEffect never runs under
+// runCli returns an error result there and useEffect never runs under
 // renderToStaticMarkup, so the initial (pre-effect) render must degrade to the
 // "Generate review" empty state rather than throwing or sticking on a spinner.
 

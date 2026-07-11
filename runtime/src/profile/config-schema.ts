@@ -310,6 +310,45 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+// R13-F06: sane upper bounds so a copied/typo'd profile can't request an absurd
+// token count, wait forever, or retry endlessly. Generous enough that no valid
+// real-world config is rejected (the defaults sit far below these).
+const MAX_REQUEST_MAX_TOKENS = 1_000_000;
+const MAX_TIMEOUT_MS = 600_000; // 10 minutes
+const MAX_RETRY_ATTEMPTS = 10;
+const MAX_BACKOFF_MS = 600_000;
+const MAX_COST_USD_PER_MATCH = 1_000_000;
+const MAX_OUTPUT_TOKENS_PER_DECISION = 1_000_000;
+
+/**
+ * R13-F06: validate a present numeric config field is finite and within a
+ * declared range (and optionally an integer / strictly positive). Rejects
+ * NaN / Infinity / negatives / non-integers with a clear message instead of
+ * letting a bad value silently drive request sizing, timeouts, or retries.
+ * A `undefined` value is skipped (the field is optional).
+ */
+function validateBoundedNumber(
+  value: unknown,
+  path: string,
+  errors: string[],
+  opts: { readonly min: number; readonly max: number; readonly integer?: boolean; readonly exclusiveMin?: boolean },
+): void {
+  if (value === undefined) return;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    errors.push(`${path}: must be a finite number`);
+    return;
+  }
+  if (opts.integer === true && !Number.isInteger(value)) {
+    errors.push(`${path}: must be an integer`);
+    return;
+  }
+  const belowMin = opts.exclusiveMin === true ? value <= opts.min : value < opts.min;
+  if (belowMin || value > opts.max) {
+    const lower = opts.exclusiveMin === true ? `> ${opts.min}` : `>= ${opts.min}`;
+    errors.push(`${path}: must be ${lower} and <= ${opts.max}`);
+  }
+}
+
 function validateSecretRef(raw: unknown, path: string, errors: string[]): boolean {
   if (!isObject(raw)) {
     errors.push(`${path}: must be an object`);
@@ -409,9 +448,11 @@ function validateProfile(raw: unknown, path: string, errors: string[]): void {
           errors.push(`${path}.request.temperature: must be in [0, 2]`);
         }
       }
-      if (req.maxTokens !== undefined && typeof req.maxTokens !== "number") {
-        errors.push(`${path}.request.maxTokens: must be a number if present`);
-      }
+      validateBoundedNumber(req.maxTokens, `${path}.request.maxTokens`, errors, {
+        min: 1,
+        max: MAX_REQUEST_MAX_TOKENS,
+        integer: true,
+      });
       if (
         req.responseFormat !== undefined &&
         req.responseFormat !== "json" &&
@@ -483,12 +524,16 @@ function validateProfile(raw: unknown, path: string, errors: string[]): void {
     if (!isObject(raw.timeouts)) {
       errors.push(`${path}.timeouts: must be an object if present`);
     } else {
-      if (raw.timeouts.requestMs !== undefined && typeof raw.timeouts.requestMs !== "number") {
-        errors.push(`${path}.timeouts.requestMs: must be a number`);
-      }
-      if (raw.timeouts.connectMs !== undefined && typeof raw.timeouts.connectMs !== "number") {
-        errors.push(`${path}.timeouts.connectMs: must be a number`);
-      }
+      validateBoundedNumber(raw.timeouts.requestMs, `${path}.timeouts.requestMs`, errors, {
+        min: 1,
+        max: MAX_TIMEOUT_MS,
+        integer: true,
+      });
+      validateBoundedNumber(raw.timeouts.connectMs, `${path}.timeouts.connectMs`, errors, {
+        min: 1,
+        max: MAX_TIMEOUT_MS,
+        integer: true,
+      });
     }
   }
 
@@ -497,12 +542,16 @@ function validateProfile(raw: unknown, path: string, errors: string[]): void {
     if (!isObject(raw.retries)) {
       errors.push(`${path}.retries: must be an object if present`);
     } else {
-      if (raw.retries.maxAttempts !== undefined && typeof raw.retries.maxAttempts !== "number") {
-        errors.push(`${path}.retries.maxAttempts: must be a number`);
-      }
-      if (raw.retries.backoffMs !== undefined && typeof raw.retries.backoffMs !== "number") {
-        errors.push(`${path}.retries.backoffMs: must be a number`);
-      }
+      validateBoundedNumber(raw.retries.maxAttempts, `${path}.retries.maxAttempts`, errors, {
+        min: 1,
+        max: MAX_RETRY_ATTEMPTS,
+        integer: true,
+      });
+      validateBoundedNumber(raw.retries.backoffMs, `${path}.retries.backoffMs`, errors, {
+        min: 0,
+        max: MAX_BACKOFF_MS,
+        integer: true,
+      });
     }
   }
 
@@ -511,18 +560,17 @@ function validateProfile(raw: unknown, path: string, errors: string[]): void {
     if (!isObject(raw.budgets)) {
       errors.push(`${path}.budgets: must be an object if present`);
     } else {
-      if (
-        raw.budgets.maxCostUSDPerMatch !== undefined &&
-        typeof raw.budgets.maxCostUSDPerMatch !== "number"
-      ) {
-        errors.push(`${path}.budgets.maxCostUSDPerMatch: must be a number`);
-      }
-      if (
-        raw.budgets.maxOutputTokensPerDecision !== undefined &&
-        typeof raw.budgets.maxOutputTokensPerDecision !== "number"
-      ) {
-        errors.push(`${path}.budgets.maxOutputTokensPerDecision: must be a number`);
-      }
+      validateBoundedNumber(raw.budgets.maxCostUSDPerMatch, `${path}.budgets.maxCostUSDPerMatch`, errors, {
+        min: 0,
+        max: MAX_COST_USD_PER_MATCH,
+        exclusiveMin: true,
+      });
+      validateBoundedNumber(
+        raw.budgets.maxOutputTokensPerDecision,
+        `${path}.budgets.maxOutputTokensPerDecision`,
+        errors,
+        { min: 1, max: MAX_OUTPUT_TOKENS_PER_DECISION, integer: true },
+      );
     }
   }
 }

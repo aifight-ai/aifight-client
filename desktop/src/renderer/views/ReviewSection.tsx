@@ -10,7 +10,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Sparkles, Lightbulb } from "lucide-react";
 
-import { cliRun } from "../useBridge";
+import { runCli } from "../useBridge";
 
 /** Shape of a stored self-review (mirrors runtime's review/self-review.ts SelfReview). */
 interface SelfReview {
@@ -42,7 +42,7 @@ export function ReviewSection({ sessionId }: { sessionId: string }) {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    void cliRun(["review", sessionId, "--json", "--no-generate"]).then((r) => {
+    void runCli({ kind: "review", sessionId, mode: "no-generate" }).then((r) => {
       if (cancelled) return;
       setLoading(false);
       if (r.exitCode !== 0) {
@@ -63,10 +63,7 @@ export function ReviewSection({ sessionId }: { sessionId: string }) {
   const generate = (regen: boolean) => {
     setGenerating(true);
     setError(null);
-    const args = regen
-      ? ["review", sessionId, "--json", "--regen"]
-      : ["review", sessionId, "--json"];
-    void cliRun(args).then((r) => {
+    void runCli({ kind: "review", sessionId, mode: regen ? "regen" : "default" }).then((r) => {
       setGenerating(false);
       if (r.exitCode !== 0) {
         setError(r.error ?? r.stderr);

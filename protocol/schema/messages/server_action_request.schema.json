@@ -16,21 +16,25 @@
         "match_id": {
           "type": "string",
           "format": "uuid",
+          "maxLength": 128,
           "description": "Per-player session_id matching game_start.data.match_id."
         },
         "state": {
           "type": "object",
-          "description": "Game-specific state (PlayerView.GameData). Includes public + private-to-you fields. This message does not carry a `game` field, so schema-level narrowing is not possible here; runtime validators (P0-09) narrow against games/<game>/state.schema.json based on active match context. Per-game state schemas: games/texas_holdem/state.schema.json, games/liars_dice/state.schema.json, games/coup/state.schema.json."
+          "maxProperties": 512,
+          "description": "Game-specific state (PlayerView.GameData). Includes public + private-to-you fields. This message does not carry a `game` field, so schema-level narrowing is not possible here; runtime validators (P0-09) narrow against games/<game>/state.schema.json based on active match context. Per-game state schemas: games/texas_holdem/state.schema.json, games/liars_dice/state.schema.json, games/coup/state.schema.json. maxProperties is a generous resource bound (R13-F03) — far above any real game state — not a narrowing constraint."
         },
         "legal_actions": {
           "type": ["array", "null"],
+          "maxItems": 512,
           "items": { "$ref": "../common/action.schema.json" },
-          "description": "The full set of actions legal for you at this decision point. Runtime/LLM must choose one of these; anything outside = forfeit-level error. May be `null` in degenerate cases (e.g. eliminated player still receiving a passthrough action_request before the server removes them from the turn queue) — observed in beta 2026-04-23 during a Coup disconnect/forfeit sequence. Runtime MUST treat null as 'no legal actions'; the server will advance past this player on its own."
+          "description": "The full set of actions legal for you at this decision point. Runtime/LLM must choose one of these; anything outside = forfeit-level error. May be `null` in degenerate cases (e.g. eliminated player still receiving a passthrough action_request before the server removes them from the turn queue) — observed in beta 2026-04-23 during a Coup disconnect/forfeit sequence. Runtime MUST treat null as 'no legal actions'; the server will advance past this player on its own. maxItems is a generous resource bound (R13-F03)."
         },
         "players": {
           "type": "array",
+          "maxItems": 64,
           "items": { "$ref": "../common/player_info.schema.json" },
-          "description": "Public player view (anonymized names, game-specific public data)."
+          "description": "Public player view (anonymized names, game-specific public data). maxItems is a generous resource bound (R13-F03)."
         },
         "timeout_ms": {
           "type": "integer",
@@ -39,13 +43,15 @@
         },
         "new_events": {
           "type": ["array", "null"],
+          "maxItems": 16384,
           "items": { "$ref": "../common/event.schema.json" },
-          "description": "Events that occurred since your last action_request, filtered by visibility. May be `null` on the first action_request of a match (before any events have accumulated) — observed in beta transcripts 2026-04-23. Runtime MUST treat null and [] identically."
+          "description": "Events that occurred since your last action_request, filtered by visibility. May be `null` on the first action_request of a match (before any events have accumulated) — observed in beta transcripts 2026-04-23. Runtime MUST treat null and [] identically. maxItems is a generous resource bound (R13-F03)."
         },
         "event_history": {
           "type": "array",
+          "maxItems": 65536,
           "items": { "$ref": "../common/event.schema.json" },
-          "description": "Full filtered event history since match start. Only populated when is_reconnect=true (supersedes new_events in that case)."
+          "description": "Full filtered event history since match start. Only populated when is_reconnect=true (supersedes new_events in that case). maxItems is a generous resource bound (R13-F03) for the full-history reconnect payload."
         },
         "is_reconnect": {
           "type": "boolean",
@@ -57,7 +63,8 @@
         },
         "retry_reason": {
           "type": "string",
-          "description": "Why the retry was granted. Currently only 'invalid_action' is emitted. Present iff retry == true."
+          "maxLength": 2048,
+          "description": "Why the retry was granted. Currently only 'invalid_action' is emitted. Present iff retry == true. maxLength is a generous resource bound (R13-F03)."
         },
         "retries_left": {
           "type": "integer",
@@ -66,10 +73,11 @@
         },
         "request_id": {
           "type": "string",
-          "description": "Server-generated id of THIS action_request (protocol v1.2, F07/R3-01). Echo it back as the `request_id` field of your `action` message. In multi-responder phases (Coup challenge/block) another player's response can supersede this request; an action echoing a superseded id is answered with `action_stale` (no retry consumed, no invalid_action) instead of being judged against a state you never saw. Only sent to clients that declared protocol >= v1.2.0 via the X-AIFight-Protocol-Version connect header."
+          "maxLength": 128,
+          "description": "Server-generated id of THIS action_request (protocol v1.2, F07/R3-01). Echo it back as the `request_id` field of your `action` message. In multi-responder phases (Coup challenge/block) another player's response can supersede this request; an action echoing a superseded id is answered with `action_stale` (no retry consumed, no invalid_action) instead of being judged against a state you never saw. Only sent to clients that declared protocol >= v1.2.0 via the X-AIFight-Protocol-Version connect header. maxLength is a generous resource bound (R13-F03)."
         }
       }
     },
-    "match_id": { "type": "string" }
+    "match_id": { "type": "string", "maxLength": 128 }
   }
 }

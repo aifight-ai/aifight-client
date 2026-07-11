@@ -23,6 +23,8 @@ import type {
 import { AdapterError } from "./types.js";
 import { looksLikeTokenLimit, computeTruncated } from "./token-limit.js";
 import { parseRetryAfterMs, isContentFilterReason } from "./error-class.js";
+import { boundedErrorBody } from "./redact.js";
+import { fetchNoFollow } from "../../net/guarded-fetch.js";
 
 const PROTOCOL = "anthropic_messages" as const;
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -223,7 +225,7 @@ async function callAPI(
 ): Promise<AnthropicResponse> {
   let response: Response;
   try {
-    response = await globalThis.fetch(url, {
+    response = await fetchNoFollow(url, {
       method: "POST",
       signal,
       headers: {
@@ -245,12 +247,13 @@ async function callAPI(
 
   if (!response.ok) {
     const text = await response.text().catch(() => "(unreadable body)");
+    const safeBody = boundedErrorBody(text, apiKey, 512);
     const kind = httpStatusToKind(response.status);
     const retryable = kind === "rate_limited" || kind === "server_error";
     throw new AdapterError(
       kind,
       PROTOCOL,
-      `Anthropic API error ${response.status}: ${text}`,
+      `Anthropic API error ${response.status}: ${safeBody}`,
       { retryable, tokenLimit: looksLikeTokenLimit(text), status: response.status, retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")) },
     );
   }

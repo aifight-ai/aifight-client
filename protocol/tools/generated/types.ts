@@ -1192,15 +1192,19 @@ export interface MsgActionRequest {
      */
     match_id: string;
     /**
-     * Game-specific state (PlayerView.GameData). Includes public + private-to-you fields. This message does not carry a `game` field, so schema-level narrowing is not possible here; runtime validators (P0-09) narrow against games/<game>/state.schema.json based on active match context. Per-game state schemas: games/texas_holdem/state.schema.json, games/liars_dice/state.schema.json, games/coup/state.schema.json.
+     * Game-specific state (PlayerView.GameData). Includes public + private-to-you fields. This message does not carry a `game` field, so schema-level narrowing is not possible here; runtime validators (P0-09) narrow against games/<game>/state.schema.json based on active match context. Per-game state schemas: games/texas_holdem/state.schema.json, games/liars_dice/state.schema.json, games/coup/state.schema.json. maxProperties is a generous resource bound (R13-F03) — far above any real game state — not a narrowing constraint.
      */
     state: {};
     /**
-     * The full set of actions legal for you at this decision point. Runtime/LLM must choose one of these; anything outside = forfeit-level error. May be `null` in degenerate cases (e.g. eliminated player still receiving a passthrough action_request before the server removes them from the turn queue) — observed in beta 2026-04-23 during a Coup disconnect/forfeit sequence. Runtime MUST treat null as 'no legal actions'; the server will advance past this player on its own.
+     * The full set of actions legal for you at this decision point. Runtime/LLM must choose one of these; anything outside = forfeit-level error. May be `null` in degenerate cases (e.g. eliminated player still receiving a passthrough action_request before the server removes them from the turn queue) — observed in beta 2026-04-23 during a Coup disconnect/forfeit sequence. Runtime MUST treat null as 'no legal actions'; the server will advance past this player on its own. maxItems is a generous resource bound (R13-F03).
+     *
+     * @maxItems 512
      */
     legal_actions: Action[] | null;
     /**
-     * Public player view (anonymized names, game-specific public data).
+     * Public player view (anonymized names, game-specific public data). maxItems is a generous resource bound (R13-F03).
+     *
+     * @maxItems 64
      */
     players: PlayerInfo[];
     /**
@@ -1208,11 +1212,15 @@ export interface MsgActionRequest {
      */
     timeout_ms: number;
     /**
-     * Events that occurred since your last action_request, filtered by visibility. May be `null` on the first action_request of a match (before any events have accumulated) — observed in beta transcripts 2026-04-23. Runtime MUST treat null and [] identically.
+     * Events that occurred since your last action_request, filtered by visibility. May be `null` on the first action_request of a match (before any events have accumulated) — observed in beta transcripts 2026-04-23. Runtime MUST treat null and [] identically. maxItems is a generous resource bound (R13-F03).
+     *
+     * @maxItems 16384
      */
     new_events: Event[] | null;
     /**
-     * Full filtered event history since match start. Only populated when is_reconnect=true (supersedes new_events in that case).
+     * Full filtered event history since match start. Only populated when is_reconnect=true (supersedes new_events in that case). maxItems is a generous resource bound (R13-F03) for the full-history reconnect payload.
+     *
+     * @maxItems 65536
      */
     event_history?: Event[];
     /**
@@ -1224,7 +1232,7 @@ export interface MsgActionRequest {
      */
     retry?: boolean;
     /**
-     * Why the retry was granted. Currently only 'invalid_action' is emitted. Present iff retry == true.
+     * Why the retry was granted. Currently only 'invalid_action' is emitted. Present iff retry == true. maxLength is a generous resource bound (R13-F03).
      */
     retry_reason?: string;
     /**
@@ -1232,7 +1240,7 @@ export interface MsgActionRequest {
      */
     retries_left?: number;
     /**
-     * Server-generated id of THIS action_request (protocol v1.2, F07/R3-01). Echo it back as the `request_id` field of your `action` message. In multi-responder phases (Coup challenge/block) another player's response can supersede this request; an action echoing a superseded id is answered with `action_stale` (no retry consumed, no invalid_action) instead of being judged against a state you never saw. Only sent to clients that declared protocol >= v1.2.0 via the X-AIFight-Protocol-Version connect header.
+     * Server-generated id of THIS action_request (protocol v1.2, F07/R3-01). Echo it back as the `request_id` field of your `action` message. In multi-responder phases (Coup challenge/block) another player's response can supersede this request; an action echoing a superseded id is answered with `action_stale` (no retry consumed, no invalid_action) instead of being judged against a state you never saw. Only sent to clients that declared protocol >= v1.2.0 via the X-AIFight-Protocol-Version connect header. maxLength is a generous resource bound (R13-F03).
      */
     request_id?: string;
   };
@@ -1312,7 +1320,7 @@ export interface MsgGameOver {
      */
     players: PlayerIdentity[];
     /**
-     * Server-side replay page path (e.g. '/replay/<match_id>'). Runtime prepends AIFight origin (e.g. https://aifight.ai) to form full URL. Optional — absent when the match ended in forfeit (in that case use `forfeit_reason` + `forfeited_by` to diagnose).
+     * Server-side replay page path (e.g. '/replay/<public_replay_id>'). Runtime prepends the AIFight origin (e.g. https://aifight.ai) to form the full URL. Optional when the match is not publicly replayable.
      */
     replay_url?: string;
     /**

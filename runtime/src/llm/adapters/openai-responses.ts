@@ -31,6 +31,8 @@ import type {
 import { AdapterError } from "./types.js";
 import { looksLikeTokenLimit, computeTruncated } from "./token-limit.js";
 import { parseRetryAfterMs, isContentFilterReason } from "./error-class.js";
+import { redactApiKey, boundedErrorBody } from "./redact.js";
+import { fetchNoFollow } from "../../net/guarded-fetch.js";
 
 const PROTOCOL = "openai_responses" as const;
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -199,8 +201,9 @@ async function generateDecision(
     });
   }
 
-  const fetchImpl = globalThis.fetch;
-  if (typeof fetchImpl !== "function") {
+  // Availability guard kept for a clean AdapterError; the request itself goes
+  // through fetchNoFollow so provider credentials never follow a redirect.
+  if (typeof globalThis.fetch !== "function") {
     throw new AdapterError(
       "network",
       PROTOCOL,
@@ -255,7 +258,7 @@ async function generateDecision(
   const start = performance.now();
   let response: Response;
   try {
-    response = await fetchImpl(url, {
+    response = await fetchNoFollow(url, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
@@ -279,7 +282,7 @@ async function generateDecision(
 
   if (!response.ok) {
     const rawBody = await safeReadText(response);
-    const bodySnippet = redactApiKey(rawBody, profile.apiKey).slice(0, 512);
+    const bodySnippet = boundedErrorBody(rawBody, profile.apiKey, 512);
     const kind = httpStatusToKind(response.status);
     throw new AdapterError(
       kind,
@@ -527,11 +530,6 @@ function describeError(cause: unknown): string {
   } catch {
     return "unknown";
   }
-}
-
-function redactApiKey(text: string, apiKey: string): string {
-  if (!apiKey) return text;
-  return text.replaceAll(apiKey, "[REDACTED]");
 }
 
 async function safeReadText(response: Response): Promise<string> {

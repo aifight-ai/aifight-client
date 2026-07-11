@@ -1,6 +1,7 @@
 import {
   defaultRuntimeLocalUrl,
   defaultRuntimeModel,
+  validatePlatformBaseUrl,
   wsUrlIsValid,
   type BridgeConfig,
   type BridgeRuntimeType,
@@ -37,7 +38,9 @@ export async function exchangePairingCode(
     throw new Error("pairing code is required");
   }
 
-  const baseUrl = normalizeBaseUrl(
+  // F-05: refuse a plaintext-http (non-loopback) base before POSTing the
+  // pairing code (and before the returned API key is stored/used).
+  const baseUrl = validatePlatformBaseUrl(
     opts.baseUrl ?? process.env.AIFIGHT_BASE_URL ?? DEFAULT_BASE_URL,
   );
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
@@ -82,10 +85,6 @@ export async function exchangePairingCode(
     ...(runtimeType === "direct" ? { directAgentSlug: "default" } : {}),
     updatedAt: now().toISOString(),
   };
-}
-
-function normalizeBaseUrl(raw: string): string {
-  return raw.replace(/\/+$/, "");
 }
 
 async function readErrorMessage(res: Response): Promise<string> {

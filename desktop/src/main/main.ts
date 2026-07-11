@@ -9,6 +9,8 @@ import path from "node:path";
 
 import { BridgeHost } from "./bridge-host";
 import { registerBridgeIpc } from "./ipc";
+import { authorizeIpcSender } from "./ipc-guard";
+import { getTrustedRendererUrl } from "./trusted-url";
 import { buildAppMenu } from "./menu";
 import { loadWindowState, persistWindowState } from "./window-state";
 import { getFlag, setFlag } from "./ui-flags";
@@ -26,6 +28,32 @@ app.setName("AIFight");
 if (process.platform === "win32") app.setAppUserModelId("ai.aifight.desktop");
 
 const WEB_BASE = "https://aifight.ai";
+
+/**
+ * Origin-anchored allowlist for URLs we hand to the OS browser (shell.openExternal).
+ * A renderer-side injection or an accidental navigation must NOT be able to
+ * exfiltrate data via an arbitrary external URL, so a naive `startsWith("https://")`
+ * check is not enough (it would open https://evil.example/?leak=…). We require:
+ *   - https only (no http, file:, custom schemes),
+ *   - the origin to EXACTLY equal the canonical platform origin (aifight.ai),
+ *   - no embedded credentials (userinfo), which browsers can use for phishing,
+ *   - a sane length cap.
+ * Dev / self-host origins are intentionally NOT opened externally — the app's own
+ * external links (replay/docs/dashboard) always live on the platform origin, and
+ * widening this to a configured baseUrl is not worth the extra attack surface here.
+ */
+function isAllowedExternalUrl(raw: string): boolean {
+  if (typeof raw !== "string" || raw.length > 2048) return false;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:") return false;
+  if (url.username !== "" || url.password !== "") return false;
+  return url.origin === new URL(WEB_BASE).origin;
+}
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -74,7 +102,8 @@ registerBridgeIpc(bridgeHost);
 // Bring the window forward when an OS match notification is clicked. The renderer
 // owns the notification (it has i18n + the live store); this just raises the app.
 // Renderer→main, no payload — nothing sensitive crosses.
-ipcMain.handle(IPC.focusWindow, () => {
+ipcMain.handle(IPC.focusWindow, (event) => {
+  if (!authorizeIpcSender(event)) throw new Error("unauthorized ipc sender");
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
@@ -84,8 +113,12 @@ ipcMain.handle(IPC.focusWindow, () => {
 
 // Auto-update controls (renderer Settings → About). Status is pushed back via
 // IPC.updateStatus from initUpdater (wired in whenReady).
-ipcMain.handle(IPC.updateCheck, () => checkForUpdates());
-ipcMain.handle(IPC.updateInstall, () => {
+ipcMain.handle(IPC.updateCheck, (event) => {
+  if (!authorizeIpcSender(event)) throw new Error("unauthorized ipc sender");
+  return checkForUpdates();
+});
+ipcMain.handle(IPC.updateInstall, (event) => {
+  if (!authorizeIpcSender(event)) throw new Error("unauthorized ipc sender");
   // "Restart & update" is a real exit, not a close-to-tray. Without this flag the
   // window's close handler would preventDefault + hide, so electron-updater's
   // quit-to-install never completes and the app merely vanishes to the tray
@@ -127,12 +160,27 @@ function createWindow(): void {
   }
 
   // Open external links (replay URLs, docs) in the user's browser, never in-app.
+  // Only origin-allowlisted https URLs on the platform origin ever reach the OS
+  // browser; everything else is denied (and never opened).
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("http://") || url.startsWith("https://")) {
-      void shell.openExternal(url);
-    }
+    if (isAllowedExternalUrl(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
+
+  // Navigation lock: this single packaged window only ever renders our bundled
+  // page. A renderer-side injection (or an accidental in-page navigation to
+  // untrusted content) must not be able to point the top frame — or any subframe
+  // — at another origin and inherit the preload bridge. Pin every navigation to
+  // the exact trusted renderer URL, and deny embedding a <webview>. loadFile
+  // (below) is a programmatic load, not a "navigation", so it is unaffected.
+  const trustedRendererUrl = getTrustedRendererUrl();
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (url !== trustedRendererUrl) event.preventDefault();
+  });
+  mainWindow.webContents.on("will-frame-navigate", (event) => {
+    if (event.url !== trustedRendererUrl) event.preventDefault();
+  });
+  mainWindow.webContents.on("will-attach-webview", (event) => event.preventDefault());
 
   if (winState.isMaximized) mainWindow.maximize();
   persistWindowState(mainWindow);

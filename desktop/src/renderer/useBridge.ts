@@ -10,6 +10,7 @@ import type {
   AgentProfileData,
   BridgeStatus,
   HexagonData,
+  CliOp,
   CliRunResult,
   ConfigMutResult,
   RecommendMaxTokensInput,
@@ -58,12 +59,12 @@ export function resultText(r: CliRunResult): string {
   return out || err || "OK";
 }
 
-export async function cliRun(args: string[]): Promise<CliRunResult> {
+export async function runCli(op: CliOp): Promise<CliRunResult> {
   const api = window.aifight;
   if (api === undefined) {
     return { exitCode: 1, stdout: "", stderr: "", error: "desktop bridge unavailable (run inside the app)" };
   }
-  return api.cliRun(args);
+  return api.runCli(op);
 }
 
 export async function bridgeStart(): Promise<void> {
@@ -213,6 +214,14 @@ export async function getLaunchAtLogin(): Promise<boolean> {
 }
 export async function setLaunchAtLogin(enabled: boolean): Promise<void> {
   await window.aifight?.setLaunchAtLogin(enabled);
+}
+/** Whether automatic updates are enabled (default false = fail-closed). */
+export async function getAutoUpdate(): Promise<boolean> {
+  return (await window.aifight?.getAutoUpdate()) ?? false;
+}
+/** Enable/disable automatic updates (persisted opt-in). */
+export async function setAutoUpdate(enabled: boolean): Promise<void> {
+  await window.aifight?.setAutoUpdate(enabled);
 }
 
 export async function readStrategy(): Promise<StrategyReadResult> {

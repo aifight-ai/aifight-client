@@ -22,7 +22,7 @@ import { FIXTURES, FIXTURE_GAMES } from "../fixtures";
 import { synthesizeTraces } from "../demoMatch";
 import { emptyLiveMatch, type MatchOutcome } from "../liveMatch";
 import { useLiveStore } from "../liveStore";
-import { cliRun, useBridgeStatus } from "../useBridge";
+import { runCli, useBridgeStatus } from "../useBridge";
 import { buildReplayFromExport, type SessionReplay } from "../sessionReplay";
 import { consumeWatchReplayIntent, type WatchReplayIntent } from "../watchIntent";
 import { gameLabel } from "../../shared/games";
@@ -98,7 +98,7 @@ export function WatchView() {
       return;
     }
     setReplay({ kind: "loading", intent });
-    void cliRun(["sessions", "export", intent.sessionId]).then((r) => {
+    void runCli({ kind: "sessionsExport", sessionId: intent.sessionId }).then((r) => {
       if (r.exitCode !== 0 || r.error !== undefined || r.json === undefined) {
         setReplay({ kind: "unavailable", intent });
         return;

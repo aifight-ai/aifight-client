@@ -1818,3 +1818,43 @@ describe("WSClientMessage — TypeScript-level guards (Step 5b2 strict union)", 
     expect((bad as { type: string }).type).toBe("action");
   });
 });
+
+// ─── R13-F03: inbound frame size bound (maxPayload) ─────────────────
+
+describe("createWSClient — maxPayload bound (R13-F03)", () => {
+  it("closes cleanly when the server sends a frame larger than maxPayloadBytes", async () => {
+    const oversize = "x".repeat(64 * 1024); // 64 KiB — far above the 4 KiB cap below
+    const server = await startTestServer({
+      onConnection: (ws) => {
+        ws.send(validWelcomeFrame());
+        // Send the oversize frame slightly after welcome so the client has
+        // resolved and registered its onClose handler.
+        setTimeout(() => {
+          try {
+            ws.send(JSON.stringify({ type: "event", data: { events: [], blob: oversize } }));
+          } catch {
+            /* connection may already be tearing down */
+          }
+        }, 30);
+      },
+    });
+    try {
+      const client = await createWSClient({
+        url: server.url,
+        apiKey: VALID_API_KEY,
+        expectedProtocolVersion: "1.0.0",
+        pingIntervalMs: 0,
+        maxPayloadBytes: 4096,
+      });
+      const closed = await new Promise<WSCloseInfo>((resolve) => {
+        client.onClose(resolve);
+      });
+      // The oversize frame surfaces as a normal close (reconnect path), not a
+      // silent hang or an unhandled crash.
+      expect(client.state).toBe("closed");
+      expect(typeof closed.code).toBe("number");
+    } finally {
+      await server.close();
+    }
+  });
+});

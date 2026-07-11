@@ -32,7 +32,7 @@
         },
         "replay_url": {
           "type": "string",
-          "description": "Server-side replay page path (e.g. '/replay/<match_id>'). Runtime prepends AIFight origin (e.g. https://aifight.ai) to form full URL. Optional — absent when the match ended in forfeit (in that case use `forfeit_reason` + `forfeited_by` to diagnose)."
+          "description": "Server-side replay page path (e.g. '/replay/<public_replay_id>'). Runtime prepends the AIFight origin (e.g. https://aifight.ai) to form the full URL. Optional when the match is not publicly replayable."
         },
         "forfeit_reason": {
           "type": "string",

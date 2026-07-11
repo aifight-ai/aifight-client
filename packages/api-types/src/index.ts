@@ -11,7 +11,9 @@
 // in sync with the server response structs when the API changes.
 
 export interface MatchSummary {
+  /** Opaque stable replay identifier. This is not the matches table UUID. */
   id: string;
+  public_replay_id?: string;
   game: string;
   mode: string;
   status: string;
@@ -214,7 +216,9 @@ export interface AgentRating {
 }
 
 export interface AgentRecentMatch {
+  /** Opaque public replay identifier (kept as id for public-profile compatibility). */
   id: string;
+  public_replay_id?: string;
   game: string;
   result?: GameResult;
   agent_result?: string;  // "win" | "loss" | "draw" — resolved server-side by player_id
@@ -302,6 +306,7 @@ export interface AgentAchievement {
   title: string;
   description: string;
   match_id?: string;
+  public_replay_id?: string;
   event_seq?: number;
   evidence: Record<string, unknown>;
   unlocked_at: string;

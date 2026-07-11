@@ -12,32 +12,105 @@
 // The engine (and its lazily-required native modules) loads only when run() is
 // first called, via dynamic import — never at app startup.
 
-import type { CliRunResult } from "../shared/ipc";
+import type { CliOp, CliRunResult } from "../shared/ipc";
 
-// Allowlist: the renderer can only trigger these commands (defense-in-depth even
-// though the renderer is our own sandboxed code). Note `sessions` reads the
-// SQLite store and needs the native module rebuilt for Electron (D9) to work.
-const ALLOWED = new Set([
-  "version",
-  "doctor",
-  "status",
-  "setup",
-  "connect",
-  "set",
-  "challenge",
-  "accept",
-  "config",
-  "strategy",
-  "sessions",
-]);
+// Final defensive gate: even though every argv is now built from a fixed template
+// (argvForCliOp), assert the leading command is one the desktop actually maps to.
+// This is the set of commands the templates below can produce — nothing else can
+// reach the CLI's run(). Note `sessions` reads the SQLite store and needs the
+// native module rebuilt for Electron (D9) to work. `review` is included (the old
+// allowlist omitted it, which silently broke self-review — now fixed).
+const KNOWN_CLI_COMMANDS = new Set(["setup", "connect", "status", "challenge", "accept", "config", "review", "sessions"]);
 
-export async function runCli(args: unknown): Promise<CliRunResult> {
-  if (!Array.isArray(args) || !args.every((a) => typeof a === "string")) {
-    return { exitCode: 2, stdout: "", stderr: "", error: "cli args must be an array of strings" };
+// Conservative validators for every renderer-supplied string that gets
+// interpolated into argv. Anything failing these makes argvForCliOp return null,
+// which the caller turns into an "invalid cli operation" result — the CLI never
+// runs. Kept intentionally strict (allow only what real values look like).
+// A leading "-" is forbidden in every value below so an interpolated positional
+// can never be parsed by the CLI as an option/flag (e.g. a connect code of
+// "--replace-local-identity"). Combined with the fixed argv[0] and the no-space
+// charsets, the renderer can only ever supply values, never compose flags.
+const SLUG_RE = /^[a-z0-9_]{1,32}$/; // game / config-test slug
+const PROFILE_ID_RE = /^[A-Za-z0-9._][A-Za-z0-9._-]{0,63}$/; // llm profile id
+const SESSION_ID_RE = /^[A-Za-z0-9._][A-Za-z0-9._-]{0,127}$/; // local session id
+const PAIRING_CODE_RE = /^[A-Za-z0-9._:][A-Za-z0-9._:-]*$/; // pairing/connect code (alnum + separators)
+
+function isString(v: unknown): v is string {
+  return typeof v === "string";
+}
+
+function isHttpUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
   }
-  const argv = args as string[];
+}
+
+/**
+ * Build the fixed argv for an enumerated CLI operation, validating every
+ * interpolated value. Returns null for an unknown kind or any value that fails
+ * validation — the renderer can never compose arbitrary argv/flags, only pick a
+ * kind and supply values that pass these gates. Exported for unit tests.
+ */
+export function argvForCliOp(op: CliOp): string[] | null {
+  // `op` crosses the IPC (structured-clone) boundary as untrusted data — switch on
+  // kind and treat every field defensively regardless of the static type.
+  switch (op?.kind) {
+    case "setup":
+      return ["setup", "--json", ...(op.replaceLocalIdentity ? ["--replace-local-identity"] : [])];
+    case "connect": {
+      const code = isString(op.code) ? op.code.trim() : "";
+      if (code === "" || code.length > 128 || !PAIRING_CODE_RE.test(code)) return null;
+      return ["connect", code, ...(op.replaceLocalIdentity ? ["--replace-local-identity"] : []), "--json"];
+    }
+    case "status":
+      return ["status", "--json"];
+    case "challenge":
+      return isString(op.game) && SLUG_RE.test(op.game) ? ["challenge", op.game, "--json"] : null;
+    case "accept":
+      return isString(op.url) && op.url.length <= 2048 && isHttpUrl(op.url) ? ["accept", op.url, "--json"] : null;
+    case "configReviewGet":
+      return ["config", "review", "--json"];
+    case "configReviewSet":
+      return op.mode === "off" || op.mode === "all" || op.mode === "losses_only"
+        ? ["config", "review", "auto", op.mode]
+        : null;
+    case "configTest":
+      return isString(op.slug) && SLUG_RE.test(op.slug) && isString(op.profileId) && PROFILE_ID_RE.test(op.profileId)
+        ? ["config", "test", op.slug, "--profile", op.profileId, "--json"]
+        : null;
+    case "review": {
+      if (!isString(op.sessionId) || !SESSION_ID_RE.test(op.sessionId)) return null;
+      const modeFlag = op.mode === "regen" ? ["--regen"] : op.mode === "no-generate" ? ["--no-generate"] : [];
+      return ["review", op.sessionId, "--json", ...modeFlag];
+    }
+    case "sessionsList":
+      return ["sessions", "list", "--json"];
+    case "sessionsExport":
+      // NOTE: no --json here, matching the CLI's export behavior the renderer expects.
+      return isString(op.sessionId) && SESSION_ID_RE.test(op.sessionId) ? ["sessions", "export", op.sessionId] : null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Run an enumerated CLI operation: build + validate the argv, then execute it.
+ * Invalid operations (unknown kind / bad value) never touch the CLI.
+ */
+export async function runCliOp(op: CliOp): Promise<CliRunResult> {
+  const argv = argvForCliOp(op);
+  if (argv === null) {
+    return { exitCode: 2, stdout: "", stderr: "", error: "invalid cli operation" };
+  }
+  return runCliArgv(argv);
+}
+
+async function runCliArgv(argv: string[]): Promise<CliRunResult> {
   const cmd = argv[0];
-  if (cmd === undefined || !ALLOWED.has(cmd)) {
+  if (cmd === undefined || !KNOWN_CLI_COMMANDS.has(cmd)) {
     return {
       exitCode: 2,
       stdout: "",

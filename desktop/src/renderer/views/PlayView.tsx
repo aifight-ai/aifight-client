@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 
 import {
-  useBridgeStatus, cliRun, bridgeStart, requestMatches, setMatchingPaused, openClaim, openDashboard,
+  useBridgeStatus, runCli, bridgeStart, requestMatches, setMatchingPaused, openClaim, openDashboard,
   acceptLegal, openLegal,
   getAgentProfile, getOwnProfileRaw, getAgentPolicy, setAgentPolicy, setAgentName, getUsageOverview, resultText,
   desktopAvatarActions,
@@ -38,7 +38,7 @@ import { gameLabel } from "../../shared/games";
 import { RatingChart, PerGameCards, AchievementShelf } from "./AgentProfileViz";
 import { StyleRadarCard } from "./StyleRadarCard";
 import type { AgentProfile } from "@aifight/api-types";
-import type { AgentPolicy, AgentProfileData, AgentStats, BridgeStatus, UsageOverview } from "../../shared/ipc";
+import type { AgentPolicy, AgentProfileData, AgentStats, BridgeStatus, CliOp, UsageOverview } from "../../shared/ipc";
 
 function clampInt(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, Math.round(Number.isFinite(v) ? v : 0)));
@@ -290,13 +290,13 @@ function Onboarding({ refresh }: { refresh: () => void }) {
   // before any prompt.
   const run = async (
     id: string,
-    args: string[],
+    op: CliOp,
     onOk?: (json: Record<string, unknown>) => string,
   ) => {
     setBusy(id);
     setLog("");
     setLogErr(false);
-    const r = await cliRun(args);
+    const r = await runCli(op);
     setBusy(null);
     if (r.exitCode === 0) {
       setLog(onOk !== undefined && r.json !== undefined ? onOk(r.json as Record<string, unknown>) : resultText(r));
@@ -318,7 +318,7 @@ function Onboarding({ refresh }: { refresh: () => void }) {
         <Btn
           busy={busy === "register"}
           onClick={() =>
-            run("register", ["setup", "--json"], (j) => {
+            run("register", { kind: "setup" }, (j) => {
               // A fresh registration → run the first-run guide next (keyed to
               // this agent so pairing an existing agent never triggers it).
               const cfg = (j.config ?? {}) as { agentId?: string };
@@ -351,7 +351,7 @@ function Onboarding({ refresh }: { refresh: () => void }) {
             busy={busy === "connect"}
             disabled={code.trim() === ""}
             onClick={() =>
-              run("connect", ["connect", code.trim(), "--json"], (j) => {
+              run("connect", { kind: "connect", code: code.trim() }, (j) => {
                 const cfg = (j.config ?? {}) as { agentName?: string };
                 return t("play.onboard.connectedOk", { name: cfg.agentName ?? "" });
               })
@@ -742,13 +742,13 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
     });
   };
   const loadSessions = () => {
-    void cliRun(["sessions", "list", "--json"]).then((r) => {
+    void runCli({ kind: "sessionsList" }).then((r) => {
       const list = (r.json as { sessions?: unknown } | undefined)?.sessions;
       setSessions(Array.isArray(list) ? (list as SessionRow[]).slice(0, 10) : []);
     });
   };
   const checkClaim = () => {
-    void cliRun(["status", "--json"]).then((r) => {
+    void runCli({ kind: "status" }).then((r) => {
       const pa = (r.json as { platformAgentStatus?: { kind: string; isClaimed?: boolean } } | undefined)?.platformAgentStatus;
       if (pa?.kind === "ok") {
         const next: ClaimState = pa.isClaimed ? "claimed" : "unclaimed";
@@ -914,7 +914,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   const doChallenge = async () => {
     setBusy("challenge");
     setFeedback(null);
-    const r = await cliRun(["challenge", game, "--json"]);
+    const r = await runCli({ kind: "challenge", game });
     setBusy(null);
     const url = (r.json as { join_url?: string } | undefined)?.join_url;
     if (typeof url === "string" && url.length > 0) {
@@ -928,7 +928,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   const doAccept = async () => {
     setBusy("accept");
     setFeedback(null);
-    const r = await cliRun(["accept", acceptUrl.trim(), "--json"]);
+    const r = await runCli({ kind: "accept", url: acceptUrl.trim() });
     setBusy(null);
     if (r.exitCode === 0 && r.error === undefined) {
       setFeedback({ tone: "ok", text: t("play.accept.ok") });

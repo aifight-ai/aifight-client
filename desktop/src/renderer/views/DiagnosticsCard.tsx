@@ -1,5 +1,5 @@
 // D8 — a read-only diagnostics / status card for Settings. Reads `aifight status
-// --json` through the allowlisted in-process cli:run (the same status the CLI
+// --json` through the enumerated in-process cli:op (the same status the CLI
 // prints). 🔒 Secret-free: the runtime's redactBridgeConfig strips all secrets;
 // only the key SOURCE-free summary (agent name, runtime, daily, games, version,
 // update + claim status) is shown.
@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RotateCw } from "lucide-react";
 
-import { cliRun, getConnectionHealth } from "../useBridge";
+import { runCli, getConnectionHealth } from "../useBridge";
 import { useLiveGames } from "../liveGames";
 import type { ConnectionHealth } from "../../shared/ipc";
 
@@ -37,7 +37,7 @@ export function DiagnosticsCard() {
   // the background refreshes (so the card doesn't flicker on every window focus).
   const load = (quiet = false) => {
     if (!quiet) setState({ kind: "loading" });
-    void cliRun(["status", "--json"]).then((r) => {
+    void runCli({ kind: "status" }).then((r) => {
       if (r.json !== undefined && (r.json as StatusJson).status !== undefined) {
         setState({ kind: "ready", data: r.json as StatusJson });
       } else if (!quiet) {

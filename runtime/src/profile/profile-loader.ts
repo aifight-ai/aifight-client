@@ -25,7 +25,7 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
 
-import { getAgentsRoot } from "../store/paths.js";
+import { getAgentsRoot, safePathSegment } from "../store/paths.js";
 import { validateConfig, type LLMConfig } from "./config-schema.js";
 import { validateIdentity, type AgentIdentity } from "./identity-schema.js";
 
@@ -61,9 +61,24 @@ export interface AgentProfileResult {
  *
  * Resolves from the unified AIFight home (store/paths) so the CLI and the
  * desktop app share one config folder. Does NOT verify the dir exists.
+ *
+ * The slug is sanitized to a single safe path segment (safePathSegment) and,
+ * as defense-in-depth, the resolved directory is asserted to stay inside the
+ * agents root — a slug that would escape (e.g. "..") throws rather than
+ * returning a path outside the store.
  */
 export function resolveAgentDir(agentSlug: string): string {
-  return path.join(getAgentsRoot(), agentSlug);
+  const root = getAgentsRoot();
+  const dir = path.join(root, safePathSegment(agentSlug));
+  const resolvedRoot = path.resolve(root);
+  const resolvedDir = path.resolve(dir);
+  if (resolvedDir !== resolvedRoot && !resolvedDir.startsWith(resolvedRoot + path.sep)) {
+    throw new Error(
+      `resolveAgentDir: agent slug "${agentSlug}" resolves to ${resolvedDir}, ` +
+        `which escapes the agents root ${resolvedRoot}`,
+    );
+  }
+  return dir;
 }
 
 /**

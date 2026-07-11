@@ -138,14 +138,27 @@ export async function runBridgeAutoUpdateCheck(
     return { status: "busy", phase, update };
   }
 
+  // R13-F04: only install an EXACT version the platform policy advertised — never
+  // the bare `latest` dist-tag (a hijacked tag would be pulled silently). If no
+  // exact version is available, do NOT install.
+  const recommendedVersion = update.policy?.recommendedVersion;
+  if (!isPinnableVersion(recommendedVersion)) {
+    opts.onLog?.({
+      level: "warning",
+      code: "bridge.auto_update_no_pinned_version",
+      message: "Automatic Bridge update skipped: the platform did not advertise an exact version to pin.",
+    });
+    return { status: "failed", update, error: "no exact recommendedVersion to pin" };
+  }
+
   opts.onLog?.({
     level: "info",
     code: "bridge.auto_update_start",
-    message: `Updating AIFight Bridge to ${update.policy?.recommendedVersion ?? "recommended version"} while idle.`,
+    message: `Updating AIFight Bridge to ${recommendedVersion} while idle.`,
   });
 
   try {
-    await performBridgePackageUpdate({ execFile: opts.execFile });
+    await performBridgePackageUpdate({ execFile: opts.execFile, version: recommendedVersion });
   } catch (cause) {
     const error = firstErrorLine(cause);
     opts.onLog?.({
@@ -175,13 +188,29 @@ export async function runBridgeAutoUpdateCheck(
 
 export async function performBridgePackageUpdate(opts: {
   readonly execFile?: UpdateExecFile;
+  /** R13-F04: exact version to pin (e.g. "0.1.0-beta.14"). When omitted the
+   *  bare package is installed (manual `aifight update` — user-initiated). The
+   *  unattended auto-update path ALWAYS passes an exact version. */
+  readonly version?: string;
 } = {}): Promise<void> {
   const execFile = opts.execFile ?? defaultUpdateExecFile;
-  await execFile("npm", ["install", "-g", UPDATE_PACKAGE]);
+  // R13-F04: pin to the exact version when provided so a compromised `latest`
+  // dist-tag cannot be pulled in unattended. NOTE: this pins the version only;
+  // signed-manifest / npm provenance verification is release-infra (R15) and is
+  // intentionally NOT stubbed here — a comment, not a fake check.
+  const version = typeof opts.version === "string" ? opts.version.trim().replace(/^v/, "") : "";
+  const target = version !== "" ? `${UPDATE_PACKAGE}@${version}` : UPDATE_PACKAGE;
+  await execFile("npm", ["install", "-g", target]);
 }
 
 export function isSafeAutoUpdatePhase(phase: string | null): boolean {
   return phase === "connected" || phase === "queuing";
+}
+
+/** R13-F04: an EXACT semver (optional leading "v", optional prerelease) — never a
+ *  range or dist-tag. Only such a value may be auto-installed. */
+function isPinnableVersion(v: string | undefined): v is string {
+  return typeof v === "string" && /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(v.trim());
 }
 
 function firstErrorLine(cause: unknown): string {

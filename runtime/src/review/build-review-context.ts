@@ -106,7 +106,13 @@ function toTurn(decision: unknown, index: number): ReviewContextTurn | null {
     : [];
   return {
     index: index + 1,
-    stateSummary: truncate(compactJSON(req.state), STATE_SUMMARY_MAX),
+    // R13-F03: decisions.jsonl now stores a bounded `state_summary` string
+    // instead of the full state object (which lives in inbound.jsonl). Prefer it;
+    // fall back to the full `state` for sessions recorded before this change.
+    stateSummary: truncate(
+      typeof req.state_summary === "string" ? req.state_summary : compactJSON(req.state),
+      STATE_SUMMARY_MAX,
+    ),
     legal,
     chose: choseSummary(decision.final_action),
     reasoning: truncate(extractReasoning(decision), REASONING_MAX),

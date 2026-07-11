@@ -14,6 +14,7 @@ import {
   redactBridgeConfig,
   removeBridgeConfig,
   RuntimeLocalUrlError,
+  validatePlatformBaseUrl,
   writeBridgeConfig,
   wsUrlIsValid,
   type BridgeConfig,
@@ -93,6 +94,21 @@ describe("bridge config", () => {
     writeBridgeConfig(cfg);
 
     expect(() => readBridgeConfig()).toThrow("bridge config is invalid");
+  });
+
+  // R13 F-05: a hand-edited bridge.json whose base was downgraded to plaintext
+  // http (public host) must be refused on read — the API key ships to that host.
+  it("rejects a hand-edited plaintext-http base on read (R13 F-05)", () => {
+    useTempHome();
+    const cfg = {
+      ...config(),
+      baseUrl: "http://public.example",
+      wsUrl: "wss://public.example/api/ws", // keeps isBridgeConfig happy so the base gate is what fires
+    };
+
+    writeBridgeConfig(cfg);
+
+    expect(() => readBridgeConfig()).toThrow(/plain http/i);
   });
 });
 
@@ -284,7 +300,53 @@ describe("wsUrlIsValid", () => {
     expect(wsUrlIsValid("ws://other.local/api/ws", "http://localhost:8080")).toBe(false);
   });
 
+  // R13 F-05: a plaintext (non-loopback) http base previously accepted ws:// to
+  // that public host, leaking the upgrade-header key. Now only wss:// is allowed.
+  it("rejects ws:// for a non-loopback (public) http base (R13 F-05)", () => {
+    expect(wsUrlIsValid("ws://public.example/api/ws", "http://public.example")).toBe(false);
+    expect(wsUrlIsValid("wss://public.example/api/ws", "http://public.example")).toBe(true);
+  });
+
   it("rejects unparseable urls", () => {
     expect(wsUrlIsValid("not a url", "https://aifight.ai")).toBe(false);
+  });
+});
+
+// R13 F-05: the platform API key / pairing code is sent to the base URL, so it
+// must be https (or loopback http only under an explicit dev escape hatch).
+describe("validatePlatformBaseUrl (R13 F-05)", () => {
+  afterEach(() => {
+    delete process.env.AIFIGHT_ALLOW_INSECURE_BASE_URL;
+  });
+
+  it("accepts https and normalizes trailing slash / strips query+fragment", () => {
+    expect(validatePlatformBaseUrl("https://aifight.ai/")).toBe("https://aifight.ai");
+    expect(validatePlatformBaseUrl("https://beta.aifight.ai")).toBe("https://beta.aifight.ai");
+    expect(validatePlatformBaseUrl("https://aifight.ai/base/?x=1#f")).toBe("https://aifight.ai/base");
+  });
+
+  it("rejects plain http to a public host (with or without the dev env)", () => {
+    expect(() => validatePlatformBaseUrl("http://aifight.ai")).toThrow(/plain http/i);
+    process.env.AIFIGHT_ALLOW_INSECURE_BASE_URL = "1";
+    expect(() => validatePlatformBaseUrl("http://public.example")).toThrow(/plain http/i);
+  });
+
+  it("rejects http to loopback WITHOUT the dev env var", () => {
+    expect(() => validatePlatformBaseUrl("http://127.0.0.1:8080")).toThrow(/plain http/i);
+  });
+
+  it("accepts http to loopback WITH the dev env var", () => {
+    process.env.AIFIGHT_ALLOW_INSECURE_BASE_URL = "1";
+    expect(validatePlatformBaseUrl("http://127.0.0.1:8080")).toBe("http://127.0.0.1:8080");
+    expect(validatePlatformBaseUrl("http://localhost:3000/")).toBe("http://localhost:3000");
+  });
+
+  it("rejects embedded userinfo even over https", () => {
+    expect(() => validatePlatformBaseUrl("https://user:pass@aifight.ai")).toThrow(/credentials/i);
+  });
+
+  it("rejects non-http(s) schemes and garbage", () => {
+    expect(() => validatePlatformBaseUrl("ftp://aifight.ai")).toThrow(/https/i);
+    expect(() => validatePlatformBaseUrl("not a url")).toThrow(/valid URL/i);
   });
 });

@@ -46,8 +46,10 @@ describe("bridge idle auto update", () => {
     });
 
     expect(result.status).toBe("updated");
+    // R13-F04: the unattended install pins the exact recommended version rather
+    // than pulling the bare `latest` dist-tag.
     expect(calls.map((c) => [c.file, ...c.args].join(" "))).toEqual([
-      "npm install -g @aifight/aifight",
+      "npm install -g @aifight/aifight@99.0.0-alpha.1",
     ]);
     expect(restarts).toEqual(["restart"]);
   });

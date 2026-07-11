@@ -37,6 +37,22 @@ export function getAgentsRoot(): string {
   return path.join(getAifightHome(), "agents");
 }
 
+/**
+ * Sanitize one untrusted value (agent slug, agent id, session id, …) into a
+ * filesystem-safe path SEGMENT: replace every character outside
+ * [A-Za-z0-9._-] with "_", cap at 128 chars, and never return an empty string
+ * (fall back to "unknown"). This neutralizes "/", "\\", ":" and absolute-path
+ * prefixes, so a caller that joins the result under a known root cannot be
+ * walked out of that root by a single segment. A pure-dots value like ".."
+ * survives (dots are allowed), so callers that build a full path MUST still
+ * assert containment against their root as defense-in-depth — see
+ * resolveAgentDir in profile/profile-loader.ts.
+ */
+export function safePathSegment(value: string): string {
+  const safe = value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 128);
+  return safe.length > 0 ? safe : "unknown";
+}
+
 export function getDefaultDbPath(): string {
   return path.join(getRuntimeHome(), "state.db");
 }

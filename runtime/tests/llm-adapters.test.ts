@@ -6,6 +6,7 @@ import {
   requireAdapter,
 } from "../src/llm/adapter-registry";
 import type { LLMProfile } from "../src/llm/adapters/types";
+import { redactApiKey, boundedErrorBody } from "../src/llm/adapters/redact";
 
 // Adapter HTTP-shape tests (P2 hardening). Injects globalThis.fetch so no
 // network is touched. Verifies each adapter: hits the right endpoint with the
@@ -35,6 +36,7 @@ function stubFetch(status: number, body: unknown): { calls: Array<{ url: string;
     return {
       ok: status >= 200 && status < 300,
       status,
+      headers: { get: (_key: string): string | null => null },
       text: async () => text,
       json: async () => JSON.parse(text),
     } as unknown as Response;
@@ -147,4 +149,66 @@ describe("adapter error paths (HTTP 401 → failed probe)", () => {
       expect(res.protocol).toBe(protocol);
     });
   }
+});
+
+// R13 F-09: a provider error body can echo the API key back and be arbitrarily
+// large. Whichever field an adapter surfaces it in (AdapterError message OR
+// cause), the raw key must never appear, "[REDACTED]" must replace it, and the
+// body must be length-capped (512).
+describe("provider error bodies are redacted + length-capped (R13 F-09)", () => {
+  const LEAK_KEY = "sk-LEAK-abcdef0123456789";
+  // Body literally contains the key, plus a long marker run to prove capping.
+  const errorBody = { error: { message: `invalid api key ${LEAK_KEY} rejected` }, pad: "Z".repeat(2000) };
+
+  const cases: Array<{ protocol: LLMProfile["protocol"]; baseURL: string }> = [
+    { protocol: "anthropic_messages", baseURL: "https://api.anthropic.com" },
+    { protocol: "openai_responses", baseURL: "https://api.openai.com/v1" },
+    { protocol: "openai_chat_completions", baseURL: "https://api.openai.com/v1" },
+    { protocol: "openai_chat_compat", baseURL: "https://example.test/v1" },
+    { protocol: "deepseek_chat_completions", baseURL: "https://api.deepseek.com" },
+    { protocol: "gemini_generate_content", baseURL: "https://generativelanguage.googleapis.com" },
+  ];
+
+  for (const c of cases) {
+    it(`${c.protocol}: 400 error body never leaks the key and is capped`, async () => {
+      await registerBuiltinAdapters();
+      const adapter = requireAdapter(c.protocol);
+      stubFetch(400, errorBody);
+
+      let err: unknown;
+      try {
+        await adapter.generateDecision(
+          { systemPrompt: "sys", userPrompt: "usr", maxTokens: 64, temperature: 0, responseFormat: "json" },
+          resolved({ protocol: c.protocol, baseURL: c.baseURL, model: "test-model", apiKey: LEAK_KEY }),
+        );
+      } catch (e) {
+        err = e;
+      }
+
+      expect(err).toBeInstanceOf(Error);
+      const e = err as { message: string; cause?: unknown };
+      const combined = `${e.message} ${typeof e.cause === "string" ? e.cause : ""}`;
+      // The raw key must be gone, replaced by the redaction marker.
+      expect(combined).not.toContain(LEAK_KEY);
+      expect(combined).toContain("[REDACTED]");
+      // Length cap: an uncapped body would carry all 2000 marker chars.
+      const markerCount = (combined.match(/Z/g) ?? []).length;
+      expect(markerCount).toBeLessThanOrEqual(512);
+      expect(markerCount).toBeGreaterThan(0); // proves the body was actually surfaced
+    });
+  }
+});
+
+describe("redact helpers (R13 F-09)", () => {
+  it("redactApiKey replaces every occurrence and is a no-op for an empty key", () => {
+    expect(redactApiKey("a KEY b KEY c", "KEY")).toBe("a [REDACTED] b [REDACTED] c");
+    expect(redactApiKey("nothing to do", "")).toBe("nothing to do");
+  });
+
+  it("boundedErrorBody redacts then caps to max length", () => {
+    const out = boundedErrorBody(`prefix SECRET ${"x".repeat(1000)}`, "SECRET", 32);
+    expect(out.length).toBe(32);
+    expect(out).not.toContain("SECRET");
+    expect(out.startsWith("prefix [REDACTED]")).toBe(true);
+  });
 });

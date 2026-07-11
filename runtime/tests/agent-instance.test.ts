@@ -395,6 +395,121 @@ describe("AgentInstance", () => {
     expect(agent.snapshot().state?.activeMatches?.["session-b"]).toBeDefined();
   });
 
+  // ─── R13-F02: idempotent, bounded, cancellable decisions ─────────────
+
+  function actionRequestWithId(sessionId: string, requestId: string): MsgActionRequest {
+    const base = actionRequest(sessionId);
+    return { ...base, data: { ...base.data, request_id: requestId } } as MsgActionRequest;
+  }
+
+  /** Fake provider that records each decision call + whether its signal aborted. */
+  function recordingProvider() {
+    const calls: Array<{
+      ctx: Parameters<AgentDecisionProvider["decide"]>[0];
+      deferred: ReturnType<typeof deferred<unknown>>;
+      aborted: boolean;
+    }> = [];
+    const provider: AgentDecisionProvider = {
+      decide: vi.fn((ctx) => {
+        const d = deferred<unknown>();
+        const rec = { ctx, deferred: d, aborted: false };
+        ctx.signal?.addEventListener("abort", () => {
+          rec.aborted = true;
+        });
+        calls.push(rec);
+        return d.promise;
+      }),
+    };
+    return { provider, calls };
+  }
+
+  it("F-02(a): duplicate action_request (same request_id) → exactly ONE provider call", async () => {
+    const { provider, calls } = recordingProvider();
+    const { agent, client } = makeHarness({ decisionProvider: provider });
+    await agent.start();
+    client.emitMessage(gameStart());
+    client.emitMessage(actionRequestWithId("22222222-2222-4222-8222-222222222222", "req-1"));
+    client.emitMessage(actionRequestWithId("22222222-2222-4222-8222-222222222222", "req-1"));
+    await flushEffects();
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it("F-02(b): superseding action_request aborts the first call and sends exactly one final decision", async () => {
+    const { provider, calls } = recordingProvider();
+    const { agent, client, onNotify } = makeHarness({ decisionProvider: provider });
+    await agent.start();
+    client.emitMessage(gameStart());
+
+    client.emitMessage(actionRequestWithId("22222222-2222-4222-8222-222222222222", "req-1"));
+    await flushEffects();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.aborted).toBe(false);
+
+    // A newer request for the same match supersedes the first.
+    client.emitMessage(actionRequestWithId("22222222-2222-4222-8222-222222222222", "req-2"));
+    await flushEffects();
+    expect(calls).toHaveLength(2);
+    // The first (now superseded) call's signal was aborted — its paid work cancels.
+    expect(calls[0]!.aborted).toBe(true);
+
+    // Resolve the superseding decision → the one and only action is sent.
+    calls[1]!.deferred.resolve({ type: "income" });
+    await flushEffects();
+
+    // A late-arriving result from the superseded call must be DISCARDED, not sent.
+    calls[0]!.deferred.resolve({ type: "coup" });
+    await flushEffects();
+
+    const actions = client.sent.filter((m) => m.type === "action");
+    expect(actions).toEqual([
+      {
+        type: "action",
+        match_id: "22222222-2222-4222-8222-222222222222",
+        data: { type: "income" },
+        request_id: "req-2",
+      },
+    ]);
+    expect(onNotify).toHaveBeenCalledWith(expect.objectContaining({ code: "agent.stale_decision" }));
+  });
+
+  it("F-02(d): a normal single decision still completes end-to-end and sends the action", async () => {
+    const { provider, calls } = recordingProvider();
+    const { agent, client } = makeHarness({ decisionProvider: provider });
+    await agent.start();
+    client.emitMessage(gameStart());
+    client.emitMessage(actionRequestWithId("22222222-2222-4222-8222-222222222222", "req-1"));
+    await flushEffects();
+    expect(calls).toHaveLength(1);
+
+    calls[0]!.deferred.resolve({ type: "income" });
+    await flushEffects();
+
+    expect(client.sent.filter((m) => m.type === "action")).toEqual([
+      {
+        type: "action",
+        match_id: "22222222-2222-4222-8222-222222222222",
+        data: { type: "income" },
+        request_id: "req-1",
+      },
+    ]);
+    expect(agent.snapshot().state?.phase).toBe("in_match");
+  });
+
+  it("F-02: stop() aborts an in-flight decision's signal", async () => {
+    const { provider, calls } = recordingProvider();
+    const { agent, client } = makeHarness({ decisionProvider: provider });
+    await agent.start();
+    client.emitMessage(gameStart());
+    client.emitMessage(actionRequestWithId("22222222-2222-4222-8222-222222222222", "req-1"));
+    await flushEffects();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.aborted).toBe(false);
+
+    await agent.stop();
+    expect(calls[0]!.aborted).toBe(true);
+  });
+
   it("decision rejection triggers fallback callback and does not send action", async () => {
     const decisionProvider = { decide: vi.fn(async () => { throw new Error("model down"); }) };
     const { agent, client, onFallbackRequired } = makeHarness({ decisionProvider });

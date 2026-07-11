@@ -148,10 +148,27 @@ export interface WSClientOptions {
    *  socket terminated) — equivalent to calling close(); no
    *  error is thrown since the signal owner is the actor. */
   signal?: AbortSignal;
+  /** Maximum inbound WS frame size in bytes (R13-F03). `ws` closes the
+   *  connection with code 1009 ("message too big") when the server sends a
+   *  larger frame, which surfaces here as a normal close → reconnect. Defaults
+   *  to DEFAULT_MAX_PAYLOAD_BYTES; the `ws` library default is 100 MiB, far
+   *  above any legitimate AIFight frame, so an unbounded default would let a
+   *  buggy/hostile server pin ~100 MiB of client memory per frame. */
+  maxPayloadBytes?: number;
 }
 
 const DEFAULT_WELCOME_TIMEOUT_MS = 10_000;
 const DEFAULT_PING_INTERVAL_MS = 25_000;
+// R13-F03: 2 MiB is comfortably above the largest legitimate AIFight frame — a
+// full-history reconnect action_request (event_history capped at 65536 events by
+// server_action_request.schema.json, each event a small JSON object) is orders of
+// magnitude smaller — while capping how much memory one inbound frame can pin.
+const DEFAULT_MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
+// R13-F03: cap the buffered body of a rejected HTTP upgrade (non-101) response.
+// The body is only used for an error message; 64 KiB is plenty for a JSON error,
+// and prevents a hostile/misbehaving server from streaming an unbounded body into
+// memory during the handshake.
+const UPGRADE_REJECT_BODY_MAX_BYTES = 64 * 1024;
 
 // ─── Public handler types (Step 5b1) ────────────────────────────────
 //
@@ -687,7 +704,13 @@ export async function createWSClient(
       // older bundles would reject the whole frame (additionalProperties:
       // false) and silently lose their turn.
       headers["X-AIFight-Protocol-Version"] = opts.expectedProtocolVersion;
-      socket = new WebSocket(opts.url, { headers });
+      // R13-F03: bound the inbound frame size. An oversize frame makes `ws`
+      // close with 1009 ("message too big"), which flows through the normal
+      // close → reconnect path rather than pinning ~100 MiB (the ws default).
+      socket = new WebSocket(opts.url, {
+        headers,
+        maxPayload: opts.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES,
+      });
     } catch (e) {
       // Synchronous construction failure (e.g. invalid URL parse).
       const msg = e instanceof Error ? e.message : String(e);
@@ -787,11 +810,14 @@ export async function createWSClient(
     // (e.g. "{\"error\":\"invalid api key\"}").
     socket.once("unexpected-response", (req, res) => {
       let body = "";
+      // R13-F03: cap the buffered reject body. Once past the cap we stop
+      // appending and destroy the response so a hostile/misbehaving server
+      // can't stream an unbounded body into memory during the handshake; the
+      // bytes already collected are enough for the error message.
+      let bodyBytes = 0;
+      let bodyTruncated = false;
       res.setEncoding("utf8");
-      res.on("data", (chunk: string) => {
-        body += chunk;
-      });
-      res.on("end", () => {
+      const rejectUpgrade = (): void => {
         const status = res.statusCode ?? 0;
         const statusText = res.statusMessage ?? "";
         try {
@@ -819,10 +845,29 @@ export async function createWSClient(
               : new WSHandshakeError(
                   status,
                   body,
-                  `HTTP upgrade rejected: ${status} ${statusText}`.trim(),
+                  `HTTP upgrade rejected: ${status} ${statusText}${bodyTruncated ? " (response body truncated)" : ""}`.trim(),
                 ),
           ),
         );
+      };
+      res.on("data", (chunk: string) => {
+        if (bodyTruncated) return;
+        bodyBytes += Buffer.byteLength(chunk, "utf8");
+        if (bodyBytes > UPGRADE_REJECT_BODY_MAX_BYTES) {
+          bodyTruncated = true;
+          try {
+            res.destroy();
+          } catch {
+            /* ignore */
+          }
+          rejectUpgrade();
+          return;
+        }
+        body += chunk;
+      });
+      res.on("end", () => {
+        if (bodyTruncated) return; // already rejected on the cap path
+        rejectUpgrade();
       });
       res.on("error", (e: Error) => {
         const status = res.statusCode ?? 0;

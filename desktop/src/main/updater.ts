@@ -7,9 +7,36 @@ import { app } from "electron";
 import { autoUpdater } from "electron-updater";
 
 import { type UpdateStatus } from "../shared/ipc";
+import { getFlag, setFlag } from "./ui-flags";
 
 type Send = (status: UpdateStatus) => void;
 let send: Send = () => {};
+
+// Fail-closed opt-in: absent flag ⇒ getFlag returns false ⇒ automatic updates are
+// DISABLED by default. Nothing auto-downloads or installs unless the user turns
+// this on in Settings. A renderer-side injection therefore cannot silently trigger
+// an auto-update, and a fresh install never background-fetches until the user
+// consents. (Signed-publisher / notarization VERIFICATION of the update payload is
+// release-infra owned — tracked separately as R14-F03/R15 — and is deliberately
+// NOT stubbed here; this flag only governs the automatic trigger.)
+const AUTO_UPDATE_FLAG = "autoUpdateEnabled";
+
+/** Whether automatic updates are enabled (persisted flag; default false). */
+export function getAutoUpdate(): boolean {
+  return getFlag(AUTO_UPDATE_FLAG);
+}
+
+/**
+ * Persist the auto-update opt-in and apply it to electron-updater immediately so
+ * the change takes effect this session (not just next launch). Turning it ON also
+ * kicks a check — with autoDownload now true, that fetches + installs-on-quit.
+ */
+export function setAutoUpdate(enabled: boolean): void {
+  setFlag(AUTO_UPDATE_FLAG, enabled);
+  autoUpdater.autoDownload = enabled;
+  autoUpdater.autoInstallOnAppQuit = enabled;
+  if (enabled && app.isPackaged) void autoUpdater.checkForUpdates().catch(() => {});
+}
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -17,8 +44,12 @@ function errMessage(err: unknown): string {
 
 export function initUpdater(sink: Send): void {
   send = sink;
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  // Fail-closed: mirror the persisted opt-in. When disabled, autoDownload +
+  // autoInstallOnAppQuit are false, so a manual "Check for updates" still SURFACES
+  // availability but never downloads/installs without the user's explicit action.
+  const enabled = getAutoUpdate();
+  autoUpdater.autoDownload = enabled;
+  autoUpdater.autoInstallOnAppQuit = enabled;
   // While we ship -beta/-rc builds, track the matching pre-release channel so a
   // beta updates to the next beta. Stable builds (no "-" in the version) only see
   // stable releases. Without this, GitHub's /releases/latest hides pre-releases,
@@ -34,8 +65,9 @@ export function initUpdater(sink: Send): void {
   autoUpdater.on("update-downloaded", (info) => send({ state: "downloaded", version: String(info.version) }));
   autoUpdater.on("error", (err) => send({ state: "error", message: errMessage(err) }));
 
-  // Quiet check on launch in packaged builds (auto-download, install on quit).
-  if (app.isPackaged) void autoUpdater.checkForUpdates().catch(() => {});
+  // Quiet check on launch ONLY when the user opted in (packaged builds). Disabled
+  // is the default → do nothing automatically on launch.
+  if (app.isPackaged && enabled) void autoUpdater.checkForUpdates().catch(() => {});
 }
 
 /** Manual "Check for updates" from the renderer. No-op-with-status in dev. */

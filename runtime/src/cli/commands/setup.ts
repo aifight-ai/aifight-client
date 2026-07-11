@@ -25,6 +25,7 @@ import {
   defaultRuntimeModel,
   readBridgeConfig,
   redactBridgeConfig,
+  validatePlatformBaseUrl,
   writeBridgeConfig,
   type BridgeConfig,
 } from "../../bridge/config";
@@ -251,7 +252,14 @@ async function performRegistration(
   const suggestedName = resolveAgentName(args);
   // On --replace, keep the host the machine was already on (beta vs prod) rather
   // than the env/default, so re-register doesn't silently jump servers.
-  const baseUrl = normalizeBaseUrl(baseUrlOverride ?? process.env.AIFIGHT_BASE_URL ?? DEFAULT_BASE_URL);
+  // F-05: refuse a plaintext-http (non-loopback) base before the API key is
+  // ever created and sent to it.
+  let baseUrl: string;
+  try {
+    baseUrl = validatePlatformBaseUrl(baseUrlOverride ?? process.env.AIFIGHT_BASE_URL ?? DEFAULT_BASE_URL);
+  } catch (e) {
+    throw new CommandError("invalid_base_url", e instanceof Error ? e.message : String(e));
+  }
   const runtimeModel = defaultRuntimeModel("direct");
   const runtimeLocalUrl = defaultRuntimeLocalUrl("direct");
 
@@ -342,10 +350,6 @@ function resolveAgentName(args: HandlerArgs): string {
   // not the old `agent-direct-<host>-<hex>` slug. The user can keep it or change
   // it any time with `aifight rename`.
   return generateSuggestedName();
-}
-
-function normalizeBaseUrl(raw: string): string {
-  return raw.replace(/\/+$/, "");
 }
 
 function readOptionalBridgeConfig(): BridgeConfig | undefined {

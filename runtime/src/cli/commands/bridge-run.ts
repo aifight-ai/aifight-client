@@ -117,18 +117,29 @@ export async function runBridgeWithConfig(opts: {
     writeToken(token);
     writePort(port);
 
+    // R13-F04: unattended auto-update is OPT-IN and OFF by default. A background
+    // service silently running `npm install -g` (as whatever user the unit runs
+    // as — possibly root) is a supply-chain foothold, so it only runs when the
+    // operator explicitly sets AIFIGHT_AUTO_UPDATE=1. When off, `aifight update`
+    // stays available for a manual, user-initiated update.
     if (process.env.AIFIGHT_SERVICE_RUN === "1") {
-      autoUpdater = startBridgeAutoUpdater({
-        baseUrl: config.baseUrl,
-        fetchImpl: env.fetchImpl,
-        snapshot: () => runner.snapshot(),
-        execFile: env.bridgeService?.execFile,
-        onLog: (event) => writeBridgeLog(event, env),
-        onRestartRequired: () => {
-          env.stdout("AIFight Bridge updated; stopping so aifight.service can restart with the new package.\n");
-          process.kill(process.pid, "SIGTERM");
-        },
-      });
+      if (autoUpdateOptedIn()) {
+        autoUpdater = startBridgeAutoUpdater({
+          baseUrl: config.baseUrl,
+          fetchImpl: env.fetchImpl,
+          snapshot: () => runner.snapshot(),
+          execFile: env.bridgeService?.execFile,
+          onLog: (event) => writeBridgeLog(event, env),
+          onRestartRequired: () => {
+            env.stdout("AIFight Bridge updated; stopping so aifight.service can restart with the new package.\n");
+            process.kill(process.pid, "SIGTERM");
+          },
+        });
+      } else {
+        env.stdout(
+          "Automatic updates are off. Enable with AIFIGHT_AUTO_UPDATE=1, or update manually: aifight update --yes\n",
+        );
+      }
     }
 
     env.stdout("Bridge online. Press Ctrl-C to stop.\n");
@@ -161,6 +172,14 @@ export async function runBridgeWithConfig(opts: {
     }
     throw cause;
   }
+}
+
+/** R13-F04: unattended auto-update opt-in. Off unless AIFIGHT_AUTO_UPDATE is set
+ *  to a truthy value ("1"/"true"/"yes"/"on"); anything else (unset, "0",
+ *  "false", "") keeps auto-update disabled. Exported for testing the gate. */
+export function autoUpdateOptedIn(): boolean {
+  const v = (process.env.AIFIGHT_AUTO_UPDATE ?? "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
 }
 
 function automaticJoinOptions(config: BridgeConfig): {

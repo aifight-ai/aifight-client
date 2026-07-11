@@ -20,6 +20,8 @@ import type {
 import { AdapterError } from "./types.js";
 import { looksLikeTokenLimit, normalizeOpenAIFinish, computeTruncated } from "./token-limit.js";
 import { parseRetryAfterMs, isContentFilterReason } from "./error-class.js";
+import { boundedErrorBody } from "./redact.js";
+import { fetchNoFollow } from "../../net/guarded-fetch.js";
 
 const PROTOCOL = "openai_chat_completions" as const;
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -150,7 +152,7 @@ async function generateDecision(
   const start = performance.now();
   let response: Response;
   try {
-    response = await globalThis.fetch(url, {
+    response = await fetchNoFollow(url, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
@@ -174,12 +176,13 @@ async function generateDecision(
 
   if (!response.ok) {
     const rawBody = await safeReadText(response);
+    const safeBody = boundedErrorBody(rawBody, profile.apiKey, 512);
     const kind = httpStatusToKind(response.status);
     throw new AdapterError(
       kind,
       PROTOCOL,
       `OpenAI returned HTTP ${response.status}`,
-      { cause: rawBody, retryable: isRetryableStatus(response.status), tokenLimit: looksLikeTokenLimit(rawBody), status: response.status, retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")) },
+      { cause: safeBody, retryable: isRetryableStatus(response.status), tokenLimit: looksLikeTokenLimit(rawBody), status: response.status, retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")) },
     );
   }
 

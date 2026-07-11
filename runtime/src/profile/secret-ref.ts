@@ -8,7 +8,8 @@
 // - File secrets must be chmod 0600
 // - env_file paths must be explicitly configured
 
-import { readFile, stat, writeFile, mkdir, chmod } from "node:fs/promises";
+import { readFile, lstat, writeFile, mkdir, chmod } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import { dirname } from "node:path";
 import { homedir } from "node:os";
 
@@ -88,6 +89,7 @@ function resolveEnv(name: string): string {
 
 async function resolveEnvFile(filePath: string, name: string): Promise<string> {
   const resolved = expandHome(filePath);
+  await assertSecretFileSecure(resolved, filePath, "env_file");
   let content: string;
   try {
     content = await readFile(resolved, "utf-8");
@@ -131,6 +133,7 @@ async function resolveEnvFile(filePath: string, name: string): Promise<string> {
 
 async function resolveFile(filePath: string): Promise<string> {
   const resolved = expandHome(filePath);
+  await assertSecretFileSecure(resolved, filePath, "file");
   let content: string;
   try {
     content = await readFile(resolved, "utf-8");
@@ -198,18 +201,67 @@ export async function storeSecretFile(
 }
 
 /**
- * Check if a secret file has safe permissions (0600).
+ * Fail-closed permission/type gate for file-backed secrets (`file` and
+ * `env_file`). Applied BEFORE reading so a world/group-readable key, a symlink,
+ * a non-regular file (fifo/device/dir), or a file owned by another user is
+ * never opened. Called from resolveFile and resolveEnvFile.
+ *
+ * POSIX: rejects any file with group/other permission bits set (mode & 0o077),
+ * and — best effort where process.getuid exists — any file not owned by the
+ * current uid. Windows: NTFS ACLs differ, so the mode/uid checks are skipped,
+ * but symlinks and non-regular files are still rejected. Uses lstat (no-follow)
+ * so a symlink is caught rather than transparently followed.
  */
-export async function checkSecretFilePermissions(
-  filePath: string,
-): Promise<{ safe: boolean; mode?: string }> {
-  const resolved = expandHome(filePath);
+async function assertSecretFileSecure(
+  resolvedPath: string,
+  displayPath: string,
+  refType: "file" | "env_file",
+): Promise<void> {
+  let st: Stats;
   try {
-    const st = await stat(resolved);
-    const mode = (st.mode & 0o777).toString(8);
-    return { safe: mode === "600", mode };
-  } catch {
-    return { safe: false };
+    st = await lstat(resolvedPath);
+  } catch (cause) {
+    throw new SecretResolutionError(
+      refType,
+      `Cannot access secret file at ${displayPath}: ${describeError(cause)}`,
+    );
+  }
+
+  if (st.isSymbolicLink()) {
+    throw new SecretResolutionError(
+      refType,
+      `Refusing to read a secret from a symlink at ${displayPath}; ` +
+        `point the reference at a real, private file (chmod 600).`,
+    );
+  }
+  if (!st.isFile()) {
+    throw new SecretResolutionError(
+      refType,
+      `Secret path at ${displayPath} is not a regular file; ` +
+        `use a private file (chmod 600).`,
+    );
+  }
+
+  // On Windows the POSIX mode/owner bits are not meaningful (access is governed
+  // by NTFS ACLs), so we stop after the symlink/regular-file checks above.
+  if (process.platform === "win32") return;
+
+  if ((st.mode & 0o077) !== 0) {
+    const mode = (st.mode & 0o777).toString(8).padStart(3, "0");
+    throw new SecretResolutionError(
+      refType,
+      `Secret file at ${displayPath} has insecure permissions ${mode} ` +
+        `(group/other can read it); run: chmod 600 ${displayPath}`,
+    );
+  }
+
+  const getuid = typeof process.getuid === "function" ? process.getuid.bind(process) : undefined;
+  if (getuid && st.uid !== getuid()) {
+    throw new SecretResolutionError(
+      refType,
+      `Secret file at ${displayPath} is not owned by the current user; ` +
+        `move it to a private file you own (chmod 600).`,
+    );
   }
 }
 

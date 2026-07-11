@@ -6,6 +6,7 @@ import {
   type AgentFSMEffect,
   type AgentFSMState,
 } from "../src/agents/state-machine";
+import { MAX_CONCURRENT_MATCHES } from "../src/agents/limits";
 import type {
   MsgActionRequest,
   MsgEvent,
@@ -600,5 +601,104 @@ describe("Agent FSM", () => {
     expect(first.state.transport).toBe("closed");
     expect(second.state).toEqual(first.state);
     expect(second.effects).toEqual([]);
+  });
+
+  // ─── R13-F02: idempotent, bounded, cancellable decisions ─────────────
+  describe("R13-F02 decision hardening", () => {
+    const SESSION = "22222222-2222-4222-8222-222222222222";
+
+    function actionRequestWithId(sessionId: string, requestId: string): MsgActionRequest {
+      const base = actionRequest(sessionId);
+      return { ...base, data: { ...base.data, request_id: requestId } } as MsgActionRequest;
+    }
+
+    function inMatch(sessionId = SESSION): AgentFSMState {
+      return initial({
+        phase: "in_match",
+        activeMatch: { sessionId, game: "texas_holdem", startedAt: 1 },
+      });
+    }
+
+    it("action_request threads request_id into the decision effect", () => {
+      const out = transitionAgentFSM(inMatch(), {
+        type: "ws.message",
+        message: actionRequestWithId(SESSION, "req-1"),
+      });
+      expect(out.effects).toEqual([
+        expect.objectContaining({ type: "request_decision", matchId: SESSION, requestId: "req-1" }),
+      ]);
+      expect(out.state.lastRequestIds?.[SESSION]).toBe("req-1");
+    });
+
+    it("drops a duplicate action_request (same request_id, decision already in flight)", () => {
+      const first = transitionAgentFSM(inMatch(), {
+        type: "ws.message",
+        message: actionRequestWithId(SESSION, "req-1"),
+      });
+      // Same request_id arrives again while the first is still pending.
+      const dup = transitionAgentFSM(first.state, {
+        type: "ws.message",
+        message: actionRequestWithId(SESSION, "req-1"),
+      });
+      expect(dup.effects.some((e) => e.type === "request_decision")).toBe(false);
+      expect(notifyEffect(dup.effects)).toMatchObject({ code: "fsm.duplicate_action_request" });
+    });
+
+    it("processes a superseding action_request (different request_id) for the same match", () => {
+      const first = transitionAgentFSM(inMatch(), {
+        type: "ws.message",
+        message: actionRequestWithId(SESSION, "req-1"),
+      });
+      const superseding = transitionAgentFSM(first.state, {
+        type: "ws.message",
+        message: actionRequestWithId(SESSION, "req-2"),
+      });
+      // NOT dropped — a new decision effect keyed on the new request_id.
+      expect(superseding.effects).toEqual([
+        expect.objectContaining({ type: "request_decision", matchId: SESSION, requestId: "req-2" }),
+      ]);
+      expect(superseding.state.lastRequestIds?.[SESSION]).toBe("req-2");
+    });
+
+    it(`refuses a NEW game_start beyond MAX_CONCURRENT_MATCHES (${MAX_CONCURRENT_MATCHES})`, () => {
+      const activeMatches: Record<string, { sessionId: string; game: string; startedAt: number }> = {};
+      for (let i = 0; i < MAX_CONCURRENT_MATCHES; i++) {
+        activeMatches[`session-${i}`] = { sessionId: `session-${i}`, game: "coup", startedAt: i };
+      }
+      const full = initial({ phase: "in_match", activeMatches });
+      const out = transitionAgentFSM(full, {
+        type: "ws.message",
+        message: gameStart("session-overflow"),
+        now: 99,
+      });
+      expect(out.state.activeMatches?.["session-overflow"]).toBeUndefined();
+      expect(notifyEffect(out.effects)).toMatchObject({ level: "warning", code: "fsm.match_admission_refused" });
+    });
+
+    it("still re-admits an already-active match's game_start at the cap (idempotent)", () => {
+      const activeMatches: Record<string, { sessionId: string; game: string; startedAt: number }> = {};
+      for (let i = 0; i < MAX_CONCURRENT_MATCHES; i++) {
+        activeMatches[`session-${i}`] = { sessionId: `session-${i}`, game: "coup", startedAt: i };
+      }
+      const full = initial({ phase: "in_match", activeMatches });
+      const out = transitionAgentFSM(full, {
+        type: "ws.message",
+        message: gameStart("session-0"), // already admitted → not a NEW admission
+        now: 99,
+      });
+      expect(out.effects.some((e) => e.type === "notify" && e.code === "fsm.match_admission_refused")).toBe(false);
+      expect(out.state.phase).toBe("in_match");
+      expect(out.state.activeMatches?.["session-0"]).toBeDefined();
+    });
+
+    it("forgets a match's last request_id on game_over (bounded map)", () => {
+      const decided = transitionAgentFSM(inMatch(), {
+        type: "ws.message",
+        message: actionRequestWithId(SESSION, "req-1"),
+      });
+      expect(decided.state.lastRequestIds?.[SESSION]).toBe("req-1");
+      const over = transitionAgentFSM(decided.state, { type: "ws.message", message: gameOver(SESSION) });
+      expect(over.state.lastRequestIds?.[SESSION]).toBeUndefined();
+    });
   });
 });

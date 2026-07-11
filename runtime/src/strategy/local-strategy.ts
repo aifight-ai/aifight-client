@@ -4,7 +4,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 
 import type { GameType } from "../decision/types";
-import { getRuntimeHome } from "../store/paths";
+import { getRuntimeHome, safePathSegment } from "../store/paths";
 import type { BridgeDecisionStrategy, BridgeDecisionStrategySection } from "../bridge/provider";
 
 const MAX_STRATEGY_FILE_BYTES = 64 * 1024;
@@ -91,11 +91,6 @@ function readStrategySection(
     mtimeMs: Math.trunc(stat.mtimeMs),
     truncated,
   };
-}
-
-function safePathSegment(value: string): string {
-  const safe = value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 128);
-  return safe.length > 0 ? safe : "unknown";
 }
 
 /**

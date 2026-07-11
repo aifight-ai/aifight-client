@@ -93,9 +93,10 @@ export function normalizeRuntimeLocalUrl(raw: string, runtimeType: BridgeRuntime
  * into a client for an arbitrary host. Rules:
  *   - must parse as a URL with no embedded credentials
  *   - hostname must equal the base URL's hostname (no redirect to another host)
- *   - if the base URL is https (production), the ws_url MUST be wss:// — no
- *     plaintext downgrade. Over http (dev / self-hosted loopback) ws:// or
- *     wss:// is allowed.
+ *   - the ws_url MUST be wss:// unless the base host is loopback. Previously a
+ *     plaintext (non-loopback) http base would accept ws:// to that public host,
+ *     leaking the upgrade-header API key over the wire; now only a loopback base
+ *     (dev / self-hosted on this machine) may use ws://.
  */
 export function wsUrlIsValid(rawWsUrl: string, baseUrl: string): boolean {
   let ws: URL;
@@ -108,10 +109,56 @@ export function wsUrlIsValid(rawWsUrl: string, baseUrl: string): boolean {
   }
   if (ws.username !== "" || ws.password !== "") return false;
   if (ws.hostname !== base.hostname) return false;
-  if (base.protocol === "https:") {
-    return ws.protocol === "wss:";
+  if (isLoopbackHost(base.hostname)) {
+    return ws.protocol === "ws:" || ws.protocol === "wss:";
   }
-  return ws.protocol === "ws:" || ws.protocol === "wss:";
+  return ws.protocol === "wss:";
+}
+
+/**
+ * F-05: the platform API key / pairing code is sent to this base URL, so a
+ * plaintext-http or credentialed base would leak it. Require https: for any
+ * real host; permit http: ONLY to a loopback host AND only when the explicit
+ * dev escape hatch AIFIGHT_ALLOW_INSECURE_BASE_URL is set (local platform dev).
+ * Rejects embedded userinfo. Returns the normalized base (origin + path, no
+ * query/fragment, no trailing slash). Throws a clear, actionable error on
+ * anything unsafe. Mirrors the provider-URL gate in profile/config-schema.ts.
+ */
+export function validatePlatformBaseUrl(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`AIFight base URL is not a valid URL: ${JSON.stringify(raw)}`);
+  }
+  if (url.username !== "" || url.password !== "") {
+    throw new Error(
+      "AIFight base URL must not embed credentials (user:pass@host) — the API key is sent in request headers",
+    );
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new Error(`AIFight base URL must use https, got ${url.protocol}//`);
+  }
+  if (url.protocol === "http:") {
+    const loopbackDevAllowed =
+      isLoopbackHost(url.hostname) && isTruthyEnvValue(process.env.AIFIGHT_ALLOW_INSECURE_BASE_URL);
+    if (!loopbackDevAllowed) {
+      throw new Error(
+        `AIFight base URL uses plain http, which would send your API key unencrypted to ${url.hostname}. ` +
+          "Use https://. For local platform development against a loopback host, set " +
+          "AIFIGHT_ALLOW_INSECURE_BASE_URL=1.",
+      );
+    }
+  }
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/+$/, "");
+}
+
+function isTruthyEnvValue(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const v = value.trim().toLowerCase();
+  return v !== "" && v !== "0" && v !== "false" && v !== "no";
 }
 
 export function defaultRuntimeModel(runtimeType: BridgeRuntimeType): string {
@@ -328,6 +375,11 @@ export function readBridgeConfig(): BridgeConfig {
     );
   }
   const config = (anyEncrypted ? decrypted : record) as unknown as BridgeConfig;
+
+  // F-05: reject a hand-edited / downgraded plaintext base on every read — the
+  // API key is sent to this host, so a non-https base outside loopback dev is
+  // unsafe. Throws with an actionable message rather than silently trusting it.
+  validatePlatformBaseUrl(config.baseUrl);
 
   // Lazy migration to the unified file backend, on first read. Two triggers:
   //   - anyPlaintext: a pre-F10 install stored these fields unencrypted.

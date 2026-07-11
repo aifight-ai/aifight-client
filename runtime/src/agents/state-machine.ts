@@ -19,6 +19,7 @@ import type {
 import type { ServerMessageEnvelope } from "../wsclient/frame-handler";
 import type { WSClientMessage, WSWelcome } from "../wsclient/client";
 import type { ReconnectCloseInfo, ReconnectEvent } from "../wsclient/reconnect";
+import { MAX_CONCURRENT_MATCHES } from "./limits";
 
 export type AgentPhase =
   | "connected"
@@ -45,6 +46,14 @@ export interface AgentFSMState {
   readonly activeMatches?: Readonly<Record<string, AgentFSMActiveMatch>>;
   readonly pendingAction?: MsgActionRequest;
   readonly pendingActions?: Readonly<Record<string, MsgActionRequest>>;
+  /**
+   * Most-recently-processed action_request `request_id` per match (R13-F02
+   * idempotency). A repeat delivery of the same request_id while that match
+   * still has a decision in flight is dropped instead of spawning a second
+   * (paid) provider call. A DIFFERENT request_id for the same match is a
+   * genuine supersede and is processed (the agent aborts the stale call).
+   */
+  readonly lastRequestIds?: Readonly<Record<string, string>>;
   readonly lastGameOver?: MsgGameOver;
   readonly lastError?: string;
 }
@@ -98,7 +107,7 @@ export type AgentFSMInput =
 
 export type AgentFSMEffect =
   | { type: "send"; message: WSClientMessage }
-  | { type: "request_decision"; actionRequest: MsgActionRequest; matchId: string; game?: string }
+  | { type: "request_decision"; actionRequest: MsgActionRequest; matchId: string; game?: string; requestId?: string }
   | { type: "fallback_required"; actionRequest: MsgActionRequest; reason: unknown }
   | { type: "record_result"; gameOver: MsgGameOver; game?: string }
   | { type: "notify"; level: "info" | "warning" | "error"; code: string; message: string };
@@ -323,13 +332,28 @@ function matchCancelled(state: AgentFSMState, msg: MsgMatchCancelled): AgentFSMT
 }
 
 function gameStart(state: AgentFSMState, msg: MsgGameStart, now?: number): AgentFSMTransition {
+  const existingMatches = normalizeActiveMatches(state);
+  const alreadyAdmitted = existingMatches[msg.data.match_id] !== undefined;
+  // R13-F02 local admission gate: refuse a NEW match once we already hold
+  // MAX_CONCURRENT_MATCHES. The server's readiness probe is answered with the
+  // same ceiling, so this is a belt-and-suspenders backstop for a race where a
+  // match is started anyway; it never drops turns of an already-admitted match
+  // (that path re-admits below). Refusing here is safer than accepting an
+  // (N+1)th match and spawning unbounded parallel paid decision loops.
+  if (!alreadyAdmitted && Object.keys(existingMatches).length >= MAX_CONCURRENT_MATCHES) {
+    return warn(
+      state,
+      "fsm.match_admission_refused",
+      `Refusing game_start for session ${msg.data.match_id}; already at ${MAX_CONCURRENT_MATCHES} concurrent matches`,
+    );
+  }
   const activeMatch = {
     sessionId: msg.data.match_id,
     game: msg.data.game,
     startedAt: now ?? 0,
   };
   const activeMatches = {
-    ...normalizeActiveMatches(state),
+    ...existingMatches,
     [activeMatch.sessionId]: activeMatch,
   };
   return ok({
@@ -371,10 +395,32 @@ function actionRequest(state: AgentFSMState, msg: MsgActionRequest): AgentFSMTra
       `Ignoring action_request for session ${msg.data.match_id}; no active session with that id`,
     );
   }
+  const matchId = msg.data.match_id;
+  const requestId = typeof msg.data.request_id === "string" ? msg.data.request_id : undefined;
+  const existingPending = normalizePendingActions(state);
+  // R13-F02 idempotency: a repeat delivery of the SAME request_id for a match
+  // that already has a decision in flight must not spawn a second paid provider
+  // call. A different request_id (or no request_id) is a genuine new/superseding
+  // request and is processed — the agent aborts any stale in-flight call.
+  if (
+    requestId !== undefined &&
+    existingPending[matchId] !== undefined &&
+    state.lastRequestIds?.[matchId] === requestId
+  ) {
+    return warn(
+      state,
+      "fsm.duplicate_action_request",
+      `Ignoring duplicate action_request (request_id ${requestId}) for session ${matchId}; a decision is already in flight`,
+    );
+  }
   const pendingActions = {
-    ...normalizePendingActions(state),
-    [msg.data.match_id]: msg,
+    ...existingPending,
+    [matchId]: msg,
   };
+  const lastRequestIds =
+    requestId !== undefined
+      ? { ...(state.lastRequestIds ?? {}), [matchId]: requestId }
+      : state.lastRequestIds;
   return ok(
     {
       ...state,
@@ -383,13 +429,15 @@ function actionRequest(state: AgentFSMState, msg: MsgActionRequest): AgentFSMTra
       activeMatches,
       pendingAction: msg,
       pendingActions,
+      ...(lastRequestIds !== undefined ? { lastRequestIds } : {}),
     },
     [
       {
         type: "request_decision",
         actionRequest: msg,
-        matchId: msg.data.match_id,
+        matchId,
         game: activeMatch.game,
+        ...(requestId !== undefined ? { requestId } : {}),
       },
     ],
   );
@@ -485,6 +533,9 @@ function gameOver(state: AgentFSMState, msg: MsgGameOver): AgentFSMTransition {
   const nextPendingActions = { ...normalizePendingActions(state) };
   delete nextPendingActions[msg.data.session_id];
   const nextPendingAction = selectPendingAction(nextPendingActions);
+  // R13-F02: forget this match's last request_id so the per-agent map cannot
+  // grow without bound across a long-lived agent's many matches.
+  const nextLastRequestIds = pruneRecord(state.lastRequestIds, msg.data.session_id);
   return ok(
     {
       ...state,
@@ -502,6 +553,7 @@ function gameOver(state: AgentFSMState, msg: MsgGameOver): AgentFSMTransition {
       activeMatches: emptyRecordAsUndefined(nextActiveMatches),
       pendingAction: nextPendingAction,
       pendingActions: emptyRecordAsUndefined(nextPendingActions),
+      ...(nextLastRequestIds !== undefined ? { lastRequestIds: nextLastRequestIds } : { lastRequestIds: undefined }),
       lastGameOver: msg,
     },
     [{
@@ -568,6 +620,18 @@ function normalizePendingActions(state: AgentFSMState): Record<string, MsgAction
 
 function emptyRecordAsUndefined<T>(record: Record<string, T>): Readonly<Record<string, T>> | undefined {
   return Object.keys(record).length > 0 ? record : undefined;
+}
+
+/** Return the record without `key`, or undefined when the result is empty (so
+ *  the optional state field is dropped rather than kept as `{}`). */
+function pruneRecord<T>(
+  record: Readonly<Record<string, T>> | undefined,
+  key: string,
+): Readonly<Record<string, T>> | undefined {
+  if (record === undefined || record[key] === undefined) return record;
+  const next = { ...record };
+  delete next[key];
+  return emptyRecordAsUndefined(next);
 }
 
 function selectActiveMatch(

@@ -1,10 +1,12 @@
 # AIFight Protocol (v1.2.0)
 
-This directory is the **single source of truth** for the AIFight wire protocol
-between `aifight` runtime (Node/TS, Go, Rust) and the AIFight server (Go).
+This directory is the **structural source of truth** for the AIFight wire protocol
+between the `aifight` TypeScript runtime/Desktop client and the AIFight Go server.
 
-**Status:** Phase 0 — formalization complete (2026-04-24). All 13 P0 tasks landed plus 18 Codex review findings closed across 4 independent audit rounds. Sign-off recorded in [`docs/plans/m0/SESSION_STATE.md`](../docs/plans/m0/SESSION_STATE.md).
-**Established by:** [Plan §4](../docs/plans/2026-04-23-runtime-first-architecture.md#§4-phase-0--协议形式化2-3-周必须最先完成) (ADR-005, ADR-006)
+**Current status:** protocol `v1.2.0`; schema/spec/transcript tooling remains active.
+The 2026-04 Phase-0 plans and sign-off logs are historical and archived, not
+current implementation instructions. Cross-domain status lives in
+[`docs/CURRENT_STATE.md`](../docs/CURRENT_STATE.md).
 
 ## Authority (v1.1.1 refinement)
 
@@ -64,6 +66,6 @@ protocol/
 - Backend and runtime both declare their supported protocol version on
   connect (`welcome.server_protocol_version`); mismatch triggers clear
   error, not silent failure.
-- Post-runtime-first-launch, protocol changes go through plan §4.4 authority
-  process: record behavior (server), update schema, re-record affected
-  transcripts, regenerate types.
+- Protocol changes must record actual server behavior, update schema, re-record
+  affected transcripts, regenerate types, and pass conformance checks in the
+  same change.

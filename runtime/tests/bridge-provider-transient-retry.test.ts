@@ -131,4 +131,56 @@ describe("bridge provider transient retry (Batch A)", () => {
     expect(fail.errorClass).toBe("token_limit");
     expect(fail.tokenLimit).toBe(true);
   });
+
+  // R13-F06: the loop takes its transient-retry budget from the profile (surfaced
+  // by the provider) instead of the always-2 default. A declared 0 → a single
+  // attempt even on a retryable error — distinct from the default's 3 attempts.
+  it("F-06: honors a provider-declared transientRetryCount of 0 (no retry on a retryable error)", async () => {
+    let calls = 0;
+    const provider: BridgeRuntimeProvider = {
+      name: "declared-zero",
+      transientRetryCount: () => 0,
+      async decide() {
+        calls++;
+        throw new AdapterError("server_error", "anthropic_messages", "HTTP 500");
+      },
+    };
+    const { traces, onTrace } = collectTraces();
+    await buildBridgeDecisionProvider(provider, { onTrace }).decide(makeCtx());
+    expect(calls).toBe(1);
+    expect(finalTrace(traces).source).toBe("fallback");
+  });
+
+  it("F-06: awaits an async provider-declared transientRetryCount", async () => {
+    let calls = 0;
+    const provider: BridgeRuntimeProvider = {
+      name: "declared-async-zero",
+      transientRetryCount: async () => 0,
+      async decide() {
+        calls++;
+        throw new AdapterError("network", "anthropic_messages", "ECONNRESET");
+      },
+    };
+    const { onTrace } = collectTraces();
+    await buildBridgeDecisionProvider(provider, { onTrace }).decide(makeCtx());
+    expect(calls).toBe(1);
+  });
+
+  // R13-F02: the supersede AbortSignal on the decision context reaches the
+  // runtime request, so the direct-LLM provider can bind it to the adapter fetch.
+  it("F-02: forwards the ctx supersede signal into the runtime request", async () => {
+    const controller = new AbortController();
+    const seen: Array<AbortSignal | undefined> = [];
+    const provider: BridgeRuntimeProvider = {
+      name: "signal-capture",
+      async decide(req) {
+        seen.push(req.signal);
+        return '{"action":"call"}';
+      },
+    };
+    const ctx = makeCtx();
+    (ctx as { signal?: AbortSignal }).signal = controller.signal;
+    await buildBridgeDecisionProvider(provider, {}).decide(ctx);
+    expect(seen[0]).toBe(controller.signal);
+  });
 });

@@ -12,6 +12,7 @@ import {
   type BridgeDecisionTrace,
   type BridgeLogEvent,
   type BridgeStatus,
+  type CliOp,
   type ServerMessage,
   type StrategyScope,
   type ProfileInput,
@@ -62,7 +63,7 @@ const api: AifightBridgeApi = {
   setLaunchAtLogin: (enabled: boolean) => ipcRenderer.invoke(IPC.loginItemSet, enabled),
   focusWindow: () => ipcRenderer.invoke(IPC.focusWindow),
   openConfigDir: () => ipcRenderer.invoke(IPC.openConfigDir),
-  cliRun: (args: string[]) => ipcRenderer.invoke(IPC.cliRun, args),
+  runCli: (op: CliOp) => ipcRenderer.invoke(IPC.cliOp, op),
   readStrategy: () => ipcRenderer.invoke(IPC.strategyRead),
   writeStrategy: (scope: StrategyScope, content: string) => ipcRenderer.invoke(IPC.strategyWrite, scope, content),
   getLLMConfig: () => ipcRenderer.invoke(IPC.configGet),
@@ -81,6 +82,8 @@ const api: AifightBridgeApi = {
   getUsageOverview: () => ipcRenderer.invoke(IPC.usageGet),
   checkForUpdates: () => ipcRenderer.invoke(IPC.updateCheck),
   installUpdate: () => ipcRenderer.invoke(IPC.updateInstall),
+  getAutoUpdate: () => ipcRenderer.invoke(IPC.getAutoUpdate),
+  setAutoUpdate: (enabled: boolean) => ipcRenderer.invoke(IPC.setAutoUpdate, enabled),
   onUpdateStatus: (listener) => subscribe<UpdateStatus>(IPC.updateStatus, listener),
 };
 

@@ -4,7 +4,7 @@ import { Swords, MonitorPlay, Trophy, CalendarDays, Cpu, ScrollText, History, Se
 
 import { useTheme, type ThemeMode } from "./theme";
 import { getLangPref, setLangPref, type LangPref } from "./i18n";
-import { getLaunchAtLogin, setLaunchAtLogin, openConfigDir, openDashboard, cliRun, bridgeStart, removeLocalIdentity, resultText, useBridgeStatus } from "./useBridge";
+import { getLaunchAtLogin, setLaunchAtLogin, getAutoUpdate, setAutoUpdate, openConfigDir, openDashboard, runCli, bridgeStart, removeLocalIdentity, resultText, useBridgeStatus } from "./useBridge";
 import { localizeServerError } from "./errors";
 import { webOrigin } from "./webOrigin";
 import { useLiveStore } from "./liveStore";
@@ -279,7 +279,7 @@ function DeviceMismatchTakeover({ onDismiss }: { onDismiss: () => void }) {
     setError(null);
     // --replace-local-identity is required: this device already has (rejected)
     // local credentials, so a bare `connect` would refuse to spend the one-time code.
-    const r = await cliRun(["connect", c, "--replace-local-identity", "--json"]);
+    const r = await runCli({ kind: "connect", code: c, replaceLocalIdentity: true });
     if (r.exitCode === 0) {
       // The one-time code was spent and the identity re-bound — the mismatch is
       // resolved. Bring it online, then leave the takeover unconditionally: if the
@@ -312,7 +312,7 @@ function DeviceMismatchTakeover({ onDismiss }: { onDismiss: () => void }) {
     if (!window.confirm(t("play.status.newAgentConfirm"))) return;
     setBusy("new");
     setError(null);
-    const r = await cliRun(["setup", "--json", "--replace-local-identity"]);
+    const r = await runCli({ kind: "setup", replaceLocalIdentity: true });
     if (r.exitCode === 0) {
       // Fresh identity registered here — the mismatch no longer applies. Same as
       // takeOver: leave the takeover even if the follow-up start is transiently down.
@@ -574,7 +574,7 @@ function BridgeErrorBanner() {
     if (!window.confirm(t("play.status.newAgentConfirm"))) return;
     setReRegistering(true);
     try {
-      const r = await cliRun(["setup", "--json", "--replace-local-identity"]);
+      const r = await runCli({ kind: "setup", replaceLocalIdentity: true });
       if (r.exitCode === 0) {
         await window.aifight?.start();
       } else {
@@ -699,6 +699,8 @@ function SettingsView() {
   const origin = webOrigin(status?.config?.baseUrl);
   const [langPref, setLangPrefState] = useState<LangPref>(() => getLangPref());
   const [launchAtLogin, setLaunchAtLoginState] = useState(false);
+  // Automatic updates — default OFF (fail-closed); the user opts in here.
+  const [autoUpdate, setAutoUpdateState] = useState(false);
   const [notify, setNotify] = useState<boolean>(() => notificationsEnabled());
   // Auto self-review mode (off | all | losses_only) — read/written via the same
   // `aifight config review` the CLI uses, so app and CLI stay in sync.
@@ -706,10 +708,11 @@ function SettingsView() {
 
   useEffect(() => {
     void getLaunchAtLogin().then(setLaunchAtLoginState);
+    void getAutoUpdate().then(setAutoUpdateState);
   }, []);
 
   useEffect(() => {
-    void cliRun(["config", "review", "--json"]).then((r) => {
+    void runCli({ kind: "configReviewGet" }).then((r) => {
       if (r.exitCode !== 0) return;
       const mode = (r.json as { selfReview?: { autoMode?: string } } | undefined)?.selfReview?.autoMode;
       if (mode === "off" || mode === "all" || mode === "losses_only") setSelfReviewMode(mode);
@@ -727,6 +730,12 @@ function SettingsView() {
     void setLaunchAtLogin(enabled);
   };
 
+  const onAutoUpdate = (v: "on" | "off") => {
+    const enabled = v === "on";
+    setAutoUpdateState(enabled);
+    void setAutoUpdate(enabled);
+  };
+
   const onNotify = (v: "on" | "off") => {
     const enabled = v === "on";
     setNotify(enabled);
@@ -739,7 +748,7 @@ function SettingsView() {
 
   const onSelfReview = (mode: SelfReviewMode) => {
     setSelfReviewMode(mode); // optimistic — the CLI write is the source of truth
-    void cliRun(["config", "review", "auto", mode]);
+    void runCli({ kind: "configReviewSet", mode });
   };
 
   return (
@@ -775,6 +784,16 @@ function SettingsView() {
           options={[
             { value: "off", label: t("launchAtLogin.off") },
             { value: "on", label: t("launchAtLogin.on") },
+          ]}
+        />
+      </SettingRow>
+      <SettingRow title={t("autoUpdate.label")} hint={t("autoUpdate.hint")}>
+        <Segmented
+          value={autoUpdate ? "on" : "off"}
+          onChange={onAutoUpdate}
+          options={[
+            { value: "off", label: t("autoUpdate.off") },
+            { value: "on", label: t("autoUpdate.on") },
           ]}
         />
       </SettingRow>
