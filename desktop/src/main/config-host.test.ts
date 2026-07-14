@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { getConfig, saveProfile, setKey, setActive, setRoute, deleteProfile } from "./config-host";
+import { getConfig, saveProfile, setKey, clearKey, setActive, setRoute, deleteProfile } from "./config-host";
 
 const ORIGINAL_HOME = process.env.AIFIGHT_HOME;
 const tmpDirs: string[] = [];
@@ -139,6 +139,130 @@ describe("config-host: standalone graphical config", () => {
 
     // cannot delete the only profile
     expect((await deleteProfile("default", "claude")).ok).toBe(false);
+  });
+
+  it("R14-F06: clearKey deletes the managed key file and resets the ref", async () => {
+    const home = freshHome();
+    await saveProfile("default", { profileId: "claude", family: "anthropic", model: "claude-opus-4-8", thinkingEnabled: false });
+    await setKey("default", "claude", "sk-ant-clear-me");
+    const keyFile = path.join(home, "agents", "default", "keys", "claude.key");
+    expect(fs.existsSync(keyFile)).toBe(true);
+
+    const r = await clearKey("default", "claude");
+    expect(r.ok).toBe(true);
+    expect(fs.existsSync(keyFile)).toBe(false);
+    const p = (await getConfig()).profiles.find((x) => x.id === "claude")!;
+    expect(p.keyResolvable).toBe(false);
+  });
+
+  it("🔒 R14-F06: clearKey must NOT report success when the key file survives deletion", async () => {
+    const home = freshHome();
+    await saveProfile("default", { profileId: "claude", family: "anthropic", model: "claude-opus-4-8", thinkingEnabled: false });
+    await setKey("default", "claude", "sk-ant-stuck");
+    const keyFile = path.join(home, "agents", "default", "keys", "claude.key");
+    // Make deletion fail deterministically on every platform: replace the key
+    // file with a non-empty directory of the same name (fs.rm without
+    // `recursive` refuses to remove a directory).
+    fs.rmSync(keyFile);
+    fs.mkdirSync(keyFile);
+    fs.writeFileSync(path.join(keyFile, "stuck.txt"), "x");
+
+    const r = await clearKey("default", "claude");
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain(keyFile); // actionable: names the retained path
+    // The ref was cleared FIRST — the app no longer resolves the key even
+    // though the path could not be removed.
+    const p = (await getConfig()).profiles.find((x) => x.id === "claude")!;
+    expect(p.keyResolvable).toBe(false);
+  });
+
+  it("🔒 R14-F06: deleteProfile removes the profile's managed key file (no orphaned raw key)", async () => {
+    const home = freshHome();
+    await saveProfile("default", { profileId: "claude", family: "anthropic", model: "claude-opus-4-8", thinkingEnabled: false });
+    await saveProfile("default", { profileId: "gpt", family: "openai_responses", model: "gpt-5.5", thinkingEnabled: false });
+    await setKey("default", "gpt", "sk-oai-orphan-me");
+    const keyFile = path.join(home, "agents", "default", "keys", "gpt.key");
+    expect(fs.existsSync(keyFile)).toBe(true);
+
+    expect((await deleteProfile("default", "gpt")).ok).toBe(true);
+    expect(fs.existsSync(keyFile)).toBe(false);
+  });
+
+  it("R14-F06: external file refs are unreferenced but never deleted by the GUI", async () => {
+    const home = freshHome();
+    await saveProfile("default", { profileId: "claude", family: "anthropic", model: "claude-opus-4-8", thinkingEnabled: false });
+    await saveProfile("default", { profileId: "ext", family: "anthropic", model: "claude-opus-4-8", thinkingEnabled: false });
+    // Simulate a CLI/hand-edited config pointing at a key file OUTSIDE keys/.
+    const externalKey = path.join(home, "external-secret.key");
+    fs.writeFileSync(externalKey, "sk-ant-external", { mode: 0o600 });
+    const configPath = path.join(home, "agents", "default", "config.json");
+    const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    cfg.profiles.ext.apiKeyRef = { type: "file", path: externalKey };
+    fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2) + "\n");
+
+    expect((await clearKey("default", "ext")).ok).toBe(true);
+    expect(fs.existsSync(externalKey)).toBe(true); // not the GUI's file to delete
+
+    // Re-point and delete the whole profile — still untouched.
+    const cfg2 = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    cfg2.profiles.ext.apiKeyRef = { type: "file", path: externalKey };
+    fs.writeFileSync(configPath, JSON.stringify(cfg2, null, 2) + "\n");
+    expect((await deleteProfile("default", "ext")).ok).toBe(true);
+    expect(fs.existsSync(externalKey)).toBe(true);
+  });
+
+  // R14 coverage gap: config-host had no concurrent-call coverage. The renderer
+  // can fire IPC mutations that interleave at await points in the main process.
+  // writeConfig is atomic per write (tmp + rename), so whole-file last-write-wins
+  // may drop a concurrent update (single-user GUI tolerates that), but the file
+  // must NEVER be left torn, unparseable, invalid, or with a stray .tmp; and the
+  // active/default references must always point at existing profiles.
+  it("survives concurrent mutations: config stays valid, references stay consistent", async () => {
+    const home = freshHome();
+    await saveProfile("default", { profileId: "base", family: "anthropic", model: "claude-opus-4-8", thinkingEnabled: false });
+
+    const ops: Array<Promise<unknown>> = [];
+    for (let i = 0; i < 12; i++) {
+      ops.push(saveProfile("default", { profileId: `p${i}`, family: "anthropic", model: "claude-opus-4-8", thinkingEnabled: false }));
+    }
+    ops.push(setKey("default", "base", "sk-ant-concurrent"));
+    ops.push(setActive("default", "base"));
+    ops.push(setRoute("default", "coup", "base"));
+    await Promise.all(ops);
+
+    const configPath = path.join(home, "agents", "default", "config.json");
+    expect(fs.existsSync(configPath)).toBe(true);
+    const strayTmp = fs.readdirSync(path.dirname(configPath)).filter((f) => f.endsWith(".tmp"));
+    expect(strayTmp).toEqual([]); // no stray temp files
+    // Parseable and structurally sound (a torn write would fail here).
+    const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    expect(typeof cfg.profiles).toBe("object");
+    expect(Object.keys(cfg.profiles).length).toBeGreaterThan(0);
+    // References always resolve to a real profile.
+    expect(cfg.profiles[cfg.activeProfile]).toBeDefined();
+    expect(cfg.profiles[cfg.routing.default]).toBeDefined();
+    // And the view layer accepts it end-to-end.
+    const v = await getConfig();
+    expect(v.configured).toBe(true);
+    expect(v.profiles.length).toBe(Object.keys(cfg.profiles).length);
+  });
+
+  it("survives a concurrent delete + save on the same config", async () => {
+    freshHome();
+    await saveProfile("default", { profileId: "keep", family: "anthropic", model: "claude-opus-4-8", thinkingEnabled: false });
+    await saveProfile("default", { profileId: "victim", family: "anthropic", model: "claude-opus-4-8", thinkingEnabled: false });
+    await setKey("default", "victim", "sk-ant-victim");
+
+    await Promise.all([
+      deleteProfile("default", "victim"),
+      saveProfile("default", { profileId: "newcomer", family: "openai_responses", model: "gpt-5.5", thinkingEnabled: false }),
+    ]);
+
+    const v = await getConfig();
+    expect(v.configured).toBe(true);
+    // Whichever write won, the surviving config must be internally consistent.
+    expect(v.profiles.some((p) => p.id === v.activeProfile)).toBe(true);
+    expect(v.profiles.length).toBeGreaterThan(0);
   });
 
   it("rejects bad input", async () => {

@@ -1157,6 +1157,11 @@ const zh = {
 // browser DOM (the renderer also runs under `vite dev` and is pulled into node
 // unit tests via errors.ts → i18n) — same defensive pattern as PlayView.
 function resolveAuto(): Lang {
+  // In vitest (node, no window) always default to English so renderer tests
+  // that assert English strings pass regardless of the OS locale. Node 24
+  // exposes navigator.language from ICU/system locale — on zh-CN machines
+  // this silently flips the test language to Chinese.
+  if (typeof window === "undefined") return "en";
   const sys = (typeof navigator !== "undefined" ? navigator.language : "en").toLowerCase();
   return sys.startsWith("zh") ? "zh" : "en";
 }

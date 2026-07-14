@@ -344,6 +344,134 @@ describe("createReconnectingWSClient — close-code dispatch (Roy 拍板 #5)", (
     expect(closed?.kind).toBe("fatal-error");
   });
 
+  // R13-F08: a rotated credential (re-pair rewrote the bridge config while this
+  // process kept running) must be picked up by the reconnect loop — the old
+  // behavior replayed the constructor-cached key forever until a restart.
+  test("case 5d (R13-F08): 401 on reconnect + rotated key → next attempt uses the NEW key, backoff restarts", async () => {
+    const h1 = makeFakeInner();
+    const h2 = makeFakeInner();
+    mockedCreate.mockResolvedValueOnce(h1.inner as any); // attempt 1: connect
+    mockedCreate.mockRejectedValueOnce(
+      new WSHandshakeError(401, "Unauthorized", "key revoked"),
+    ); // attempt 2: 401 with the old key
+    mockedCreate.mockResolvedValueOnce(h2.inner as any); // attempt 3: new key works
+
+    const refreshApiKey = vi.fn().mockResolvedValue("rotated-key");
+    const facade = await createReconnectingWSClient({
+      ...baseOpts,
+      jitter: "none",
+      refreshApiKey,
+    });
+    expect(facade.state).toBe("connected");
+    expect(mockedCreate.mock.calls[0]![0].apiKey).toBe("test-key");
+
+    h1.simulateServerClose(1006);
+    await vi.advanceTimersByTimeAsync(1000); // #failures=1 → 1s → attempt 2 (401)
+    await flushMicrotasks();
+    expect(mockedCreate).toHaveBeenCalledTimes(2);
+    expect(refreshApiKey).toHaveBeenCalledTimes(1);
+
+    // Key changed → backoff curve restarts (1s, NOT the 2s an auth-class 2nd
+    // failure would get) and the next attempt handshakes with the new key.
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushMicrotasks();
+    expect(facade.state).toBe("connected");
+    expect(mockedCreate).toHaveBeenCalledTimes(3);
+    expect(mockedCreate.mock.calls[2]![0].apiKey).toBe("rotated-key");
+  });
+
+  test("case 5e (R13-F08): 401 on reconnect + unchanged key → keeps retrying old key on the auth backoff curve", async () => {
+    const h1 = makeFakeInner();
+    const h2 = makeFakeInner();
+    mockedCreate.mockResolvedValueOnce(h1.inner as any);
+    mockedCreate.mockRejectedValueOnce(
+      new WSHandshakeError(401, "Unauthorized", "server auth cold"),
+    );
+    mockedCreate.mockResolvedValueOnce(h2.inner as any);
+
+    const refreshApiKey = vi.fn().mockResolvedValue("test-key"); // same key
+    const facade = await createReconnectingWSClient({
+      ...baseOpts,
+      jitter: "none",
+      refreshApiKey,
+    });
+
+    h1.simulateServerClose(1006);
+    await vi.advanceTimersByTimeAsync(1000); // attempt 2 → 401
+    await flushMicrotasks();
+    expect(refreshApiKey).toHaveBeenCalledTimes(1);
+
+    // Unchanged key: #failures stays 2 → 2s backoff, not 1s.
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushMicrotasks();
+    expect(mockedCreate).toHaveBeenCalledTimes(2); // not yet
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushMicrotasks();
+    expect(mockedCreate).toHaveBeenCalledTimes(3);
+    expect(mockedCreate.mock.calls[2]![0].apiKey).toBe("test-key");
+    expect(facade.state).toBe("connected");
+  });
+
+  test("case 5f (R13-F08): refreshApiKey throwing is swallowed — loop keeps the cached key and survives", async () => {
+    const h1 = makeFakeInner();
+    const h2 = makeFakeInner();
+    mockedCreate.mockResolvedValueOnce(h1.inner as any);
+    mockedCreate.mockRejectedValueOnce(
+      new WSHandshakeError(401, "Unauthorized", "blip"),
+    );
+    mockedCreate.mockResolvedValueOnce(h2.inner as any);
+
+    const refreshApiKey = vi.fn().mockRejectedValue(new Error("config unreadable"));
+    const facade = await createReconnectingWSClient({
+      ...baseOpts,
+      jitter: "none",
+      refreshApiKey,
+    });
+
+    h1.simulateServerClose(1006);
+    await vi.advanceTimersByTimeAsync(1000); // attempt 2 → 401
+    await flushMicrotasks();
+    expect(facade.state).not.toBe("closed");
+
+    await vi.advanceTimersByTimeAsync(2000); // auth curve: 2s
+    await flushMicrotasks();
+    expect(facade.state).toBe("connected");
+    expect(mockedCreate.mock.calls[2]![0].apiKey).toBe("test-key");
+  });
+
+  test("case 5g (R13-F08): refreshApiKey is NOT consulted for non-auth failures or first-connect 401", async () => {
+    // Non-auth reconnect failure: refresh must not fire.
+    const h1 = makeFakeInner();
+    const h2 = makeFakeInner();
+    mockedCreate.mockResolvedValueOnce(h1.inner as any);
+    mockedCreate.mockRejectedValueOnce(new WSConnectError("DNS failed"));
+    mockedCreate.mockResolvedValueOnce(h2.inner as any);
+
+    const refreshApiKey = vi.fn().mockResolvedValue("rotated-key");
+    const facade = await createReconnectingWSClient({
+      ...baseOpts,
+      jitter: "none",
+      refreshApiKey,
+    });
+    h1.simulateServerClose(1006);
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    expect(facade.state).toBe("connected");
+    expect(refreshApiKey).not.toHaveBeenCalled();
+
+    // First-connect 401 stays terminal and never consults refresh.
+    mockedCreate.mockRejectedValueOnce(
+      new WSHandshakeError(401, "Unauthorized", "bad first credential"),
+    );
+    const refresh2 = vi.fn().mockResolvedValue("rotated-key");
+    await expect(
+      createReconnectingWSClient({ ...baseOpts, refreshApiKey: refresh2 }),
+    ).rejects.toMatchObject({ name: "ReconnectStoppedError", kind: "fatal-error" });
+    expect(refresh2).not.toHaveBeenCalled();
+  });
+
   test("case 6: fatal close 1000 → onClose fires with kind=fatal-close, code=1000", async () => {
     const { inner, simulateServerClose } = makeFakeInner();
     mockedCreate.mockResolvedValueOnce(inner as any);

@@ -14,6 +14,7 @@
 // strategy-host.ts (strategy/global.md + strategy/games/<game>.md). This host
 // owns only config.json (model routing + provider key refs).
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -112,6 +113,46 @@ function safeSegment(value: string): string {
   return safe.length > 0 ? safe : "profile";
 }
 
+/** The only directory the GUI itself writes key files into (setKey). */
+function managedKeyDir(slug: string): string {
+  return path.join(resolveAgentDir(slug), KEY_DIRNAME);
+}
+
+/**
+ * R14-F06: a key ref is "managed" iff it is a file ref pointing inside this
+ * agent's keys/ dir — i.e. a file the GUI itself created. Only managed files may
+ * be deleted from the GUI; external file refs a user wired up by hand (CLI,
+ * hand-edited config) are never rm'd, only unreferenced.
+ */
+function managedKeyPathOf(slug: string, ref: unknown): string | null {
+  if (ref === null || typeof ref !== "object") return null;
+  const r = ref as { type?: unknown; path?: unknown };
+  if (r.type !== "file" || typeof r.path !== "string") return null;
+  const resolved = path.resolve(r.path);
+  const dir = path.resolve(managedKeyDir(slug));
+  return resolved !== dir && resolved.startsWith(dir + path.sep) ? resolved : null;
+}
+
+/**
+ * R14-F06: delete a managed key file and VERIFY it is gone. Returns null on
+ * verified deletion, else an actionable description (the raw key is still on
+ * disk — the caller must not report success).
+ */
+async function removeManagedKeyFile(keyPath: string): Promise<string | null> {
+  try {
+    await fs.rm(keyPath, { force: true });
+  } catch (cause) {
+    return `the key file could not be deleted and still exists at ${keyPath} (${describeError(cause)})`;
+  }
+  try {
+    await fs.stat(keyPath);
+    return `the key file still exists at ${keyPath} after deletion`;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+    return `could not verify deletion of the key file at ${keyPath} (${describeError(cause)})`;
+  }
+}
+
 async function readConfigOptional(slug: string): Promise<LLMConfig | null> {
   const configPath = path.join(resolveAgentDir(slug), "config.json");
   let raw: string;
@@ -136,9 +177,18 @@ async function writeConfig(slug: string, config: LLMConfig): Promise<void> {
   await ensureAgentDir(slug);
   const dir = resolveAgentDir(slug);
   const configPath = path.join(dir, "config.json");
-  const tmp = `${configPath}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(config, null, 2) + "\n", "utf8");
-  await fs.rename(tmp, configPath);
+  // Unique temp name per write: IPC mutations can interleave at await points,
+  // and two writers sharing one fixed ".tmp" can rename a torn file into place
+  // (caught by the concurrency test). With unique temps, whichever rename lands
+  // last wins wholesale — the visible file is always one complete write.
+  const tmp = `${configPath}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify(config, null, 2) + "\n", "utf8");
+    await fs.rename(tmp, configPath);
+  } catch (cause) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw cause;
+  }
   // config.json is the only profile file. The GUI-only flow is fully playable
   // with just this — strategy is optional Markdown (strategy-host.ts), scaffolded
   // for new agents by `aifight setup`, and the runtime skips it when absent.
@@ -297,9 +347,12 @@ export async function setKey(slug: string, profileId: unknown, rawKey: unknown):
   }
 }
 
-/** Remove a profile's pasted API key: delete the 0600 key file (best-effort) and
- *  reset the ref to the unset placeholder, so getConfig reports the key as missing.
- *  Lets the user drop a stale/leaked key from the GUI without editing files. */
+/** Remove a profile's pasted API key. R14-F06 hardening: the config is updated
+ *  FIRST (atomic write — the app stops resolving the key even if the file rm
+ *  below fails), then the managed 0600 key file is deleted and verified gone;
+ *  a failed deletion returns an error naming the retained path instead of fake
+ *  success. External file refs (not created by the GUI) are unreferenced but
+ *  never deleted. */
 export async function clearKey(slug: string, profileId: unknown): Promise<ConfigMutResult> {
   if (typeof profileId !== "string" || profileId.trim() === "") return { ok: false, error: "profile id is required" };
   try {
@@ -307,12 +360,15 @@ export async function clearKey(slug: string, profileId: unknown): Promise<Config
     if (config === null || config.profiles[profileId] === undefined) {
       return { ok: false, error: `profile not found: ${profileId}` };
     }
-    const ref = config.profiles[profileId].apiKeyRef;
-    if (ref?.type === "file" && typeof ref.path === "string") {
-      await fs.rm(ref.path, { force: true }).catch(() => {});
-    }
+    const managedPath = managedKeyPathOf(slug, config.profiles[profileId].apiKeyRef);
     config.profiles[profileId] = { ...config.profiles[profileId], apiKeyRef: { type: "env", name: "UNSET_API_KEY" } };
     await writeConfig(slug, config);
+    if (managedPath !== null) {
+      const failure = await removeManagedKeyFile(managedPath);
+      if (failure !== null) {
+        return { ok: false, error: `key reference removed, but ${failure} — delete the file manually` };
+      }
+    }
     return { ok: true };
   } catch (cause) {
     return { ok: false, error: describeError(cause) };
@@ -360,6 +416,9 @@ export async function deleteProfile(slug: string, profileId: unknown): Promise<C
     if (config === null || config.profiles[profileId] === undefined) {
       return { ok: false, error: `profile not found: ${profileId}` };
     }
+    // R14-F06: deleting a profile must not orphan its pasted key on disk.
+    // Capture the managed key path before the profile row disappears.
+    const managedPath = managedKeyPathOf(slug, config.profiles[profileId].apiKeyRef);
     delete config.profiles[profileId];
     const remaining = Object.keys(config.profiles);
     if (remaining.length === 0) return { ok: false, error: "cannot delete the only profile" };
@@ -373,6 +432,12 @@ export async function deleteProfile(slug: string, profileId: unknown): Promise<C
       config.routing.byGame = byGame;
     }
     await writeConfig(slug, config);
+    if (managedPath !== null) {
+      const failure = await removeManagedKeyFile(managedPath);
+      if (failure !== null) {
+        return { ok: false, error: `profile deleted, but ${failure} — delete the file manually` };
+      }
+    }
     return { ok: true };
   } catch (cause) {
     return { ok: false, error: describeError(cause) };

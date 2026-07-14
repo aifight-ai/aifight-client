@@ -179,7 +179,10 @@ async function writeProfile(slug: string, profileId: string, profile: LLMProfile
   config.profiles = { ...config.profiles, [profileId]: profile };
   config.activeProfile = profileId;
   config.routing = { ...config.routing, default: profileId };
-  await fs.writeFile(file, JSON.stringify(config, null, 2) + "\n", "utf8");
+  await fs.writeFile(file, JSON.stringify(config, null, 2) + "\n", {
+    encoding: "utf8",
+    mode: 0o600,
+  });
 }
 
 /**
@@ -216,7 +219,7 @@ async function pruneUnresolvableProfiles(slug: string): Promise<void> {
     await fs.writeFile(
       path.join(resolveAgentDir(slug), "config.json"),
       JSON.stringify(config, null, 2) + "\n",
-      "utf8",
+      { encoding: "utf8", mode: 0o600 },
     );
   } catch {
     // best-effort cleanup; never fail onboarding over a tidy-up write

@@ -107,6 +107,15 @@ export interface ReconnectingWSClientOptions {
   welcomeTimeoutMs?: number;
   pingIntervalMs?: number;
   signal?: AbortSignal;
+  /** R13-F08: called after a reconnect attempt failed with a 401 handshake, so
+   *  a credential rotated out from under this process (e.g. re-pairing rewrote
+   *  the bridge config while it kept running) is picked up without a restart.
+   *  Returning a non-empty key different from the one in use swaps the
+   *  credential and restarts the backoff curve (fresh credential = fresh
+   *  cycle, so the next attempt comes quickly). Errors and empty/null returns
+   *  keep the cached key. Never called on first-connect 401 (still terminal)
+   *  or for non-auth failures. */
+  refreshApiKey?: () => Promise<string | null | undefined> | string | null | undefined;
 }
 
 export interface ReconnectEvent {
@@ -236,6 +245,9 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
   welcome: WSWelcome | null = null;
 
   readonly #opts: ReconnectingWSClientOptions;
+  /** Credential used for the next connect attempt. Starts as opts.apiKey and
+   *  may be swapped by refreshApiKey after a 401 reconnect failure (R13-F08). */
+  #apiKey: string;
   #inner: WSClient | null = null;
   readonly #messageHandlers = new Set<WSMessageHandler>();
   readonly #errorHandlers = new Set<WSErrorHandler>();
@@ -259,6 +271,7 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
 
   constructor(opts: ReconnectingWSClientOptions) {
     this.#opts = opts;
+    this.#apiKey = opts.apiKey;
   }
 
   send(msg: WSClientMessage): void {
@@ -362,7 +375,7 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
       try {
         const inner = await createWSClient({
           url: this.#opts.url,
-          apiKey: this.#opts.apiKey,
+          apiKey: this.#apiKey,
           deviceId: this.#opts.deviceId,
           expectedProtocolVersion: this.#opts.expectedProtocolVersion,
           welcomeTimeoutMs: this.#opts.welcomeTimeoutMs,
@@ -446,6 +459,29 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
         // Transient connect failure — count it (rev 5 lock).
         this.#failures++;
         this.state = "backoff";
+      }
+
+      // R13-F08: a 401 on reconnect may mean the credential was rotated out
+      // from under this process (re-pair / key rotation rewrote the bridge
+      // config). Ask the caller for the current key; a changed key restarts
+      // the backoff curve and the next attempt handshakes with it. The
+      // never-give-up semantics (2026-06-28 owner directive) are unchanged —
+      // this only lets the loop self-heal onto a new credential instead of
+      // replaying a revoked one forever.
+      if (
+        this.#opts.refreshApiKey !== undefined &&
+        lastErr instanceof WSHandshakeError &&
+        lastErr.statusCode === 401
+      ) {
+        try {
+          const fresh = await this.#opts.refreshApiKey();
+          if (typeof fresh === "string" && fresh !== "" && fresh !== this.#apiKey) {
+            this.#apiKey = fresh;
+            this.#failures = 0; // fresh credential → fresh backoff cycle
+          }
+        } catch {
+          // Keep the cached key — refresh must never break the reconnect loop.
+        }
       }
 
       // ─── Backoff stage ───

@@ -1,7 +1,7 @@
 {
   "name": "aifight-desktop",
   "private": true,
-  "version": "0.1.0-beta.15",
+  "version": "0.1.0-beta.16",
   "description": "AIFight desktop — a GUI over the AIFight bridge with live, full-information game rendering.",
   "author": "AIFight",
   "type": "module",
@@ -25,7 +25,7 @@
     "@napi-rs/keyring": "1.2.0",
     "better-sqlite3": "12.9.0",
     "electron-updater": "^6.8.3",
-    "ws": "8.20.0"
+    "ws": "8.21.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.0",

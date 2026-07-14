@@ -38,7 +38,7 @@ async function writeIfAbsent(
     await fs.access(filePath);
     return "exists";
   } catch {
-    await fs.writeFile(filePath, content, "utf8");
+    await fs.writeFile(filePath, content, { encoding: "utf8", mode: 0o600 });
     return "created";
   }
 }

@@ -12,7 +12,7 @@ import {
   type LocalMatchSessionStore,
 } from "../session/local-match-session-store";
 import type { AgentDecisionProvider } from "../agents/agent";
-import type { BridgeConfig } from "./config";
+import { readBridgeConfig, type BridgeConfig } from "./config";
 import {
   buildBridgeDecisionProvider,
   createMockRuntimeProvider,
@@ -98,6 +98,8 @@ function isDeviceMismatchError(err: unknown): boolean {
 export class BridgeRunner {
   readonly #opts: BridgeRunnerOptions;
   #agent: AgentInstance | null = null;
+  /** R13-F08: last credential observed on disk — logs rotation exactly once. */
+  #lastKnownApiKey: string;
   #manualSeries: {
     readonly game: "texas_holdem" | "liars_dice" | "coup";
     readonly mode?: string;
@@ -106,6 +108,7 @@ export class BridgeRunner {
 
   constructor(opts: BridgeRunnerOptions) {
     this.#opts = opts;
+    this.#lastKnownApiKey = opts.config.apiKey;
   }
 
   async start(): Promise<AgentInstanceSnapshot> {
@@ -118,6 +121,9 @@ export class BridgeRunner {
       apiKey: this.#opts.config.apiKey,
       deviceId: getDeviceId(),
       expectedProtocolVersion: PROTOCOL_VERSION,
+      // R13-F08: after a 401 on reconnect, re-read the bridge config so a
+      // credential rotated by re-pairing is picked up without a restart.
+      refreshApiKey: () => this.#refreshApiKey(),
     };
 
     const agent = new AgentInstance({
@@ -286,6 +292,28 @@ export class BridgeRunner {
 
   #log(level: BridgeRunnerLogEvent["level"], code: string, message: string): void {
     this.#opts.onLog?.({ level, code, message });
+  }
+
+  /** R13-F08: re-read the bridge config after a 401 reconnect failure so a
+   *  rotated credential is picked up without a restart. Returns the current
+   *  key (null when the config is unreadable — keeps the cached key). Logs
+   *  only on an actual change, and never logs key material. */
+  #refreshApiKey(): string | null {
+    try {
+      const fresh = readBridgeConfig().apiKey;
+      if (typeof fresh !== "string" || fresh === "") return null;
+      if (fresh !== this.#lastKnownApiKey) {
+        this.#lastKnownApiKey = fresh;
+        this.#log(
+          "info",
+          "bridge.credential_rotated",
+          "Bridge credential changed on disk after an authentication failure — reconnecting with the new credential.",
+        );
+      }
+      return fresh;
+    } catch {
+      return null;
+    }
   }
 
   #createSessionStore(): LocalMatchSessionStore | null {

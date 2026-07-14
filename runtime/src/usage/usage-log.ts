@@ -69,9 +69,11 @@ export function appendUsageRecord(record: UsageRecord): void {
 
 /**
  * Read records covering the window [since, now]. Reads only the month files
- * the window can touch. Malformed lines are skipped.
+ * the window can touch. Malformed lines are skipped and counted; a single
+ * stderr warning reports the count so silent undercounting is visible.
  */
 export function readUsageRecordsSince(since: Date, now: Date = new Date()): UsageRecord[] {
+  let malformed = 0;
   const months = new Set<string>();
   const cursor = new Date(Date.UTC(since.getUTCFullYear(), since.getUTCMonth(), 1));
   while (cursor.getTime() <= now.getTime()) {
@@ -96,9 +98,14 @@ export function readUsageRecordsSince(since: Date, now: Date = new Date()): Usag
         if (Number.isNaN(t) || t < since.getTime() || t > now.getTime()) continue;
         records.push(parsed);
       } catch {
-        // skip malformed line
+        malformed += 1;
       }
     }
+  }
+  if (malformed > 0) {
+    console.error(
+      `[usage] skipped ${malformed} malformed usage-log line${malformed === 1 ? "" : "s"}; totals may undercount`,
+    );
   }
   return records;
 }
