@@ -16,6 +16,12 @@ const USAGE = [
  *  desktop dashboard's CAP_CONFIRM_THRESHOLD; change both together. */
 export const DAILY_CAP_CONFIRM_THRESHOLD = 10;
 
+/** The setup wizard's custom-entry ceiling. Mirrors the desktop dashboard's
+ *  CAP_MAX (PlayView.tsx); change both together. This is the client-side
+ *  first-run cap — the server ceiling (agent_daily_ranked_cap, admin-tunable)
+ *  is the real hard limit and clamps anything higher on the PATCH. */
+export const SETUP_WIZARD_CAP_MAX = 100;
+
 export function dailyCapNeedsConfirm(limit: number): boolean {
   return limit > DAILY_CAP_CONFIRM_THRESHOLD;
 }
@@ -83,7 +89,7 @@ async function setDaily(raw: string, args: HandlerArgs, env: HandlerEnv): Promis
 /**
  * The setup wizard's daily-cap question (first-run guidance, mirrors the
  * desktop's SetupGuide). Explains what the cap protects against, defaults to
- * 2 on a bare Enter, validates 0–50, and re-asks after a declined >threshold
+ * 2 on a bare Enter, validates 0–100, and re-asks after a declined >threshold
  * confirmation. Failures to sync are reported but never fail setup — the
  * server-side default (2) still stands, and `aifight set daily <N>` can fix
  * it later.
@@ -108,12 +114,12 @@ export async function onboardDailyCap(env: HandlerEnv): Promise<void> {
       break;
     }
     if (!/^\d+$/.test(raw)) {
-      env.stdout("  Please enter a whole number between 0 and 50.\n");
+      env.stdout(`  Please enter a whole number between 0 and ${SETUP_WIZARD_CAP_MAX}.\n`);
       continue;
     }
     const parsed = Number.parseInt(raw, 10);
-    if (parsed > 50) {
-      env.stdout("  The maximum is 50.\n");
+    if (parsed > SETUP_WIZARD_CAP_MAX) {
+      env.stdout(`  The maximum is ${SETUP_WIZARD_CAP_MAX}.\n`);
       continue;
     }
     if (dailyCapNeedsConfirm(parsed)) {

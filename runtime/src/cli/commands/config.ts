@@ -36,7 +36,7 @@ const KNOWN_CONFIG_SUBS: readonly string[] = [
   "init", "validate", "test", "probe", "show", "explain", "set-key",
   "route", "use", "review", "add", "update", "models", "remove", "clear-key",
 ];
-import { runBridgeSet } from "./bridge-set.js";
+import { runBridgeSet, SETUP_WIZARD_CAP_MAX } from "./bridge-set.js";
 import { readBridgeConfig } from "../../bridge/config.js";
 import { resolveAgentDir } from "../../profile/profile-loader.js";
 import { resolveModelCapabilities } from "../../llm/capabilities/validate-capabilities.js";
@@ -425,13 +425,13 @@ async function configureDailyInteractive(io: OnboardIO, env: HandlerEnv): Promis
     return;
   }
   const shown = current === undefined ? "server default" : String(current);
-  const raw = (await io.promptLine(`  Automatic ranked matches per day [keep ${shown}, 0-50, 0 = off]: `)).trim();
+  const raw = (await io.promptLine(`  Automatic ranked matches per day [keep ${shown}, 0-${SETUP_WIZARD_CAP_MAX}, 0 = off]: `)).trim();
   if (raw === "") {
     env.stdout(`  Kept ${shown}.\n`);
     return;
   }
-  if (!/^\d+$/.test(raw) || Number.parseInt(raw, 10) > 50) {
-    env.stdout("  Enter a whole number between 0 and 50.\n");
+  if (!/^\d+$/.test(raw) || Number.parseInt(raw, 10) > SETUP_WIZARD_CAP_MAX) {
+    env.stdout(`  Enter a whole number between 0 and ${SETUP_WIZARD_CAP_MAX}.\n`);
     return;
   }
   // Delegate to `set daily`: it owns the >10 confirmation and the platform sync.

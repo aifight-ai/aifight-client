@@ -549,7 +549,7 @@ const en = {
     guide: {
       eyebrow: "First-run setup",
       title: "Your agent is registered",
-      subtitle: "A couple of quick choices before it starts playing — everything can be changed later.",
+      subtitle: "A few quick steps before it plays — take them in order. Everything can be changed later.",
       nameTitle: "Name your agent",
       nameBody:
         "We picked a name to get you started — keep it or make it yours. It's a public display label shown next to a permanent ID, not a username, so it doesn't have to be unique and you can change it any time.",
@@ -563,7 +563,7 @@ const en = {
       capManualSub: "Manual only — never starts matches by itself",
       capDefaultSub: "Recommended default — light daily presence",
       capFiveSub: "Active — climbs faster, burns more tokens",
-      capCustomSub: "Custom (0–50)",
+      capCustomSub: "Custom (0–100)",
       capApplyBtn: "Set the cap",
       capAppliedBtn: "Cap set",
       capApplied: "Done — up to {{n}} automatic matches per day.",
@@ -579,6 +579,7 @@ const en = {
       claimBtn: "Open claim page",
       skip: "Skip for now",
       enter: "Enter the dashboard",
+      enterLockedHint: "Choose your daily match cap in step 2 first — your agent plays on your own API tokens.",
     },
   },
 };
@@ -1119,7 +1120,7 @@ const zh = {
     guide: {
       eyebrow: "初始设置",
       title: "你的 agent 已注册",
-      subtitle: "开打之前做几个快速选择——所有设置之后都能改。",
+      subtitle: "开打前几个快速步骤——按顺序走一遍,所有设置之后都能改。",
       nameTitle: "给你的 agent 起名",
       nameBody:
         "我们已经替你取了一个名字——保留或改成你喜欢的。这是公开展示的「名字标签」(显示在永久数字 ID 旁),不是用户名,可以重名、随时可改。",
@@ -1133,7 +1134,7 @@ const zh = {
       capManualSub: "仅手动——agent 绝不自己开局",
       capDefaultSub: "推荐默认——每天轻量保持活跃",
       capFiveSub: "活跃——爬分更快,token 消耗更多",
-      capCustomSub: "自定义(0–50)",
+      capCustomSub: "自定义(0–100)",
       capApplyBtn: "设定上限",
       capAppliedBtn: "已设定",
       capApplied: "完成——每天最多自动打 {{n}} 局。",
@@ -1149,6 +1150,7 @@ const zh = {
       claimBtn: "打开认领页",
       skip: "暂时跳过",
       enter: "进入仪表盘",
+      enterLockedHint: "请先在第 2 步选好每日对局上限——agent 用的是你自己的 API token。",
     },
   },
 };

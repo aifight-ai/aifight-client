@@ -16,7 +16,7 @@ import { useTranslation } from "react-i18next";
 import {
   Inbox, UserPlus, Link2, Loader2, Copy, Check, Swords, Pause, Play, RefreshCw,
   ShieldAlert, ExternalLink, Percent, Gauge, Trophy, Globe, LayoutDashboard, TrendingUp,
-  Coins, History, Zap, Cpu, KeyRound, BadgeCheck, AlertTriangle, Pencil, X, type LucideIcon,
+  Coins, History, Zap, Cpu, AlertTriangle, Pencil, X, type LucideIcon,
 } from "lucide-react";
 
 import {
@@ -56,6 +56,11 @@ function formatPublicNo(n: number | undefined): string {
  *  confirmation — the cap exists as a token-burn safety, and >10/day can mean
  *  thousands of model calls. Mirrored by the CLI (`aifight set daily`). */
 export const CAP_CONFIRM_THRESHOLD = 10;
+
+/** Highest per-day automatic-match cap the in-app slider lets a user dial in.
+ *  Matches the server's default ceiling (agent_daily_ranked_cap). The server clamps
+ *  to its live ceiling regardless, so this is only the UI bound. */
+export const CAP_MAX = 100;
 
 export function capNeedsConfirm(next: number): boolean {
   return next > CAP_CONFIRM_THRESHOLD;
@@ -469,6 +474,26 @@ function SetupGuide({
     );
   };
 
+  // Numbered step marker: a filled circle with the step number that flips to a
+  // green check once the step is done. Gives the guide an explicit "do these in
+  // order" shape instead of four look-alike cards.
+  const stepBadge = (num: number, done: boolean) => (
+    <div
+      className={
+        "flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[12px] font-semibold tabular-nums " +
+        (done ? "bg-emerald-500 text-white" : "bg-[var(--accent-soft)] text-[var(--accent-text)]")
+      }
+      aria-hidden
+    >
+      {done ? <Check size={13} /> : num}
+    </div>
+  );
+
+  // The daily-cap choice is the load-bearing one — until the user has consciously
+  // applied a cap, the primary "enter" button stays locked so they can't sail past
+  // it and silently inherit the server default.
+  const capChosen = applied !== null;
+
   return (
     <div className="mx-auto max-w-2xl space-y-4">
       <PageHeader eyebrow={t("guide.eyebrow")} title={t("guide.title")} subtitle={t("guide.subtitle")} />
@@ -476,7 +501,7 @@ function SetupGuide({
       {/* Step 1 — name your agent (a nice name is pre-filled; keep or change it) */}
       <div className="app-card px-5 py-4">
         <div className="flex items-start gap-2.5">
-          <Pencil size={16} className="mt-0.5 shrink-0 text-[var(--accent-text)]" />
+          {stepBadge(1, nameApplied)}
           <div className="min-w-0 flex-1">
             <div className="text-[14px] font-medium text-[var(--text)]">{t("guide.nameTitle")}</div>
             <p className="mt-1 text-[12px] leading-relaxed text-[var(--text-muted)]">{t("guide.nameBody")}</p>
@@ -509,7 +534,7 @@ function SetupGuide({
       {/* Step 2 — the daily auto-match cap (the core of the guide) */}
       <div className="app-card px-5 py-4">
         <div className="flex items-start gap-2.5">
-          <Zap size={16} className="mt-0.5 shrink-0 text-[var(--accent-text)]" />
+          {stepBadge(2, capChosen)}
           <div className="min-w-0 flex-1">
             <div className="text-[14px] font-medium text-[var(--text)]">{t("guide.capTitle")}</div>
             <p className="mt-1 text-[12px] leading-relaxed text-[var(--text-muted)]">{t("guide.capBody")}</p>
@@ -544,10 +569,10 @@ function SetupGuide({
                 <input
                   type="number"
                   min={0}
-                  max={50}
+                  max={CAP_MAX}
                   value={cap}
                   onChange={(e) => {
-                    setCap(e.target.value === "" ? 0 : clampInt(Number(e.target.value), 0, 50));
+                    setCap(e.target.value === "" ? 0 : clampInt(Number(e.target.value), 0, CAP_MAX));
                     setConfirming(false);
                     setApplied(null);
                     setError("");
@@ -605,7 +630,7 @@ function SetupGuide({
       {/* Step 2 — connect the LLM key */}
       <div className="app-card flex flex-wrap items-center justify-between gap-3 px-5 py-4">
         <div className="flex min-w-0 items-start gap-2.5">
-          <KeyRound size={16} className="mt-0.5 shrink-0 text-[var(--text-muted)]" />
+          {stepBadge(3, false)}
           <div className="min-w-0">
             <div className="text-[14px] font-medium text-[var(--text)]">{t("guide.llmTitle")}</div>
             <div className="mt-0.5 text-[12px] text-[var(--text-muted)]">{t("guide.llmBody")}</div>
@@ -623,7 +648,7 @@ function SetupGuide({
       {/* Step 3 — claim the agent */}
       <div className="app-card flex flex-wrap items-center justify-between gap-3 px-5 py-4">
         <div className="flex min-w-0 items-start gap-2.5">
-          <BadgeCheck size={16} className="mt-0.5 shrink-0 text-[var(--text-muted)]" />
+          {stepBadge(4, false)}
           <div className="min-w-0">
             <div className="text-[14px] font-medium text-[var(--text)]">{t("guide.claimTitle")}</div>
             <div className="mt-0.5 text-[12px] text-[var(--text-muted)]">{t("guide.claimBody")}</div>
@@ -638,16 +663,26 @@ function SetupGuide({
         </button>
       </div>
 
-      <div className="flex items-center justify-between pt-1">
-        <button onClick={onDone} className="text-[12px] text-[var(--text-faint)] hover:text-[var(--text-muted)]">
-          {t("guide.skip")}
-        </button>
-        <button
-          onClick={onDone}
-          className="flex items-center gap-2 rounded-md bg-[var(--accent)] px-5 py-2.5 text-[13px] font-medium text-white transition-opacity hover:opacity-90"
-        >
-          {t("guide.enter")}
-        </button>
+      <div className="pt-1">
+        {!capChosen && (
+          <div className="mb-2 flex items-center justify-end gap-1.5 text-[11.5px] text-amber-500">
+            <AlertTriangle size={13} className="shrink-0" />
+            {t("guide.enterLockedHint")}
+          </div>
+        )}
+        <div className="flex items-center justify-between">
+          <button onClick={onDone} className="text-[12px] text-[var(--text-faint)] hover:text-[var(--text-muted)]">
+            {t("guide.skip")}
+          </button>
+          <button
+            onClick={onDone}
+            disabled={!capChosen}
+            title={!capChosen ? t("guide.enterLockedHint") : undefined}
+            className="flex items-center gap-2 rounded-md bg-[var(--accent)] px-5 py-2.5 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {t("guide.enter")}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -849,7 +884,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   // re-read it and reconcile our place in the matchmaking pool. >threshold goes
   // through an explicit confirmation step first.
   const applyPolicy = async () => {
-    const d = clampInt(day, 0, 50);
+    const d = clampInt(day, 0, CAP_MAX);
     setDay(d);
     setCapConfirming(false);
     setBusy("policy");
@@ -870,7 +905,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   };
 
   const onApplyPolicyClick = () => {
-    if (capNeedsConfirm(clampInt(day, 0, 50))) setCapConfirming(true);
+    if (capNeedsConfirm(clampInt(day, 0, CAP_MAX))) setCapConfirming(true);
     else void applyPolicy();
   };
 
@@ -1321,10 +1356,10 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                   <input
                     type="number"
                     min={0}
-                    max={50}
+                    max={CAP_MAX}
                     value={day}
                     onChange={(e) => {
-                      setDay(e.target.value === "" ? 0 : clampInt(Number(e.target.value), 0, 50));
+                      setDay(e.target.value === "" ? 0 : clampInt(Number(e.target.value), 0, CAP_MAX));
                       setCapConfirming(false);
                     }}
                     className="w-16 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[13px] tabular-nums text-[var(--text)] outline-none focus:border-[var(--accent)]"
@@ -1342,7 +1377,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                 <div className="flex items-start gap-2">
                   <AlertTriangle size={15} className="mt-0.5 shrink-0 text-amber-500" />
                   <div className="min-w-0 flex-1">
-                    <div className="text-[12.5px] font-medium text-[var(--text)]">{t("guide.capConfirmTitle", { n: clampInt(day, 0, 50) })}</div>
+                    <div className="text-[12.5px] font-medium text-[var(--text)]">{t("guide.capConfirmTitle", { n: clampInt(day, 0, CAP_MAX) })}</div>
                     <div className="mt-0.5 text-[11.5px] leading-relaxed text-[var(--text-muted)]">{t("guide.capConfirmBody")}</div>
                     <div className="mt-2 flex gap-2">
                       <button
@@ -1351,7 +1386,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                         className="flex items-center gap-1.5 rounded-md bg-amber-500 px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-60"
                       >
                         {busy === "policy" && <Loader2 size={12} className="animate-spin" />}
-                        {t("guide.capConfirmBtn", { n: clampInt(day, 0, 50) })}
+                        {t("guide.capConfirmBtn", { n: clampInt(day, 0, CAP_MAX) })}
                       </button>
                       <button
                         onClick={() => setCapConfirming(false)}
