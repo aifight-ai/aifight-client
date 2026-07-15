@@ -16,7 +16,7 @@ import { PageHeader } from "./components/ui";
 import { WatchView } from "./views/WatchView";
 import { LeaderboardView } from "./views/LeaderboardView";
 import { EventsView } from "./views/EventsView";
-import { PlayView } from "./views/PlayView";
+import { PlayView, armFirstRunGuide } from "./views/PlayView";
 import { HistoryView } from "./views/HistoryView";
 import { ModelsView } from "./views/ModelsView";
 import { StrategyView } from "./views/StrategyView";
@@ -316,6 +316,9 @@ function DeviceMismatchTakeover({ onDismiss }: { onDismiss: () => void }) {
     if (r.exitCode === 0) {
       // Fresh identity registered here — the mismatch no longer applies. Same as
       // takeOver: leave the takeover even if the follow-up start is transiently down.
+      // Arm the first-run guide for the NEW agent (and scrub the replaced one's
+      // per-machine state) so a re-register still gets onboarding, like the button.
+      armFirstRunGuide((r.json as { config?: { agentId?: string } } | undefined)?.config?.agentId);
       await bridgeStart();
       onDismiss();
       return;
@@ -576,6 +579,9 @@ function BridgeErrorBanner() {
     try {
       const r = await runCli({ kind: "setup", replaceLocalIdentity: true });
       if (r.exitCode === 0) {
+        // Same as the device-mismatch path: a fresh identity must still get the
+        // first-run guide, and must not inherit the replaced agent's pause/cache.
+        armFirstRunGuide((r.json as { config?: { agentId?: string } } | undefined)?.config?.agentId);
         await window.aifight?.start();
       } else {
         window.alert(t("play.status.newAgentFailed"));

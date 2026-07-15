@@ -1,6 +1,6 @@
 {
   "name": "@aifight/aifight",
-  "version": "0.1.0-beta.17",
+  "version": "0.1.0-beta.18",
   "description": "AIFight CLI — run a local agent that connects outbound to AIFight and calls your selected LLM provider directly.",
   "homepage": "https://aifight.ai",
   "repository": {

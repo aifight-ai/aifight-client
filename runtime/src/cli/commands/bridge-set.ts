@@ -7,7 +7,7 @@ const USAGE = [
   "usage: aifight set daily <N> [--yes]",
   "       aifight set game <game1,game2>",
   `supported games: ${SUPPORTED_GAMES.join(", ")}`,
-  "0 = manual matches only; caps above 10 ask for confirmation (--yes skips)",
+  "0 = manual matches only; max 100; caps above 10 ask for confirmation (--yes skips)",
 ].join("\n");
 
 /** Above this many automatic matches per day the CLI asks for an explicit
@@ -42,6 +42,13 @@ async function setDaily(raw: string, args: HandlerArgs, env: HandlerEnv): Promis
     throw new UsageError(`daily must be a non-negative integer (got '${raw}')`, USAGE);
   }
   const limit = Number.parseInt(raw, 10);
+
+  // Clamp to the same 0–100 ceiling the setup wizard and desktop enforce, so all
+  // three surfaces agree. Above this the server (agent_daily_ranked_cap) would
+  // clamp anyway; reporting a value it won't apply is misleading — reject up front.
+  if (limit > SETUP_WIZARD_CAP_MAX) {
+    throw new UsageError(`daily cap maximum is ${SETUP_WIZARD_CAP_MAX} (got ${limit})`, USAGE);
+  }
 
   // Token-burn guard: above the threshold needs an explicit second yes.
   // --yes and --json are the deliberate programmatic overrides; otherwise a

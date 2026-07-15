@@ -596,8 +596,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-beta.18",
-          latest_version: "0.1.0-beta.18",
+          recommended_version: "0.1.0-beta.19",
+          latest_version: "0.1.0-beta.19",
           update_command: "npm install -g @aifight/aifight",
         });
       }
@@ -636,8 +636,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-beta.18",
-          latest_version: "0.1.0-beta.18",
+          recommended_version: "0.1.0-beta.19",
+          latest_version: "0.1.0-beta.19",
           update_command: "npm install -g @aifight/aifight",
         });
       }
@@ -954,6 +954,31 @@ describe("aifight set", () => {
     const r = await runCapture(["set", "daily", "10"], { fetchImpl });
     expect(r.code).toBe(0);
     expect(r.stdout).toContain("Automatic ranked matches set to 10 per day.");
+  });
+
+  // The setup wizard and the desktop both cap at 100; `set daily` must agree so
+  // the CLI never reports a value the server would clamp. Reject > 100 up front,
+  // before any PATCH — even with --yes (that only waives the >10 confirmation).
+  it("rejects a daily cap above the 100 ceiling before contacting the server", async () => {
+    configuredBridge();
+    let contacted = false;
+    const fetchImpl: typeof fetch = async () => {
+      contacted = true;
+      return jsonResp({});
+    };
+    const r = await runCapture(["set", "daily", "150", "--yes"], { fetchImpl });
+    expect(r.code).toBe(2); // UsageError → exit 2 (out-of-range input, not an op failure)
+    expect(r.stderr).toContain("maximum is 100");
+    expect(contacted).toBe(false); // nothing synced for an out-of-range value
+  });
+
+  it("accepts a daily cap of exactly 100 (the ceiling)", async () => {
+    configuredBridge();
+    const fetchImpl: typeof fetch = async () =>
+      jsonResp({ policy: { max_games_per_day: 100, auto_requeue: true } });
+    const r = await runCapture(["set", "daily", "100", "--yes"], { fetchImpl });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("Automatic ranked matches set to 100 per day.");
   });
 
   it("renames the agent via PATCH /api/agents/me/name and caches the new name", async () => {

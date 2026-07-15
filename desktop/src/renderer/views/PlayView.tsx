@@ -23,7 +23,7 @@ import {
   useBridgeStatus, runCli, bridgeStart, requestMatches, setMatchingPaused, openClaim, openDashboard,
   acceptLegal, openLegal,
   getAgentProfile, getOwnProfileRaw, getAgentPolicy, setAgentPolicy, setAgentName, getUsageOverview, resultText,
-  desktopAvatarActions,
+  getLLMConfig, desktopAvatarActions,
 } from "../useBridge";
 import { localizeServerError, isClaimNameError } from "../errors";
 import { computeRankedHint } from "../rankedHint";
@@ -172,6 +172,79 @@ function guidePendingFor(agentId: string | undefined): boolean {
   }
 }
 
+/** First-run guide progress, persisted per agent. The guide re-shows on every
+ *  return until the user hits "Enter" (step 3 "Open Models" navigates away and
+ *  back), so its step state must survive a remount — otherwise the name/cap the
+ *  user already set reset to blank and "Enter" re-locks. Keyed by agentId so a
+ *  replaced/paired agent starts fresh. `cap` = the value the user EXPLICITLY
+ *  applied (null = not yet); that conscious choice is what unlocks "Enter". */
+const GUIDE_PROGRESS_KEY = "aifight.guide.progress";
+export interface GuideProgress {
+  agentId: string;
+  nameDone: boolean;
+  cap: number | null;
+}
+export function readGuideProgress(agentId: string | undefined): GuideProgress | null {
+  if (agentId === undefined) return null;
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(GUIDE_PROGRESS_KEY);
+    if (raw === null) return null;
+    const p = JSON.parse(raw) as GuideProgress;
+    // Ignore a prior agent's progress (e.g. after "replace identity").
+    return p.agentId === agentId ? p : null;
+  } catch {
+    return null;
+  }
+}
+export function saveGuideProgress(agentId: string | undefined, patch: Partial<Omit<GuideProgress, "agentId">>): void {
+  if (agentId === undefined) return;
+  try {
+    if (typeof localStorage === "undefined") return;
+    const cur = readGuideProgress(agentId) ?? { agentId, nameDone: false, cap: null };
+    localStorage.setItem(GUIDE_PROGRESS_KEY, JSON.stringify({ ...cur, ...patch, agentId }));
+  } catch {
+    /* best-effort; a disabled localStorage just loses cross-navigation memory */
+  }
+}
+export function clearGuideProgress(): void {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.removeItem(GUIDE_PROGRESS_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Arm the first-run SetupGuide for a freshly-registered agent, and scrub the
+ *  PRIOR identity's per-machine state so it can't bleed into the new one. Call
+ *  from EVERY fresh-registration site — the onboarding "New agent" button and
+ *  both recovery-banner "New agent" paths (device-mismatch takeover, first-connect
+ *  401). Without GUIDE_PENDING_KEY set, a replaced identity silently skips the
+ *  guide; without the scrub, the new agent inherits the old one's pause (a spend
+ *  decision that must NOT carry over) and stale cached policy/profile. No-op for a
+ *  missing agentId (guards the pre-registration window). */
+export function armFirstRunGuide(agentId: string | undefined): void {
+  if (agentId === undefined || agentId === "") return;
+  // In-memory mirrors from the replaced agent — reset so the dashboard doesn't
+  // flash the old name/claim/usage/policy before the first refetch.
+  cachedPolicy = null;
+  cachedProfile = null;
+  cachedRaw = null;
+  cachedClaim = "unknown";
+  cachedUsage = null;
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(GUIDE_PENDING_KEY, agentId);
+    // Persisted cross-agent state — a new identity must start un-paused, with no
+    // stale policy cache or a prior agent's half-finished guide progress.
+    localStorage.removeItem(PAUSE_KEY);
+    localStorage.removeItem(POLICY_CACHE_KEY);
+    localStorage.removeItem(GUIDE_PROGRESS_KEY);
+  } catch {
+    /* best-effort; a disabled localStorage just loses the scrub */
+  }
+}
+
 // In-app Terms/Privacy consent. The owner can read both documents (links open the
 // public pages on the paired host) and accept right here — no browser round-trip.
 // Acceptance posts through the agent key to the owner's own account; on success the
@@ -268,10 +341,12 @@ export function PlayView({ onNavigate }: { onNavigate?: (view: string) => void }
           } catch {
             /* ignore */
           }
+          clearGuideProgress();
           setGuideTick((n) => n + 1);
         }}
         onNavigate={onNavigate}
         currentName={status?.config?.agentName ?? ""}
+        agentId={status?.config?.agentId}
       />
     );
   }
@@ -325,15 +400,10 @@ function Onboarding({ refresh }: { refresh: () => void }) {
           onClick={() =>
             run("register", { kind: "setup" }, (j) => {
               // A fresh registration → run the first-run guide next (keyed to
-              // this agent so pairing an existing agent never triggers it).
+              // this agent so pairing an existing agent never triggers it), and
+              // scrub any prior identity's per-machine state.
               const cfg = (j.config ?? {}) as { agentId?: string };
-              if (typeof cfg.agentId === "string" && cfg.agentId !== "") {
-                try {
-                  localStorage.setItem(GUIDE_PENDING_KEY, cfg.agentId);
-                } catch {
-                  /* ignore */
-                }
-              }
+              armFirstRunGuide(cfg.agentId);
               // Don't dump the raw claim URL here — the setup guide's claim step
               // has a proper "open claim page" button. Just confirm registration.
               return t("play.onboard.registeredOk");
@@ -385,23 +455,53 @@ function SetupGuide({
   onDone,
   onNavigate,
   currentName,
+  agentId,
 }: {
   onDone: () => void;
   onNavigate?: (view: string) => void;
   currentName: string;
+  agentId: string | undefined;
 }) {
   const { t } = useTranslation();
-  const [cap, setCap] = useState(2);
-  const [custom, setCustom] = useState(false);
+  // Seed step state from persisted per-agent progress so navigating to Models
+  // (step 3) and back doesn't wipe the steps already done. Read once on mount.
+  const [progress0] = useState(() => readGuideProgress(agentId));
+  const [cap, setCap] = useState(progress0?.cap ?? 2);
+  const [custom, setCustom] = useState(progress0?.cap != null && ![0, 2, 5].includes(progress0.cap));
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [applied, setApplied] = useState<number | null>(null);
+  const [applied, setApplied] = useState<number | null>(progress0?.cap ?? null);
   const [error, setError] = useState("");
   // Step 1 — display name. Pre-filled with the auto-suggested evocative name.
   const [nameDraft, setNameDraft] = useState(currentName);
   const [nameBusy, setNameBusy] = useState(false);
-  const [nameApplied, setNameApplied] = useState(false);
+  const [nameApplied, setNameApplied] = useState(progress0?.nameDone ?? false);
   const [nameError, setNameError] = useState("");
+  // Steps 3 (model) & 4 (claim) are "navigate away" actions, so reflect their
+  // REAL completion instead of showing them perpetually undone. The guide
+  // remounts on every return (step 3 opens Models), so a mount-time fetch keeps
+  // them fresh — no persistence needed. Best-effort; default not-done.
+  const [llmDone, setLlmDone] = useState(false);
+  const [claimDone, setClaimDone] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    // "Done" = a model with a RESOLVABLE key — a config with a keyless profile
+    // still can't play, so `configured` alone would be a false check.
+    void getLLMConfig()
+      .then((c) => {
+        if (alive) setLlmDone(c.configured && c.profiles.some((p) => p.keyResolvable));
+      })
+      .catch(() => {});
+    void runCli({ kind: "status" })
+      .then((r) => {
+        const pa = (r.json as { platformAgentStatus?: { isClaimed?: boolean } } | undefined)?.platformAgentStatus;
+        if (alive && pa?.isClaimed === true) setClaimDone(true);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const applyName = async () => {
     const next = nameDraft.trim();
@@ -410,6 +510,7 @@ function SetupGuide({
     if (next === "" || next === currentName) {
       setNameApplied(true);
       setNameError("");
+      saveGuideProgress(agentId, { nameDone: true });
       return;
     }
     setNameBusy(true);
@@ -418,6 +519,7 @@ function SetupGuide({
     setNameBusy(false);
     if (r.ok) {
       setNameApplied(true);
+      saveGuideProgress(agentId, { nameDone: true });
     } else {
       setNameError(r.error ?? t("play.rename.failed"));
     }
@@ -431,6 +533,7 @@ function SetupGuide({
     setConfirming(false);
     if (r.ok) {
       setApplied(value);
+      saveGuideProgress(agentId, { cap: value });
       const p = await getAgentPolicy();
       if (p !== null) rememberPolicy(p);
       // cap>0 → enter the auto-match pool now. The first queue join must come from
@@ -630,7 +733,7 @@ function SetupGuide({
       {/* Step 2 — connect the LLM key */}
       <div className="app-card flex flex-wrap items-center justify-between gap-3 px-5 py-4">
         <div className="flex min-w-0 items-start gap-2.5">
-          {stepBadge(3, false)}
+          {stepBadge(3, llmDone)}
           <div className="min-w-0">
             <div className="text-[14px] font-medium text-[var(--text)]">{t("guide.llmTitle")}</div>
             <div className="mt-0.5 text-[12px] text-[var(--text-muted)]">{t("guide.llmBody")}</div>
@@ -648,7 +751,7 @@ function SetupGuide({
       {/* Step 3 — claim the agent */}
       <div className="app-card flex flex-wrap items-center justify-between gap-3 px-5 py-4">
         <div className="flex min-w-0 items-start gap-2.5">
-          {stepBadge(4, false)}
+          {stepBadge(4, claimDone)}
           <div className="min-w-0">
             <div className="text-[14px] font-medium text-[var(--text)]">{t("guide.claimTitle")}</div>
             <div className="mt-0.5 text-[12px] text-[var(--text-muted)]">{t("guide.claimBody")}</div>
