@@ -1,5 +1,6 @@
 import { readBridgeConfig, removeBridgeConfig, type BridgeConfig } from "../../bridge/config";
 import { BridgeServiceError, uninstallBridgeService } from "../../bridge/service";
+import { fetchNoFollow } from "../../net/guarded-fetch.js";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { UsageError, expectArity } from "../shared";
 
@@ -111,11 +112,11 @@ async function fetchProfileLabel(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1500);
   try {
-    const response = await fetchImpl(`${config.baseUrl.replace(/\/+$/, "")}/api/agents/me/status`, {
+    const response = await fetchNoFollow(`${config.baseUrl.replace(/\/+$/, "")}/api/agents/me/status`, {
       method: "GET",
       headers: { "X-API-Key": config.apiKey },
       signal: controller.signal,
-    });
+    }, { fetchImpl });
     if (!response.ok) return `unknown (server returned HTTP ${response.status})`;
     const body = await response.json().catch(() => undefined) as unknown;
     if (!body || typeof body !== "object") return "unknown";

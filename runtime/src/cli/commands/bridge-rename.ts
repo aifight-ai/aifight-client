@@ -1,5 +1,6 @@
 import { formatPublicNo } from "../../account/public-no";
 import { readBridgeConfig, writeBridgeConfig } from "../../bridge/config";
+import { fetchNoFollow } from "../../net/guarded-fetch.js";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError } from "../shared";
 
@@ -20,8 +21,7 @@ export async function runBridgeRename(args: HandlerArgs, env: HandlerEnv): Promi
   }
 
   const config = readBridgeConfig();
-  const fetchImpl = env.fetchImpl ?? globalThis.fetch;
-  const res = await fetchImpl(`${config.baseUrl.replace(/\/+$/, "")}/api/agents/me/name`, {
+  const res = await fetchNoFollow(`${config.baseUrl.replace(/\/+$/, "")}/api/agents/me/name`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
@@ -29,7 +29,7 @@ export async function runBridgeRename(args: HandlerArgs, env: HandlerEnv): Promi
       "X-AIFight-Client": "cli",
     },
     body: JSON.stringify({ name }),
-  });
+  }, { fetchImpl: env.fetchImpl ?? globalThis.fetch });
 
   if (!res.ok) {
     const body = (await res.json().catch(() => undefined)) as Record<string, unknown> | undefined;

@@ -373,7 +373,7 @@ async function editProfileInteractive(slug: string, view: ProfileView, io: Onboa
   }
 
   // per-call request timeout (whole seconds; stored as ms in the profile)
-  const rtCur = p.timeouts?.requestMs !== undefined ? Math.round(p.timeouts.requestMs / 1000) : 300;
+  const rtCur = p.timeouts?.requestMs !== undefined ? Math.round(p.timeouts.requestMs / 1000) : 270;
   const rtRaw = (await io.promptLine(`  Per-call request timeout in seconds [keep ${rtCur}]: `)).trim();
   if (rtRaw !== "") {
     if (!/^\d+$/.test(rtRaw)) env.stdout("  (request timeout must be a whole number of seconds — keeping the current value.)\n");
@@ -662,8 +662,8 @@ async function runConfigExplain(args: HandlerArgs, env: HandlerEnv): Promise<num
   );
   field(
     "timeouts.requestMs",
-    String(p.timeouts?.requestMs ?? "(default 300000)"),
-    "Per-call LLM request timeout (ms). How long each model call waits; a turn is 300s, so ≤ 300000.",
+    String(p.timeouts?.requestMs ?? "(default 270000)"),
+    "Per-call LLM request timeout (ms). How long each model call waits; a turn is 300s, so ≤ 300000 — the 270000 default leaves ~30s to submit the move.",
   );
   const thinkingOn = caps.supportsThinking && p.thinking?.enabled !== false;
   const tempNote =

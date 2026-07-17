@@ -127,8 +127,9 @@ function blankForm(family: ProtocolFamily): FormState {
     // AIFight is a reasoning arena, so default to generous output room; unified
     // with the CLI wizard's 32000 default (D16). You pay for tokens used, not the cap.
     maxTokens: "32000",
-    // Per-call request timeout in seconds; a turn is 300s, so that's the default.
-    requestTimeoutSec: "300",
+    // Per-call request timeout in seconds; the 270 default keeps a 30s submit
+    // margin inside the 300s turn.
+    requestTimeoutSec: "270",
     stream: "auto",
     thinkingEnabled: true,
     effort: "",
@@ -191,7 +192,7 @@ export function ModelsView() {
       baseURL: p.baseURL ?? "",
       temperature: p.temperature === null ? "" : String(p.temperature),
       maxTokens: String(p.maxTokens),
-      requestTimeoutSec: p.requestTimeoutMs !== null ? String(Math.round(p.requestTimeoutMs / 1000)) : "300",
+      requestTimeoutSec: p.requestTimeoutMs !== null ? String(Math.round(p.requestTimeoutMs / 1000)) : "270",
       stream: p.stream,
       thinkingEnabled: p.thinkingEnabled,
       effort: p.effort ?? "",
@@ -209,6 +210,17 @@ export function ModelsView() {
     if (form.isNew && (view?.profiles ?? []).some((p) => p.id === id)) {
       setError(t("models.idTaken"));
       return;
+    }
+    const rtRaw = form.requestTimeoutSec.trim();
+    if (rtRaw !== "") {
+      const rtSec = Number(rtRaw);
+      // The runtime schema rejects requestMs outside [1s, 300s] when it loads
+      // the profile — without this check the save succeeds but the agent then
+      // silently fails to start. Same bounds as the CLI's --request-timeout.
+      if (!Number.isInteger(rtSec) || rtSec < 1 || rtSec > 300) {
+        setError(t("models.requestTimeoutRange"));
+        return;
+      }
     }
     setSaving(true);
     setError(null);
@@ -369,7 +381,7 @@ export function ModelsView() {
                   <Field label={t("models.baseUrl")} value={p.baseURL ?? t("models.protocolDefault")} />
                   <Field label={t("models.adapter")} value={p.protocol} />
                   <Field label={t("models.maxTokensLabel")} value={String(p.maxTokens)} />
-                  <Field label={t("models.requestTimeoutLabel")} value={String(Math.round((p.requestTimeoutMs ?? 300000) / 1000))} />
+                  <Field label={t("models.requestTimeoutLabel")} value={String(Math.round((p.requestTimeoutMs ?? 270000) / 1000))} />
                 </div>
 
                 <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[12px]">
@@ -521,7 +533,7 @@ function ProfileForm({ form, setForm, onSave, onCancel, saving, t }: {
           <span className="text-[11px] text-[var(--text-faint)]">temp</span>
           <input className={inputCls + " max-w-[120px]"} value={form.maxTokens} onChange={(e) => { setTokenHint(null); up({ maxTokens: e.target.value }); }} placeholder="32000" />
           <span className="text-[11px] text-[var(--text-faint)]">maxTokens</span>
-          <input className={inputCls + " max-w-[110px]"} value={form.requestTimeoutSec} onChange={(e) => up({ requestTimeoutSec: e.target.value })} placeholder="300" />
+          <input className={inputCls + " max-w-[110px]"} value={form.requestTimeoutSec} onChange={(e) => up({ requestTimeoutSec: e.target.value })} placeholder="270" />
           <span className="text-[11px] text-[var(--text-faint)]">{t("models.requestTimeoutLabel")}</span>
         </div>
         {tokenHint && <div className="mt-1 text-[11px] leading-snug text-[var(--accent)]">{tokenHint}</div>}

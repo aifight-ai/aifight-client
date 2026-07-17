@@ -165,9 +165,10 @@ describe("interactive config — multi-profile manager (⑦)", () => {
     const before = fs.readFileSync(path.join(agentDir(), "config.json"), "utf8");
     // edit alpha → don't list models → re-type each field's CURRENT value verbatim
     // instead of pressing Enter (model, thinking on, effort none, maxTokens,
-    // request-timeout 300, baseURL none, stream) → q. Nothing changed, so no write.
+    // request-timeout 270 = the default shown, baseURL none, stream) → q.
+    // Nothing changed, so no write.
     const { io } = makeIO({
-      lines: ["2", "1", "claude-sonnet-4-6", "on", "", "32000", "300", "", "auto", "q"],
+      lines: ["2", "1", "claude-sonnet-4-6", "on", "", "32000", "270", "", "auto", "q"],
       yesno: [false /* list models? */],
     });
     const { env, out } = captureEnv();

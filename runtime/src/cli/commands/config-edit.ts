@@ -408,7 +408,7 @@ export function resolveProfileSettings(
       throw configError("config_bad_request_timeout", {
         problem: `--request-timeout must be a whole number of seconds in [${MIN_REQUEST_TIMEOUT_SEC}, ${MAX_REQUEST_TIMEOUT_SEC}] (got ${rt})`,
         valid:
-          "It's how long each LLM call waits. A turn is 300s, so 300 is the max; set it lower to fit several retries inside one turn.",
+          "It's how long each LLM call waits. A turn is 300s, so 300 is the max; the default 270 leaves ~30s to submit the move. Set it lower to fit several retries inside one turn.",
       });
     }
     requestTimeoutMs = rt * 1000;

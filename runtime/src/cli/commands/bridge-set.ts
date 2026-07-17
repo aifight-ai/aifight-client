@@ -1,4 +1,5 @@
 import { readBridgeConfig, writeBridgeConfig } from "../../bridge/config";
+import { fetchNoFollow } from "../../net/guarded-fetch.js";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, SUPPORTED_GAMES, UsageError, expectArity, isSupportedGame } from "../shared";
 import { createOnboardIO } from "./onboard-io";
@@ -162,14 +163,14 @@ async function syncDailyPolicy(
   const body = limit === 0
     ? { auto_requeue: false }
     : { max_games_per_day: limit, auto_requeue: true };
-  const res = await fetchImpl(`${config.baseUrl}/api/agents/me/policy`, {
+  const res = await fetchNoFollow(`${config.baseUrl}/api/agents/me/policy`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
       "X-API-Key": config.apiKey,
     },
     body: JSON.stringify(body),
-  });
+  }, { fetchImpl });
   if (!res.ok) {
     throw new CommandError("policy_sync_failed", await readAPIError(res, `daily policy sync failed with HTTP ${res.status}`));
   }

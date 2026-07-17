@@ -168,11 +168,11 @@ export interface ThinkingConfig {
 export interface TimeoutsConfig {
   /**
    * Per-call LLM request timeout in milliseconds — how long the app/CLI waits
-   * for a single model call. User-settable; default 300000 (5 min), max 300000.
-   * Purely client-side: the platform only enforces "submit a legal decision
-   * within its turn deadline" and never reads this value. Set it shorter to fit
-   * several retries inside a turn; set it to 300000 to let one call use the
-   * whole turn.
+   * for a single model call. User-settable; default 270000 (4.5 min), max
+   * 300000. Purely client-side: the platform only enforces "submit a legal
+   * decision within its turn deadline" and never reads this value. The default
+   * stays 30s below the 300s turn so a full-length call still leaves time to
+   * submit the move; set it shorter to fit several retries inside a turn.
    */
   requestMs?: number;
 }
@@ -565,7 +565,7 @@ function validateProfile(raw: unknown, path: string, errors: string[]): void {
  *  plaintext HTTP or with credentials embedded in the URL. https: is always
  *  allowed; http: only to loopback/private hosts (self-hosted ollama, vLLM,
  *  LM Studio), or anywhere with AIFIGHT_ALLOW_INSECURE_PROVIDER_URL=1. */
-function validateProviderBaseURL(value: string, path: string, errors: string[]): void {
+export function validateProviderBaseURL(value: string, path: string, errors: string[]): void {
   let url: URL;
   try {
     url = new URL(value);
@@ -806,7 +806,7 @@ export const DEFAULT_CONFIG: LLMConfig = {
         effort: "high",
       },
       timeouts: {
-        requestMs: 300000,
+        requestMs: 270000,
       },
       retries: {
         maxAttempts: 2,

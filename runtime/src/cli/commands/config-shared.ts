@@ -220,7 +220,7 @@ export interface ProfileBuildSettings {
   readonly effort?: ReasoningEffort;
   /** Output-token ceiling. */
   readonly maxTokens: number;
-  /** Per-call LLM request timeout in ms (user-settable). Omit → default 300000. */
+  /** Per-call LLM request timeout in ms (user-settable). Omit → default 270000. */
   readonly requestTimeoutMs?: number;
   /** SSE streaming preference. */
   readonly stream: "auto" | "always" | "never";
@@ -265,7 +265,7 @@ export function buildLLMProfile(input: {
       ...(hasFeatures ? { features: s.features } : {}),
     },
     thinking,
-    timeouts: { requestMs: s.requestTimeoutMs ?? 300000 },
+    timeouts: { requestMs: s.requestTimeoutMs ?? 270000 },
     retries: { maxAttempts: 2 },
   };
 }

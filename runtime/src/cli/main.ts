@@ -134,6 +134,12 @@ export async function run(
     { name: "no-test", type: "boolean" },
     // `aifight sessions show` — include captured model thinking (local-only).
     { name: "reasoning", type: "boolean" },
+    // `aifight review` flags (local self-review). --no-generate is the
+    // desktop's read-only probe (cli-host sends it whenever a replay is
+    // opened, so viewing must never spend tokens).
+    { name: "regen", type: "boolean" },
+    { name: "no-generate", type: "boolean" },
+    { name: "locale", type: "string" },
     // `aifight stats` / `aifight prices` flags (§7A local usage + cost).
     { name: "days", type: "number" },
     { name: "by-model", type: "boolean" },

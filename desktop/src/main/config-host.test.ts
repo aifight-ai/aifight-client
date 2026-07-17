@@ -121,6 +121,22 @@ describe("config-host: standalone graphical config", () => {
     expect(gptr.verbosity).toBe("low");
   });
 
+  it("clamps requestTimeoutMs into the runtime schema's [1ms, 300s] bounds — an over-cap save must not brick profile loading", async () => {
+    freshHome();
+    await saveProfile("default", { profileId: "slow", family: "anthropic", model: "claude-opus-4-8", thinkingEnabled: false, requestTimeoutMs: 600_000 });
+    let v = await getConfig();
+    expect(v.profiles.find((p) => p.id === "slow")!.requestTimeoutMs).toBe(300_000);
+
+    // In-range values pass through untouched; omitting it keeps the 270s default.
+    await saveProfile("default", { profileId: "slow", family: "anthropic", model: "claude-opus-4-8", thinkingEnabled: false, requestTimeoutMs: 30_000 });
+    v = await getConfig();
+    expect(v.profiles.find((p) => p.id === "slow")!.requestTimeoutMs).toBe(30_000);
+
+    await saveProfile("default", { profileId: "fresh", family: "anthropic", model: "claude-opus-4-8", thinkingEnabled: false });
+    v = await getConfig();
+    expect(v.profiles.find((p) => p.id === "fresh")!.requestTimeoutMs).toBe(270_000);
+  });
+
   it("setActive / setRoute / deleteProfile mutate the shared config", async () => {
     freshHome();
     await saveProfile("default", { profileId: "claude", family: "anthropic", model: "claude-opus-4-8", thinkingEnabled: false });

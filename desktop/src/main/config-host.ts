@@ -313,10 +313,13 @@ export async function saveProfile(slug: string, input: ProfileInput): Promise<Co
         })(),
       },
       timeouts: {
+        // Clamp into the runtime schema's [1ms, 300s] bounds: an out-of-range
+        // value would save fine here but make profile loading reject the whole
+        // config — the agent then silently fails to start.
         requestMs:
           typeof input.requestTimeoutMs === "number" && input.requestTimeoutMs > 0
-            ? input.requestTimeoutMs
-            : existing?.timeouts?.requestMs ?? 300000,
+            ? Math.min(Math.max(1, Math.round(input.requestTimeoutMs)), 300_000)
+            : existing?.timeouts?.requestMs ?? 270000,
       },
       retries: existing?.retries ?? { maxAttempts: 2 },
     };

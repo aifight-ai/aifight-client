@@ -2,6 +2,7 @@ import { formatPublicNo } from "../../account/public-no";
 import { dropClaimCredentialsAfterClaim, readBridgeConfig, redactBridgeConfig } from "../../bridge/config";
 import { checkBridgeUpdate } from "../../bridge/update-check";
 import { RUNTIME_VERSION } from "../../index";
+import { fetchNoFollow } from "../../net/guarded-fetch.js";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { expectArity } from "../shared";
 import type { BridgeConfig } from "../../bridge/config";
@@ -107,11 +108,11 @@ async function checkPlatformAgentStatus(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS);
   try {
-    const response = await fetchImpl(`${config.baseUrl.replace(/\/+$/, "")}/api/agents/me/status`, {
+    const response = await fetchNoFollow(`${config.baseUrl.replace(/\/+$/, "")}/api/agents/me/status`, {
       method: "GET",
       headers: { "X-API-Key": config.apiKey },
       signal: controller.signal,
-    });
+    }, { fetchImpl });
     if (!response.ok) {
       return { kind: "unavailable", message: `server returned HTTP ${response.status}` };
     }

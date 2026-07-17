@@ -70,7 +70,7 @@ export function resolveLLMProfile(
     ...(def.request?.verbosity !== undefined ? { verbosity: def.request.verbosity } : {}),
     ...(def.request?.features !== undefined ? { features: def.request.features } : {}),
     timeouts: {
-      requestMs: def.timeouts?.requestMs ?? 300000,
+      requestMs: def.timeouts?.requestMs ?? 270000,
     },
     retries: {
       maxAttempts: def.retries?.maxAttempts ?? 2,

@@ -147,6 +147,36 @@ describe("onboardDirectLLM", () => {
 
   });
 
+  it("rejects a plaintext-http base URL with a reason and re-prompts, before the key is typed", async () => {
+    const { io } = makeIO({
+      lines: ["3", "http://api.deepseek.com/v1", "https://api.deepseek.com/v1", "deepseek-chat"],
+      hidden: ["sk-deepseek"],
+      models: null,
+      probe: [true],
+    });
+    const { env, out } = captureEnv();
+    const result = await onboardDirectLLM({ slug: SLUG, env, io });
+    expect(result).toBe("configured");
+    expect(out()).toContain("unencrypted");
+    const cfg = readConfig();
+    expect(cfg.profiles[cfg.activeProfile].baseURL).toBe("https://api.deepseek.com/v1");
+  });
+
+  it("re-prompts on an unsafe custom base URL for an official-URL provider", async () => {
+    const { io } = makeIO({
+      lines: ["1", "http://claude-proxy.example.com", "https://claude-proxy.example.com", ""],
+      hidden: ["sk-ant-abc"],
+      models: null,
+      probe: [true],
+    });
+    const { env, out } = captureEnv();
+    const result = await onboardDirectLLM({ slug: SLUG, env, io });
+    expect(result).toBe("configured");
+    expect(out()).toContain("unencrypted");
+    const cfg = readConfig();
+    expect(cfg.profiles[cfg.activeProfile].baseURL).toBe("https://claude-proxy.example.com");
+  });
+
   it("offers discovered models and records the picked one", async () => {
     const { io } = makeIO({
       lines: ["2", "", "2"], // provider 2 (GPT), base URL Enter, pick model #2

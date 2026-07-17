@@ -1,4 +1,5 @@
 import { readBridgeConfig } from "../../bridge/config";
+import { fetchNoFollow } from "../../net/guarded-fetch.js";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError, expectArity } from "../shared";
 
@@ -28,14 +29,14 @@ export async function runBridgeChallenge(
   }
 
   const config = readBridgeConfig();
-  const res = await (env.fetchImpl ?? globalThis.fetch)(`${config.baseUrl}/api/challenges`, {
+  const res = await fetchNoFollow(`${config.baseUrl}/api/challenges`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-API-Key": config.apiKey,
     },
     body: JSON.stringify({ game, accept_mode: "single" }),
-  });
+  }, { fetchImpl: env.fetchImpl ?? globalThis.fetch });
   if (!res.ok) {
     throw new CommandError("challenge_create_failed", await readAPIError(res, `challenge creation failed with HTTP ${res.status}`));
   }

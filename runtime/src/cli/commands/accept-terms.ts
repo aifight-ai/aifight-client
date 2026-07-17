@@ -1,5 +1,6 @@
 import { readBridgeConfig } from "../../bridge/config";
 import type { BridgeConfig } from "../../bridge/config";
+import { fetchNoFollow } from "../../net/guarded-fetch.js";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, expectArity } from "../shared";
 
@@ -112,11 +113,11 @@ async function fetchLegalStatus(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS);
   try {
-    const res = await fetchImpl(`${base}/api/agents/me/status`, {
+    const res = await fetchNoFollow(`${base}/api/agents/me/status`, {
       method: "GET",
       headers: { "X-API-Key": config.apiKey },
       signal: controller.signal,
-    });
+    }, { fetchImpl });
     if (!res.ok) return null;
     const raw = (await res.json().catch(() => undefined)) as Record<string, unknown> | undefined;
     if (!raw || typeof raw !== "object") return null;
@@ -146,7 +147,7 @@ async function postAcceptLegal(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS);
   try {
-    const res = await fetchImpl(`${base}/api/agents/me/accept-legal`, {
+    const res = await fetchNoFollow(`${base}/api/agents/me/accept-legal`, {
       method: "POST",
       headers: { "X-API-Key": config.apiKey, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -154,7 +155,7 @@ async function postAcceptLegal(
         privacy_version: status.currentPrivacyVersion,
       }),
       signal: controller.signal,
-    });
+    }, { fetchImpl });
     return res.ok;
   } catch {
     return false;

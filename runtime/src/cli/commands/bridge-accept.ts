@@ -1,4 +1,5 @@
 import { readBridgeConfig } from "../../bridge/config";
+import { fetchNoFollow } from "../../net/guarded-fetch.js";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError, expectArity } from "../shared";
 
@@ -20,10 +21,10 @@ export async function runBridgeAccept(
   expectArity(args, 1, 1, USAGE);
   const token = extractChallengeToken(args.positional[0]!);
   const config = readBridgeConfig();
-  const res = await (env.fetchImpl ?? globalThis.fetch)(`${config.baseUrl}/api/challenges/${encodeURIComponent(token)}/accept`, {
+  const res = await fetchNoFollow(`${config.baseUrl}/api/challenges/${encodeURIComponent(token)}/accept`, {
     method: "POST",
     headers: { "X-API-Key": config.apiKey },
-  });
+  }, { fetchImpl: env.fetchImpl ?? globalThis.fetch });
   if (!res.ok) {
     const message = await readAPIError(res, `challenge accept failed with HTTP ${res.status}`);
     throw new CommandError("challenge_accept_failed", withAcceptHint(res.status, message));

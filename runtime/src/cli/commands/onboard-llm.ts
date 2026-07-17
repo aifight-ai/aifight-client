@@ -20,6 +20,7 @@ import path from "node:path";
 
 import type { HandlerEnv } from "../shared.js";
 import type { LLMConfig, LLMProfile, Protocol, ReasoningEffort } from "../../profile/config-schema.js";
+import { validateProviderBaseURL } from "../../profile/config-schema.js";
 import { resolveAgentDir } from "../../profile/profile-loader.js";
 import { checkSecretStatus } from "../../profile/secret-ref.js";
 import { resolveModelCapabilities, recommendMaxTokens } from "../../llm/capabilities/validate-capabilities.js";
@@ -259,22 +260,42 @@ async function chooseProvider(io: OnboardIO, env: HandlerEnv): Promise<OnboardPr
   return undefined;
 }
 
-async function chooseBaseURL(provider: OnboardProvider, io: OnboardIO): Promise<string | undefined> {
+async function chooseBaseURL(
+  provider: OnboardProvider,
+  io: OnboardIO,
+  env: HandlerEnv,
+): Promise<string | undefined> {
   if (provider.officialBaseURL === undefined) {
     // Compat: base URL is required.
     for (let i = 0; i < MAX_ATTEMPTS; i++) {
       const raw = (await io.promptLine("  Base URL (e.g. https://api.deepseek.com/v1): ")).trim();
-      if (/^https?:\/\/.+/i.test(raw)) return raw.replace(/\/+$/, "");
-      // empty / invalid → ask again
+      if (raw === "") continue; // empty → ask again
+      const problem = baseURLProblem(raw);
+      if (problem === null) return raw.replace(/\/+$/, "");
+      env.stdout(`  ${problem}\n`);
     }
     return undefined;
   }
-  const raw = (
-    await io.promptLine(`  Base URL [Enter = official ${provider.officialBaseURL}, or paste a custom one]: `)
-  ).trim();
-  if (raw === "") return provider.officialBaseURL;
-  if (/^https?:\/\/.+/i.test(raw)) return raw.replace(/\/+$/, "");
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    const raw = (
+      await io.promptLine(`  Base URL [Enter = official ${provider.officialBaseURL}, or paste a custom one]: `)
+    ).trim();
+    if (raw === "") return provider.officialBaseURL;
+    const problem = baseURLProblem(raw);
+    if (problem === null) return raw.replace(/\/+$/, "");
+    env.stdout(`  ${problem}\n`);
+  }
   return provider.officialBaseURL;
+}
+
+/** The pasted key is sent to whatever base URL survives this prompt (model
+ *  discovery, then the live probe), so vet it BEFORE the key is typed — with
+ *  the same rules headless `config add` enforces via the config schema.
+ *  Returns a printable reason, or null when the URL is acceptable. */
+function baseURLProblem(candidate: string): string | null {
+  const errors: string[] = [];
+  validateProviderBaseURL(candidate, "base URL", errors);
+  return errors.length > 0 ? errors[0]! : null;
 }
 
 async function chooseModel(
@@ -471,7 +492,7 @@ export async function onboardDirectLLM(opts: {
       }
     }
 
-    const baseURL = await chooseBaseURL(provider, io);
+    const baseURL = await chooseBaseURL(provider, io, env);
     if (provider.officialBaseURL === undefined && baseURL === undefined) {
       env.stdout("  A base URL is required for an OpenAI-compatible provider.\n");
       continue;
