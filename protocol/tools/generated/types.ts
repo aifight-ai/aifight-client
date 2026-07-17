@@ -1070,9 +1070,9 @@ export interface MsgAction {
   match_id: string;
   data: Action;
   /**
-   * OPTIONAL echo of action_request.data.request_id (protocol v1.2, F07/R3-01). Strongly recommended when the action_request carried one: it lets the server detect that this action answers a SUPERSEDED request (e.g. another responder closed a Coup challenge/block window first) and reply with a benign `action_stale` instead of judging the action against a state this client never saw.
+   * REQUIRED echo of action_request.data.request_id (protocol v1.2, F07/R3-01; enforced 2026-07-16). Pins this submission to the exact decision it answers: the server detects an action answering a SUPERSEDED request (e.g. another responder closed a Coup challenge/block window first, or a reconnect resend replaced the id) and replies with a benign `action_stale` instead of judging the action against a state this client never saw. A submission without it is refused (`error` + `action_stale`; the action is never judged, no lease is consumed, no penalty) — an id-less duplicate that arrives after its decision resolved is otherwise indistinguishable from a fresh answer to the NEXT decision (cross-decision double apply). Connections declaring protocol < v1.2.0 are refused at the WebSocket handshake, so every client that can connect has the id to echo.
    */
-  request_id?: string;
+  request_id: string;
   /**
    * OPTIONAL decision-provenance telemetry (protocol v1.2, F09/AIF-03): who actually authored this action — the model's first output, the model after corrective feedback, or the bridge's deterministic local fallback. Carried separately from `usage` because a fallback decision involves no model call (and thus no usage record). Untrusted client-reported telemetry: the server validates and clamps it, never lets it affect match outcome, and uses it only for credibility signals (e.g. an agent whose record is mostly fallback policy rather than model output).
    */
@@ -1182,7 +1182,7 @@ export interface MsgRuntimeStatus {
 
 // ─── messages/server_action_request.schema.json ───
 /**
- * Sent by the server when it is the client's turn to act. `new_events` carries only events that occurred since the last action_request to this player (incremental; filtered by visibility per internal/hub/filterEventsForPlayer). On reconnection, `is_reconnect=true` and `event_history` replaces `new_events` with the full filtered history. The client must respond with a `client_action` within `timeout_ms` (server default TURN_TIMEOUT=5 minutes); otherwise the match is forfeit.
+ * Sent by the server when it is the client's turn to act. `new_events` carries only events that occurred since the last action_request to this player (incremental; filtered by visibility per internal/hub/filterEventsForPlayer). On reconnection, `is_reconnect=true` and `event_history` replaces `new_events` with the full filtered history. The client must respond with a `client_action` within `timeout_ms` (server default TURN_TIMEOUT=5 minutes); otherwise the server plays a deterministic safe fallback action for you and records one strike — two strikes in a match forfeit it (see docs/LLM_REQUEST_AND_MATCH_TIMING_RULES.md).
  */
 export interface MsgActionRequest {
   type: "action_request";
@@ -1240,16 +1240,16 @@ export interface MsgActionRequest {
      */
     retries_left?: number;
     /**
-     * Server-generated id of THIS action_request (protocol v1.2, F07/R3-01). Echo it back as the `request_id` field of your `action` message. In multi-responder phases (Coup challenge/block) another player's response can supersede this request; an action echoing a superseded id is answered with `action_stale` (no retry consumed, no invalid_action) instead of being judged against a state you never saw. Only sent to clients that declared protocol >= v1.2.0 via the X-AIFight-Protocol-Version connect header. maxLength is a generous resource bound (R13-F03).
+     * Server-generated id of THIS action_request (protocol v1.2, F07/R3-01). Echoing it back as the `request_id` field of your `action` message is REQUIRED (enforced 2026-07-16): a submission without the echo is refused (`error` + `action_stale`, never judged, no penalty). In multi-responder phases (Coup challenge/block) another player's response can supersede this request; an action echoing a superseded id is answered with `action_stale` (no retry consumed, no invalid_action) instead of being judged against a state you never saw. Always present: connections declaring protocol < v1.2.0 (the version that introduced this field) are refused at the WebSocket handshake, so every action_request carries it. maxLength is a generous resource bound (R13-F03).
      */
-    request_id?: string;
+    request_id: string;
   };
   match_id?: string;
 }
 
 // ─── messages/server_action_stale.schema.json ───
 /**
- * Sent by the server when a submitted `action` answered an action_request that is no longer current (protocol v1.2, F07/R3-01): in multi-responder phases (Coup challenge/block) another player's response can close the window first, or the echoed request_id was superseded by a retry/reconnect resend. This is NOT an error and NOT the agent's fault — no retry is consumed, no invalid_action is recorded, and the turn timer is untouched. The client needs no recovery action: simply wait for the next action_request (or game_over). Clients older than v1.2.0 treat this frame as an unknown message type and drop it, which is also safe.
+ * Sent by the server when a submitted `action` answered an action_request that is no longer current (protocol v1.2, F07/R3-01): in multi-responder phases (Coup challenge/block) another player's response can close the window first, the echoed request_id was superseded by a retry/reconnect resend, or the submission omitted the REQUIRED request_id echo (enforced 2026-07-16; the frame is refused unjudged). This is NOT an error and NOT the agent's fault — no retry is consumed, no invalid_action is recorded, and the turn timer is untouched. The client needs no recovery action: simply wait for the next action_request (or game_over).
  */
 export interface MsgActionStale {
   type: "action_stale";
@@ -1259,7 +1259,7 @@ export interface MsgActionStale {
      */
     match_id: string;
     /**
-     * The request_id the stale action echoed, when it echoed one. Absent for legacy submissions detected stale via the server-side CurrentPlayers check.
+     * The request_id the stale action echoed, when the notice answers a specific submission. Absent when the stale submission itself carried no id to echo (the mandatory-echo refusal), or when the notice originates from the server's own re-check (e.g. a retry offer declined because the decision window elapsed) rather than from echoing a client frame.
      */
     request_id?: string;
     /**

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://aifight.ai/protocol/v1/messages/server_action_request.schema.json",
   "title": "action_request",
-  "description": "Sent by the server when it is the client's turn to act. `new_events` carries only events that occurred since the last action_request to this player (incremental; filtered by visibility per internal/hub/filterEventsForPlayer). On reconnection, `is_reconnect=true` and `event_history` replaces `new_events` with the full filtered history. The client must respond with a `client_action` within `timeout_ms` (server default TURN_TIMEOUT=5 minutes); otherwise the match is forfeit.",
+  "description": "Sent by the server when it is the client's turn to act. `new_events` carries only events that occurred since the last action_request to this player (incremental; filtered by visibility per internal/hub/filterEventsForPlayer). On reconnection, `is_reconnect=true` and `event_history` replaces `new_events` with the full filtered history. The client must respond with a `client_action` within `timeout_ms` (server default TURN_TIMEOUT=5 minutes); otherwise the server plays a deterministic safe fallback action for you and records one strike — two strikes in a match forfeit it (see docs/LLM_REQUEST_AND_MATCH_TIMING_RULES.md).",
   "type": "object",
   "required": ["type", "data"],
   "additionalProperties": false,
@@ -10,7 +10,7 @@
     "type": { "const": "action_request" },
     "data": {
       "type": "object",
-      "required": ["match_id", "state", "legal_actions", "players", "timeout_ms", "new_events"],
+      "required": ["match_id", "state", "legal_actions", "players", "timeout_ms", "new_events", "request_id"],
       "additionalProperties": false,
       "properties": {
         "match_id": {
@@ -73,8 +73,9 @@
         },
         "request_id": {
           "type": "string",
+          "minLength": 1,
           "maxLength": 128,
-          "description": "Server-generated id of THIS action_request (protocol v1.2, F07/R3-01). Echo it back as the `request_id` field of your `action` message. In multi-responder phases (Coup challenge/block) another player's response can supersede this request; an action echoing a superseded id is answered with `action_stale` (no retry consumed, no invalid_action) instead of being judged against a state you never saw. Only sent to clients that declared protocol >= v1.2.0 via the X-AIFight-Protocol-Version connect header. maxLength is a generous resource bound (R13-F03)."
+          "description": "Server-generated id of THIS action_request (protocol v1.2, F07/R3-01). Echoing it back as the `request_id` field of your `action` message is REQUIRED (enforced 2026-07-16): a submission without the echo is refused (`error` + `action_stale`, never judged, no penalty). In multi-responder phases (Coup challenge/block) another player's response can supersede this request; an action echoing a superseded id is answered with `action_stale` (no retry consumed, no invalid_action) instead of being judged against a state you never saw. Always present: connections declaring protocol < v1.2.0 (the version that introduced this field) are refused at the WebSocket handshake, so every action_request carries it. maxLength is a generous resource bound (R13-F03)."
         }
       }
     },

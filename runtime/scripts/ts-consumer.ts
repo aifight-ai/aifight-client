@@ -147,7 +147,7 @@ const schemas: number = r.schemaCount;
 const welcome: MsgWelcome = {
   type: "welcome",
   data: {
-    server_protocol_version: "v1.0.0",
+    server_protocol_version: "v1.2.0",
     agent_id: "aaaaaaaa-0000-0000-0000-000000000001",
     agent_name: "ConsumerTest",
     server_time: "2026-04-24T00:00:00Z",
@@ -205,6 +205,8 @@ const msgAction: WSClientMessage = {
   type: "action",
   match_id: "00000000-0000-4000-8000-000000000020",
   data: { type: "fold" },
+  // REQUIRED echo (v1.2 enforcement 2026-07-16)
+  request_id: "ffffffff-0000-0000-0000-000000000001",
 };
 
 // 4. WSCloseInfo / handler types compose normally.
@@ -227,12 +229,12 @@ const errKind: WSClientErrorKind = "connect";
 const opts: WSClientOptions = {
   url: "wss://aifight.ai/api/ws",
   apiKey: "sk-consumer-probe",
-  expectedProtocolVersion: "1.0.0",
+  expectedProtocolVersion: "1.2.0",
 };
 const welcomeFrame: WSWelcome = {
   type: "welcome",
   data: {
-    server_protocol_version: "1.0.0",
+    server_protocol_version: "1.2.0",
     agent_id: "aaaaaaaa-0000-0000-0000-000000000001",
     agent_name: "ConsumerTest",
     server_time: "2026-04-24T00:00:00Z",
@@ -247,7 +249,7 @@ const jitter: JitterStrategy = "full";
 const reconnectOptions: ReconnectingWSClientOptions = {
   url: "wss://aifight.ai/api/ws",
   apiKey: "sk-consumer-probe",
-  expectedProtocolVersion: "1.0.0",
+  expectedProtocolVersion: "1.2.0",
   initialBackoffMs: 1_000,
   backoffFactor: 2,
   maxBackoffMs: 30_000,
@@ -397,6 +399,7 @@ const decisionProtocolReq: DecisionProtocolRequest = buildDecisionProtocolReques
       players: [],
       timeout_ms: 300_000,
       new_events: [],
+      request_id: "ffffffff-0000-0000-0000-000000000001",
     },
   },
 }, decisionProtocolOpts);

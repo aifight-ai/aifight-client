@@ -154,6 +154,7 @@ test("rejects entry.match_id that disagrees with payload-derived value", () => {
         players: [],
         timeout_ms: 180000,
         new_events: null,
+        request_id: "ffffffff-0000-0000-0000-000000000001",
       },
     },
   };

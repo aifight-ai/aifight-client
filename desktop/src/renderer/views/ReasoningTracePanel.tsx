@@ -34,6 +34,16 @@ function TraceRow({ trace }: { trace: BridgeDecisionTrace }) {
     case "runtime_success":
       return (
         <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-2.5">
+          {trace.reasoning !== undefined && (
+            <div className="mb-2">
+              <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--accent)]">
+                {t("cockpit.modelThinking")}
+              </div>
+              <div className="whitespace-pre-wrap text-[11.5px] leading-relaxed text-[var(--text-muted)]">
+                {trace.reasoning.text}
+              </div>
+            </div>
+          )}
           <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
             {t("cockpit.modelOutput")}
           </div>

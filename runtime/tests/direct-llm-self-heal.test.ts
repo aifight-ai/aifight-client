@@ -128,27 +128,24 @@ describe("direct-llm self-heal (Batch C)", () => {
     await expect(makeProvider(adapter, config(OPUS)).decide(req())).rejects.toThrow(/500/);
   });
 
-  // ─── R13-F06: enforce the declared budget/token/timeout/retry ────────
+  // ─── maxTokens is the sole authority (no hidden per-decision budget) ──
 
-  it("F-06: clamps the first call to budgets.maxOutputTokensPerDecision", async () => {
+  it("requests exactly the profile's maxTokens — no hidden budget shrinks it", async () => {
     process.env.K = "sk-test";
     const { adapter, maxTokensSeen } = scriptedAdapter("anthropic_messages", [{}]);
-    // maxTokens far above the per-decision budget → the call requests the budget.
-    const profile: LLMProfile = { ...OPUS, budgets: { maxOutputTokensPerDecision: 4096 } };
+    // maxTokens below the model ceiling (128000) is passed through untouched.
+    const profile: LLMProfile = { ...OPUS, request: { maxTokens: 20000 } };
     await makeProvider(adapter, config(profile)).decide(req());
-    expect(maxTokensSeen).toEqual([4096]);
+    expect(maxTokensSeen).toEqual([20000]);
   });
 
-  it("F-06: self-heal raises toward the ceiling but never past the per-decision budget", async () => {
+  it("clamps the first call down to the model ceiling to avoid a provider 400", async () => {
     process.env.K = "sk-test";
-    const { adapter, maxTokensSeen } = scriptedAdapter("anthropic_messages", [{ truncated: true }, {}]);
-    // budget below the model ceiling (128000) → the self-heal retry stops at 50000.
-    const profile: LLMProfile = { ...OPUS, budgets: { maxOutputTokensPerDecision: 50000 } };
-    const out = (await makeProvider(adapter, config(profile)).decide(req())) as {
-      selfHealed?: { from: number; to: number };
-    };
-    expect(maxTokensSeen).toEqual([32000, 50000]);
-    expect(out.selfHealed).toEqual({ from: 32000, to: 50000 });
+    const { adapter, maxTokensSeen } = scriptedAdapter("anthropic_messages", [{}]);
+    // maxTokens above the opus ceiling (128000) → clamped to the ceiling only.
+    const profile: LLMProfile = { ...OPUS, request: { maxTokens: 999_999 } };
+    await makeProvider(adapter, config(profile)).decide(req());
+    expect(maxTokensSeen).toEqual([128000]);
   });
 
   it("F-06: declares the profile's retries.maxAttempts as the transient-retry budget", async () => {
@@ -159,19 +156,30 @@ describe("direct-llm self-heal (Batch C)", () => {
     expect(await provider.transientRetryCount?.("coup")).toBe(4);
   });
 
-  it("F-06: clampDecisionTimeout bounds the per-call wall-time without undercutting the turn budget", () => {
-    // absurd server value → capped to the global hard ceiling (never unbounded)
-    expect(clampDecisionTimeout(9_999_999, 30_000)).toBe(600_000);
-    // a legitimate server turn budget is HONORED, not undercut by the profile's
-    // shorter default (a slow reasoning model may need most of the turn)
-    expect(clampDecisionTimeout(180_000, 30_000)).toBe(180_000);
-    // no profile timeout and absurd server → clamped to the global hard cap
+  it("clampDecisionTimeout = min(requestMs, server deadline); floors ONLY when there is no server deadline", () => {
+    // The per-call timeout is the SMALLER of the server turn deadline and the
+    // client's requestMs, so a shorter requestMs lets a client fit several
+    // calls inside one turn (the platform only cares that a legal decision
+    // lands within the turn, not how the client spends it).
+    expect(clampDecisionTimeout(9_999_999, 30_000)).toBe(30_000); // requestMs is tighter
+    expect(clampDecisionTimeout(180_000, 30_000)).toBe(30_000); // requestMs is tighter
+    expect(clampDecisionTimeout(180_000, 300_000)).toBe(180_000); // server deadline is tighter
+    // no profile timeout → the server deadline governs, capped by the global ceiling
     expect(clampDecisionTimeout(9_999_999, undefined)).toBe(600_000);
+    expect(clampDecisionTimeout(180_000, undefined)).toBe(180_000);
     // server 0 ("no deadline") → the profile timeout is the fallback (never unbounded)
     expect(clampDecisionTimeout(0, 45_000)).toBe(45_000);
     // server 0 and no profile → global hard cap, never unbounded
     expect(clampDecisionTimeout(0, undefined)).toBe(600_000);
-    // floor: everything tiny stays at the minimum, not 0
-    expect(clampDecisionTimeout(1, 1)).toBe(1_000);
+
+    // Codex MEDIUM: a POSITIVE server deadline is authoritative and must NOT be
+    // rounded UP to the floor — flooring a near-deadline retry back to 1s would
+    // spend a paid call the platform has already timed out. min(requestMs, server)
+    // exactly, even below the floor (the caller then skips a sub-viable call).
+    expect(clampDecisionTimeout(50, 300_000)).toBe(50); // near-deadline retry → tiny, not 1_000
+    expect(clampDecisionTimeout(1, 1)).toBe(1); // server present → not floored (was 1_000)
+    // The floor still guards the no-server case (a tiny/zero requestMs governing).
+    expect(clampDecisionTimeout(0, 1)).toBe(1_000);
+    expect(clampDecisionTimeout(0, 200)).toBe(1_000);
   });
 });

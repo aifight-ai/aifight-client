@@ -1563,6 +1563,7 @@ describe("WSClient.send() — happy path (Step 5b2)", () => {
         type: "action",
         match_id: matchId,
         data: { type: "fold" },
+        request_id: "ffffffff-0000-0000-0000-000000000001",
       });
       await sleep(50);
       expect(server.receivedFrames()).toHaveLength(1);
@@ -1792,6 +1793,7 @@ describe("WSClientMessage — TypeScript-level guards (Step 5b2 strict union)", 
       type: "action",
       match_id: "00000000-0000-4000-8000-000000000001",
       data: { type: "fold" },
+      request_id: "ffffffff-0000-0000-0000-000000000001",
     };
     expect(ok.type).toBe("action");
   });

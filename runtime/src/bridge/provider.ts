@@ -14,6 +14,7 @@ import { fallbackLiarsDice } from "../games/liars_dice/fallback";
 import { parseTexasHoldemAction } from "../games/texas_holdem/action-parser";
 import { fallbackTexasHoldem } from "../games/texas_holdem/fallback";
 import { classifyDecisionError, type DecisionErrorClass } from "../llm/adapters/error-class.js";
+import type { BridgeMatchContext } from "./match-context-tracker.js";
 
 export interface BridgeRuntimeDecisionRequest {
   readonly game: GameType;
@@ -23,6 +24,13 @@ export interface BridgeRuntimeDecisionRequest {
   readonly publicState: unknown;
   readonly timeoutMs: number;
   readonly strategy?: BridgeDecisionStrategy;
+  /**
+   * Accumulated player-view match context (event log since game start + the
+   * platform's rules summary) so the provider can show the model the match
+   * history, not just the current snapshot. Optional: absent when the runner
+   * has no tracker (mock paths) or nothing was observed yet.
+   */
+  readonly matchContext?: BridgeMatchContext;
   /**
    * Present only on an illegal-output retry (§3 Phase A): tells the provider
    * what was wrong with the model's previous reply so it can ask the model to
@@ -81,6 +89,19 @@ export interface BridgeRuntimeDecisionResult {
   readonly profileId?: string;
   /** Set when the provider auto-retried this decision at a higher maxTokens. */
   readonly selfHealed?: { readonly from: number; readonly to: number };
+  /** Captured model reasoning (opt-in via config.captureReasoning). */
+  readonly reasoning?: BridgeDecisionReasoning;
+}
+
+/**
+ * Model reasoning/thinking captured for the LOCAL session log (opt-in via
+ * config.captureReasoning). Local-only by construction: the outgoing action
+ * message has no field for reasoning text, so it never leaves the machine.
+ */
+export interface BridgeDecisionReasoning {
+  readonly text: string;
+  /** True when the captured text was cut at the local storage cap. */
+  readonly truncated?: boolean;
 }
 
 export interface BridgeRuntimeDecisionUsage {
@@ -111,6 +132,7 @@ function unwrapDecideOutput(out: BridgeRuntimeDecideOutput): {
   truncated?: boolean;
   profileId?: string;
   selfHealed?: { from: number; to: number };
+  reasoning?: BridgeDecisionReasoning;
 } {
   if (typeof out === "object" && out !== null && "raw" in out) {
     const result = out as BridgeRuntimeDecisionResult;
@@ -121,6 +143,7 @@ function unwrapDecideOutput(out: BridgeRuntimeDecideOutput): {
       ...(result.truncated ? { truncated: true } : {}),
       ...(result.profileId !== undefined ? { profileId: result.profileId } : {}),
       ...(result.selfHealed !== undefined ? { selfHealed: result.selfHealed } : {}),
+      ...(result.reasoning !== undefined ? { reasoning: result.reasoning } : {}),
     };
   }
   return { raw: out as string | LegalAction };
@@ -201,6 +224,8 @@ export type BridgeDecisionTrace =
       readonly profileId?: string;
       /** Set when the provider auto-raised maxTokens and retried this decision. */
       readonly selfHealed?: { readonly from: number; readonly to: number };
+      /** Captured model reasoning (opt-in via config.captureReasoning; local-only). */
+      readonly reasoning?: BridgeDecisionReasoning;
     }
   | {
       readonly type: "runtime_failure";
@@ -269,6 +294,15 @@ export interface BuildBridgeDecisionProviderOptions {
     readonly matchId: string;
     readonly playerId?: string;
   }) => BridgeDecisionStrategy | undefined;
+  /**
+   * Accumulated match context (player-view event log + rules summary) for this
+   * decision's session. Best-effort: a throwing loader is treated as absent so
+   * context can never block the decision itself.
+   */
+  readonly loadMatchContext?: (input: {
+    readonly game: GameType;
+    readonly matchId: string;
+  }) => BridgeMatchContext | undefined;
   readonly onTrace?: (trace: BridgeDecisionTrace) => void;
   /**
    * Corrective retries for unparseable/illegal model output before falling
@@ -362,9 +396,11 @@ export function buildBridgeDecisionProvider(
         matchId: ctx.matchId,
         playerId: request.playerId,
       });
+      const matchContext = loadMatchContextSafely(opts, { game, matchId: ctx.matchId });
       const requestWithStrategy: BridgeRuntimeDecisionRequest = {
         ...request,
         ...(strategy !== undefined && strategy.sections.length > 0 ? { strategy } : {}),
+        ...(matchContext !== undefined ? { matchContext } : {}),
       };
 
       opts.onTrace?.({
@@ -415,6 +451,7 @@ export function buildBridgeDecisionProvider(
             ...(out.truncated ? { truncated: true } : {}),
             ...(out.profileId !== undefined ? { profileId: out.profileId } : {}),
             ...(out.selfHealed !== undefined ? { selfHealed: out.selfHealed } : {}),
+            ...(out.reasoning !== undefined ? { reasoning: out.reasoning } : {}),
           });
           break;
         } catch (cause) {
@@ -515,6 +552,7 @@ export function buildBridgeDecisionProvider(
             matchId: ctx.matchId,
             attempt: callIndex,
             raw: summarizeRuntimeRaw(raw),
+            ...(out.reasoning !== undefined ? { reasoning: out.reasoning } : {}),
           });
         } catch (cause) {
           const profileId = profileIdFromCause(cause);
@@ -739,6 +777,19 @@ function loadStrategySafely(
       matchId: input.matchId,
       error: stringifyCause(cause),
     });
+    return undefined;
+  }
+}
+
+/** Match context is additive — a broken loader must never block the decision. */
+function loadMatchContextSafely(
+  opts: BuildBridgeDecisionProviderOptions,
+  input: { readonly game: GameType; readonly matchId: string },
+): BridgeMatchContext | undefined {
+  if (!opts.loadMatchContext) return undefined;
+  try {
+    return opts.loadMatchContext(input);
+  } catch {
     return undefined;
   }
 }

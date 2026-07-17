@@ -492,12 +492,10 @@ function decisionReady(
           type: "action",
           match_id: pendingAction.data.match_id,
           data: action,
-          // F07 (protocol v1.2): echo the request_id so the server can
-          // recognize an answer to a superseded request and reply with a
-          // benign action_stale instead of judging it against new state.
-          ...(pendingAction.data.request_id !== undefined
-            ? { request_id: pendingAction.data.request_id }
-            : {}),
+          // F07 (protocol v1.2, REQUIRED since the 2026-07-16 enforcement):
+          // echo the request_id so the server can pin this answer to the
+          // decision it belongs to; an id-less submission is refused unjudged.
+          request_id: pendingAction.data.request_id,
           ...(usage !== undefined ? { usage } : {}),
           // F09 (protocol v1.2): decision provenance — lets the platform
           // show how much of the record is model vs local fallback.

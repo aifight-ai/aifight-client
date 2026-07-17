@@ -21,8 +21,8 @@ function resolved(model: string): LLMProfile {
     apiKey: "sk",
     temperature: 0.7,
     maxTokens: 1024,
-    timeouts: { requestMs: 1000, connectMs: 1000 },
-    retries: { maxAttempts: 1, backoffMs: 0 },
+    timeouts: { requestMs: 1000 },
+    retries: { maxAttempts: 1 },
   };
 }
 
@@ -141,8 +141,8 @@ function resolvedGemini(model: string): LLMProfile {
     apiKey: "k",
     temperature: 0.7,
     maxTokens: 1024,
-    timeouts: { requestMs: 1000, connectMs: 1000 },
-    retries: { maxAttempts: 1, backoffMs: 0 },
+    timeouts: { requestMs: 1000 },
+    retries: { maxAttempts: 1 },
   };
 }
 
@@ -231,8 +231,8 @@ function resolvedResponses(model: string, verbosity?: "low" | "medium" | "high")
     temperature: null,
     maxTokens: 1024,
     ...(verbosity !== undefined ? { verbosity } : {}),
-    timeouts: { requestMs: 1000, connectMs: 1000 },
-    retries: { maxAttempts: 1, backoffMs: 0 },
+    timeouts: { requestMs: 1000 },
+    retries: { maxAttempts: 1 },
   };
 }
 

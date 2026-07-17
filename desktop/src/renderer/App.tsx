@@ -711,6 +711,12 @@ function SettingsView() {
   // Auto self-review mode (off | all | losses_only) — read/written via the same
   // `aifight config review` the CLI uses, so app and CLI stay in sync.
   const [selfReviewMode, setSelfReviewMode] = useState<SelfReviewMode>("off");
+  // Reasoning capture (config.captureReasoning) — local-only model-thinking log,
+  // same `aifight config reasoning` subcommand the CLI uses.
+  const [reasoningCapture, setReasoningCapture] = useState(false);
+  // Monotonic op counter so an out-of-order async confirm (rapid double-toggle,
+  // or the mount-time read racing a click) can never overwrite a newer state.
+  const reasoningOpSeq = useRef(0);
 
   useEffect(() => {
     void getLaunchAtLogin().then(setLaunchAtLoginState);
@@ -722,6 +728,12 @@ function SettingsView() {
       if (r.exitCode !== 0) return;
       const mode = (r.json as { selfReview?: { autoMode?: string } } | undefined)?.selfReview?.autoMode;
       if (mode === "off" || mode === "all" || mode === "losses_only") setSelfReviewMode(mode);
+    });
+    void runCli({ kind: "configReasoningGet" }).then((r) => {
+      if (reasoningOpSeq.current !== 0) return; // user already toggled — don't clobber
+      if (r.exitCode !== 0) return;
+      const enabled = (r.json as { captureReasoning?: unknown } | undefined)?.captureReasoning;
+      if (typeof enabled === "boolean") setReasoningCapture(enabled);
     });
   }, []);
 
@@ -755,6 +767,28 @@ function SettingsView() {
   const onSelfReview = (mode: SelfReviewMode) => {
     setSelfReviewMode(mode); // optimistic — the CLI write is the source of truth
     void runCli({ kind: "configReviewSet", mode });
+  };
+
+  const onReasoningCapture = (v: "on" | "off") => {
+    const enabled = v === "on";
+    const op = ++reasoningOpSeq.current;
+    setReasoningCapture(enabled); // optimistic; confirmed (or reverted) below
+    // Privacy switch must never lie: confirm from the CLI write's own JSON
+    // echo, and on failure re-read the real state instead of keeping the
+    // optimistic value. A stale (superseded) confirm never applies.
+    void runCli({ kind: "configReasoningSet", enabled }).then((r) => {
+      if (op !== reasoningOpSeq.current) return; // a newer toggle owns the state
+      const confirmed = (r.json as { captureReasoning?: unknown } | undefined)?.captureReasoning;
+      if (r.exitCode === 0 && typeof confirmed === "boolean") {
+        setReasoningCapture(confirmed);
+        return;
+      }
+      void runCli({ kind: "configReasoningGet" }).then((g) => {
+        if (op !== reasoningOpSeq.current) return;
+        const actual = (g.json as { captureReasoning?: unknown } | undefined)?.captureReasoning;
+        if (g.exitCode === 0 && typeof actual === "boolean") setReasoningCapture(actual);
+      });
+    });
   };
 
   return (
@@ -821,6 +855,16 @@ function SettingsView() {
             { value: "off", label: t("settings.selfReview.off") },
             { value: "all", label: t("settings.selfReview.all") },
             { value: "losses_only", label: t("settings.selfReview.lossesOnly") },
+          ]}
+        />
+      </SettingRow>
+      <SettingRow title={t("settings.reasoningCapture.label")} hint={t("settings.reasoningCapture.hint")}>
+        <Segmented
+          value={reasoningCapture ? "on" : "off"}
+          onChange={onReasoningCapture}
+          options={[
+            { value: "off", label: t("settings.reasoningCapture.off") },
+            { value: "on", label: t("settings.reasoningCapture.on") },
           ]}
         />
       </SettingRow>

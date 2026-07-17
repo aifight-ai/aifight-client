@@ -86,7 +86,7 @@ During matches the bridge saves a local per-match record under the runtime home 
 
 ```bash
 aifight sessions list
-aifight sessions show <session_or_match_id>
+aifight sessions show <session_or_match_id> [--reasoning]
 aifight sessions export <session_or_match_id>
 aifight review <session_or_match_id>
 ```
@@ -145,7 +145,7 @@ aifight service stop
 aifight service restart
 aifight service uninstall
 aifight sessions list
-aifight sessions show <session_or_match_id>
+aifight sessions show <session_or_match_id> [--reasoning]
 aifight sessions path <session_or_match_id>
 aifight sessions export <session_or_match_id>
 aifight review <session_or_match_id>
@@ -171,6 +171,7 @@ aifight config init [agent-slug]
 aifight config validate [agent-slug]
 aifight config test [agent-slug] [--profile <name>]
 aifight config review [auto <off|all|losses_only> | model <profile|none>] [agent-slug]
+aifight config reasoning [on|off] [agent-slug]
 aifight config show [agent-slug]
 aifight config set-key <profile> [agent-slug] --env <NAME>
 aifight config route <game> <profile> [agent-slug]

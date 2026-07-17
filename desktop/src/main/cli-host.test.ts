@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { argvForCliOp } from "./cli-host";
+import { argvForCliOp, enqueueCliTask } from "./cli-host";
 import type { CliOp } from "../shared/ipc";
 
 describe("argvForCliOp — fixed argv templates", () => {
@@ -94,6 +94,55 @@ describe("argvForCliOp — fixed argv templates", () => {
       "losses_only",
     ]);
     expect(argvForCliOp({ kind: "configReviewSet", mode: "everything" as never })).toBeNull();
+  });
+
+  it("enqueueCliTask: strict FIFO — next task starts only after the previous settles; a failure never breaks the chain", async () => {
+    const order: string[] = [];
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => (releaseA = resolve));
+    const a = enqueueCliTask(async () => {
+      order.push("a:start");
+      await gateA;
+      order.push("a:end");
+      return "A";
+    });
+    const b = enqueueCliTask(async () => {
+      order.push("b:start");
+      throw new Error("boom");
+    });
+    const c = enqueueCliTask(async () => {
+      order.push("c:start");
+      return "C";
+    });
+
+    // While A is blocked, B and C must not have started (this is exactly the
+    // rapid-double-toggle ordering guarantee: the older write can never land
+    // after the newer one).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(order).toEqual(["a:start"]);
+
+    releaseA();
+    await expect(a).resolves.toBe("A");
+    await expect(b).rejects.toThrow("boom");
+    await expect(c).resolves.toBe("C");
+    expect(order).toEqual(["a:start", "a:end", "b:start", "c:start"]);
+  });
+
+  it("configReasoning: get maps to show; set only accepts a real boolean", () => {
+    expect(argvForCliOp({ kind: "configReasoningGet" })).toEqual(["config", "reasoning", "--json"]);
+    expect(argvForCliOp({ kind: "configReasoningSet", enabled: true })).toEqual([
+      "config",
+      "reasoning",
+      "on",
+      "--json",
+    ]);
+    expect(argvForCliOp({ kind: "configReasoningSet", enabled: false })).toEqual([
+      "config",
+      "reasoning",
+      "off",
+      "--json",
+    ]);
+    expect(argvForCliOp({ kind: "configReasoningSet", enabled: "yes" as never })).toBeNull();
   });
 
   it("configTest: validates slug + profileId", () => {

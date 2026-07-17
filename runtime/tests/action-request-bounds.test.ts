@@ -24,6 +24,7 @@ function actionRequestFrame(overrides: Record<string, unknown> = {}): string {
       players: [],
       timeout_ms: 300000,
       new_events: [],
+      request_id: "ffffffff-0000-0000-0000-000000000001",
       ...overrides,
     },
   });
@@ -42,6 +43,11 @@ describe("action_request resource bounds (R13-F03)", () => {
   it("accepts a minimal valid action_request (control)", () => {
     const parsed = parseServerFrame(actionRequestFrame());
     expect(parsed.type).toBe("action_request");
+  });
+
+  it("rejects an EMPTY request_id string (minLength — the client could never produce the REQUIRED echo)", () => {
+    const frame = actionRequestFrame({ request_id: "" });
+    expect(() => parseServerFrame(frame)).toThrow(/action_request/);
   });
 
   it("rejects an over-length request_id string (maxLength)", () => {

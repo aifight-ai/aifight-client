@@ -131,6 +131,7 @@ describe("LocalMatchSessionStore", () => {
       type: "action",
       match_id: "session-1",
       data: { type: "challenge" },
+      request_id: "req-1",
     });
     store.recordServerMessage(config, gameOver());
 

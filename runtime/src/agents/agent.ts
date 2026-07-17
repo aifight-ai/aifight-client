@@ -153,7 +153,9 @@ interface ActiveDecision {
   /** Aborted when this decision is superseded (or the agent stops) so the
    *  in-flight provider call can cancel its paid HTTP request (R13-F02). */
   readonly controller: AbortController;
-  /** The action_request `request_id` this decision answers, when present. */
+  /** The action_request `request_id` this decision answers (every
+   *  action_request carries one since the 2026-07-16 v1.2 enforcement;
+   *  kept optional here as defensive internal bookkeeping only). */
   readonly requestId?: string;
 }
 

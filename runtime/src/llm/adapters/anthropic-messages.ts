@@ -297,6 +297,7 @@ function parseResponse(raw: AnthropicResponse): {
 } {
   let text = "";
   let reasoningSummary: string | undefined;
+  let fullThinking = "";
 
   for (const block of raw.content) {
     if (block.type === "text") {
@@ -305,8 +306,16 @@ function parseResponse(raw: AnthropicResponse): {
       const tb = block as AnthropicThinkingBlock;
       if (tb.summary) {
         reasoningSummary = tb.summary;
+      } else if (tb.thinking) {
+        // Legacy extended thinking (budget_tokens models) carries the full
+        // chain of thought instead of a summary — collect it so reasoning
+        // capture works there too (the caller truncates before storing).
+        fullThinking += (fullThinking ? "\n\n" : "") + tb.thinking;
       }
     }
+  }
+  if (reasoningSummary === undefined && fullThinking !== "") {
+    reasoningSummary = fullThinking;
   }
 
   const stopReason = normalizeAnthropicStop(raw.stop_reason);

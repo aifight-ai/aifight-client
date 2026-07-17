@@ -132,9 +132,9 @@ describe("interactive config — multi-profile manager (⑦)", () => {
   it("edits a field (stream) while keeping the rest, via one config update call", async () => {
     scaffold(["alpha"]);
     // Choose 2 (edit) → pick 1 → don't list models → keep model/thinking/effort/
-    // maxTokens/baseURL (Enter ×5) → stream = never → decline test → q.
+    // maxTokens/request-timeout/baseURL (Enter ×6) → stream = never → decline test → q.
     const { io } = makeIO({
-      lines: ["2", "1", "", "", "", "", "", "never", "q"],
+      lines: ["2", "1", "", "", "", "", "", "", "never", "q"],
       yesno: [false /* list models? */, false /* test now? */],
     });
     const { env } = captureEnv();
@@ -148,9 +148,10 @@ describe("interactive config — multi-profile manager (⑦)", () => {
   it("makes no write when the edit changes nothing (all Enter)", async () => {
     scaffold(["alpha"]);
     const before = fs.readFileSync(path.join(agentDir(), "config.json"), "utf8");
-    // edit alpha, keep every field, no test, then q.
+    // edit alpha, keep every field (model/thinking/effort/maxTokens/request-timeout/
+    // baseURL/stream = Enter ×7), no test, then q.
     const { io } = makeIO({
-      lines: ["2", "1", "", "", "", "", "", "", "q"],
+      lines: ["2", "1", "", "", "", "", "", "", "", "q"],
       yesno: [false /* list models? */],
     });
     const { env, out } = captureEnv();
@@ -164,9 +165,9 @@ describe("interactive config — multi-profile manager (⑦)", () => {
     const before = fs.readFileSync(path.join(agentDir(), "config.json"), "utf8");
     // edit alpha → don't list models → re-type each field's CURRENT value verbatim
     // instead of pressing Enter (model, thinking on, effort none, maxTokens,
-    // baseURL none, stream) → q. Nothing changed, so no write and no update call.
+    // request-timeout 300, baseURL none, stream) → q. Nothing changed, so no write.
     const { io } = makeIO({
-      lines: ["2", "1", "claude-sonnet-4-6", "on", "", "32000", "", "auto", "q"],
+      lines: ["2", "1", "claude-sonnet-4-6", "on", "", "32000", "300", "", "auto", "q"],
       yesno: [false /* list models? */],
     });
     const { env, out } = captureEnv();

@@ -167,16 +167,9 @@ export interface LLMProfile {
   readonly reasoning?: CanonicalReasoningConfig;
   readonly timeouts: {
     readonly requestMs: number;
-    readonly connectMs: number;
   };
   readonly retries: {
     readonly maxAttempts: number;
-    readonly backoffMs: number;
-  };
-  readonly budgets?: {
-    readonly maxCostUSDPerMatch?: number;
-    readonly maxCostUSDPerDay?: number;
-    readonly maxOutputTokensPerDecision?: number;
   };
 }
 

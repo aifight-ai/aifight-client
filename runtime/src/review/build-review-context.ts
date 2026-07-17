@@ -23,6 +23,12 @@ export interface ReviewContextTurn {
   readonly chose: string;
   /** The model's own short reason for the choice (truncated), if any. */
   readonly reasoning: string;
+  /**
+   * Captured model thinking for this decision (truncated), when the owner
+   * opted into config.captureReasoning. Local data only — richer than the
+   * one-line `reasoning`, so the review model sees WHY the agent chose.
+   */
+  readonly thinking?: string;
 }
 
 export type ReviewOutcome = "win" | "loss" | "draw" | "unknown";
@@ -48,6 +54,7 @@ export interface ReviewContext {
 const DEFAULT_MAX_TURNS = 40;
 const STATE_SUMMARY_MAX = 320;
 const REASONING_MAX = 360;
+const THINKING_MAX = 480;
 
 /**
  * Build the compressed review context. `maxTurns` caps how many agent decisions
@@ -104,6 +111,7 @@ function toTurn(decision: unknown, index: number): ReviewContextTurn | null {
   const legal = Array.isArray(req.legal_actions)
     ? req.legal_actions.map(actionType).filter((s): s is string => s.length > 0)
     : [];
+  const thinking = extractThinking(decision);
   return {
     index: index + 1,
     // R13-F03: decisions.jsonl now stores a bounded `state_summary` string
@@ -116,6 +124,7 @@ function toTurn(decision: unknown, index: number): ReviewContextTurn | null {
     legal,
     chose: choseSummary(decision.final_action),
     reasoning: truncate(extractReasoning(decision), REASONING_MAX),
+    ...(thinking !== undefined ? { thinking: truncate(thinking, THINKING_MAX) } : {}),
   };
 }
 
@@ -170,6 +179,36 @@ function extractReasoning(decision: Record<string, unknown>): string {
     }
   }
   return "";
+}
+
+/**
+ * Captured model thinking from the decision's traces (config.captureReasoning).
+ * Attribution gate: thinking is shown only when the final action was actually
+ * authored by the model (final_action.source === "runtime"), and then strictly
+ * from the LAST runtime_success — the call whose output became the action.
+ * A fallback action (rejected output + failed corrective retry, or a runtime
+ * failure) must never inherit a rejected call's thinking.
+ */
+function extractThinking(decision: Record<string, unknown>): string | undefined {
+  const traces = Array.isArray(decision.traces) ? decision.traces : [];
+  let finalSource: unknown;
+  for (let i = traces.length - 1; i >= 0; i--) {
+    const tr = traces[i];
+    if (isObject(tr) && tr.type === "final_action") {
+      finalSource = tr.source;
+      break;
+    }
+  }
+  if (finalSource !== "runtime") return undefined;
+  for (let i = traces.length - 1; i >= 0; i--) {
+    const tr = traces[i];
+    if (!isObject(tr) || tr.type !== "runtime_success") continue;
+    if (isObject(tr.reasoning) && typeof tr.reasoning.text === "string" && tr.reasoning.text.trim() !== "") {
+      return tr.reasoning.text.trim();
+    }
+    return undefined;
+  }
+  return undefined;
 }
 
 function deriveOutcome(resultLabel: string): ReviewOutcome {

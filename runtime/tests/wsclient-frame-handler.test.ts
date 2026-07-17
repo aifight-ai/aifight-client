@@ -83,12 +83,24 @@ describe("serializeClientMessage — outbound happy path", () => {
       type: "action",
       match_id: MATCH_ID_UUID,
       data: { type: "fold" },
+      request_id: "ffffffff-0000-0000-0000-000000000001",
     });
     expect(typeof out).toBe("string");
     const round = JSON.parse(out);
     expect(round.type).toBe("action");
     expect(round.match_id).toBe(MATCH_ID_UUID);
     expect(round.data).toEqual({ type: "fold" });
+    expect(round.request_id).toBe("ffffffff-0000-0000-0000-000000000001");
+  });
+
+  it("an action WITHOUT the request_id echo fails outbound schema validation (v1.2 enforcement 2026-07-16)", () => {
+    expect(() =>
+      serializeClientMessage({
+        type: "action",
+        match_id: MATCH_ID_UUID,
+        data: { type: "fold" },
+      } as never),
+    ).toThrow(/action.*schema validation/);
   });
 
   it("action with usage metadata passes outbound schema validation (§7B-1, protocol v1.1)", () => {
@@ -96,6 +108,7 @@ describe("serializeClientMessage — outbound happy path", () => {
       type: "action",
       match_id: MATCH_ID_UUID,
       data: { type: "fold" },
+      request_id: "ffffffff-0000-0000-0000-000000000002",
       usage: {
         model: "claude-x",
         input_tokens: 1200,

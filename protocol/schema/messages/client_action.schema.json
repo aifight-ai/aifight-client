@@ -4,7 +4,7 @@
   "title": "action",
   "description": "Sent by the client in response to `action_request`. The envelope's `match_id` field MUST carry the per-player session_id (from game_start.data.match_id / action_request.data.match_id). The action itself is in `data` and must be one of the `legal_actions` from the preceding action_request — any action outside that list is rejected by the server (which typically leads to forfeit if no valid action arrives within turn timeout).",
   "type": "object",
-  "required": ["type", "match_id", "data"],
+  "required": ["type", "match_id", "data", "request_id"],
   "additionalProperties": false,
   "properties": {
     "type": { "const": "action" },
@@ -18,7 +18,8 @@
     },
     "request_id": {
       "type": "string",
-      "description": "OPTIONAL echo of action_request.data.request_id (protocol v1.2, F07/R3-01). Strongly recommended when the action_request carried one: it lets the server detect that this action answers a SUPERSEDED request (e.g. another responder closed a Coup challenge/block window first) and reply with a benign `action_stale` instead of judging the action against a state this client never saw."
+      "minLength": 1,
+      "description": "REQUIRED echo of action_request.data.request_id (protocol v1.2, F07/R3-01; enforced 2026-07-16). Pins this submission to the exact decision it answers: the server detects an action answering a SUPERSEDED request (e.g. another responder closed a Coup challenge/block window first, or a reconnect resend replaced the id) and replies with a benign `action_stale` instead of judging the action against a state this client never saw. A submission without it is refused (`error` + `action_stale`; the action is never judged, no lease is consumed, no penalty) — an id-less duplicate that arrives after its decision resolved is otherwise indistinguishable from a fresh answer to the NEXT decision (cross-decision double apply). Connections declaring protocol < v1.2.0 are refused at the WebSocket handshake, so every client that can connect has the id to echo."
     },
     "decision": {
       "type": "object",

@@ -17,6 +17,28 @@ Each line:
 - `actor` — agent position ID (`p0`, `p1`, ...) or `server` for broadcast
 - `payload` — the full message object, validated against `../schema/messages/<type>.schema.json`
 
+## 2026-07-16 revision — protocol v1.2 request_id enforcement
+
+The corpus predates protocol v1.2 (F07 action-request epochs), so the
+original captures carried no `request_id`. When the echo became
+REQUIRED (v1.2.0 in-place revision, see `../spec/00-overview.md`
+Version history), every transcript was revised in the same change
+rather than re-captured:
+
+- each `action_request` gained a synthetic `data.request_id`
+  (`ffffffff-…` prefix, per-file counter — same fixture-uuid style as
+  the `aaaa…`/`bbbb…` actor/match ids);
+- each client `action` echoes the id of the most recent
+  `action_request` delivered to the same (actor, session) — the exact
+  pairing the live server issues, including retry offers and reconnect
+  resends superseding the earlier id;
+- `welcome.data.server_protocol_version` bumped `v1.0.0` → `v1.2.0`
+  so no frame claims a pre-v1.2 server while carrying v1.2 fields.
+
+Timestamps, ordering, states, and every other byte are unchanged, so
+the captures remain faithful oracles for everything they originally
+recorded.
+
 ## Phase 0 committed corpus (actual state as of M0 sign-off)
 
 Two classes — **real captures** were logged from the deployed beta

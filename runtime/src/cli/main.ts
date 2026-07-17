@@ -122,6 +122,7 @@ export async function run(
     { name: "model", type: "string" },
     { name: "display-name", type: "string" },
     { name: "max-tokens", type: "number" },
+    { name: "request-timeout", type: "number" },
     { name: "stream", type: "string" },
     { name: "thinking", type: "string" },
     { name: "effort", type: "string" },
@@ -131,6 +132,8 @@ export async function run(
     { name: "key-stdin", type: "boolean" },
     { name: "use", type: "boolean" },
     { name: "no-test", type: "boolean" },
+    // `aifight sessions show` — include captured model thinking (local-only).
+    { name: "reasoning", type: "boolean" },
     // `aifight stats` / `aifight prices` flags (§7A local usage + cost).
     { name: "days", type: "number" },
     { name: "by-model", type: "boolean" },

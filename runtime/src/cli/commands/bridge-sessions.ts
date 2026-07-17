@@ -24,7 +24,7 @@ async function truncationFixTokens(profileId: string | undefined): Promise<numbe
 
 const USAGE = [
   "usage: aifight sessions list",
-  "       aifight sessions show <session_or_match_id>",
+  "       aifight sessions show <session_or_match_id> [--reasoning]",
   "       aifight sessions path <session_or_match_id>",
   "       aifight sessions export <session_or_match_id>",
 ].join("\n");
@@ -66,6 +66,9 @@ export async function runBridgeSessions(
       ? await truncationFixTokens(item.truncated_profile)
       : undefined;
     env.stdout(formatSessionDetail(item, fix));
+    if (args.flags["reasoning"] === true) {
+      env.stdout(formatSessionReasoning(store, item));
+    }
     return 0;
   }
 
@@ -162,6 +165,60 @@ function formatSessionDetail(item: LocalMatchSessionListItem, fixTokens?: number
 
 function errorClassTotal(item: LocalMatchSessionListItem): number {
   return Object.values(item.error_class_counts ?? {}).reduce((a, b) => a + b, 0);
+}
+
+// Terminal cap per decision so a DeepSeek-length capture stays readable;
+// the full text is always available via `sessions export`.
+const SHOW_THINKING_MAX = 600;
+
+/** `sessions show --reasoning`: captured model thinking, one block per decision.
+ *  Local data only (decisions.jsonl) — this never talks to the platform. */
+function formatSessionReasoning(
+  store: ReturnType<typeof createLocalMatchSessionStore>,
+  item: LocalMatchSessionListItem,
+): string {
+  const exported = store.exportSession(item.session_id);
+  const lines: string[] = ["", "Model thinking (local only):"];
+  let shown = 0;
+  const decisions = exported?.decisions ?? [];
+  decisions.forEach((decision, i) => {
+    if (typeof decision !== "object" || decision === null) return;
+    const d = decision as { traces?: unknown; final_action?: unknown };
+    const traces = Array.isArray(d.traces) ? d.traces : [];
+    // Attribution gate (mirrors build-review-context.extractThinking): only a
+    // model-authored final action (final_action.source === "runtime") may show
+    // thinking, and strictly from the LAST runtime_success — a fallback action
+    // must never inherit a rejected call's thinking.
+    let finalSource: unknown;
+    for (let j = traces.length - 1; j >= 0; j--) {
+      const tr = traces[j] as { type?: unknown; source?: unknown } | null;
+      if (tr && tr.type === "final_action") {
+        finalSource = tr.source;
+        break;
+      }
+    }
+    if (finalSource !== "runtime") return;
+    let thinking: string | undefined;
+    for (let j = traces.length - 1; j >= 0; j--) {
+      const tr = traces[j] as { type?: unknown; reasoning?: { text?: unknown } } | null;
+      if (!tr || tr.type !== "runtime_success") continue;
+      const text = tr.reasoning?.text;
+      if (typeof text === "string" && text.trim() !== "") thinking = text.trim();
+      break;
+    }
+    if (thinking === undefined) return;
+    shown++;
+    const fa = d.final_action as { type?: unknown } | undefined;
+    const chose = fa && typeof fa.type === "string" ? fa.type : "?";
+    const capped =
+      thinking.length <= SHOW_THINKING_MAX ? thinking : `${thinking.slice(0, SHOW_THINKING_MAX)}…[truncated]`;
+    lines.push(`  [t${i + 1}] chose ${chose}`);
+    for (const row of capped.split("\n")) lines.push(`      ${row}`);
+  });
+  if (shown === 0) {
+    lines.push("  (none recorded — enable with: aifight config reasoning on)");
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 /** One-line, actionable hint per failure class for `sessions show`. */

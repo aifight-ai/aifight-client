@@ -208,7 +208,7 @@ export function parseFeatureFlags(
 // ─── D1: shared LLM profile builder ──────────────────────────────────
 //
 // The single source of truth for the SHAPE of an LLM profile (defaults for
-// responseFormat / timeouts / retries / budgets, and the thinking block).
+// responseFormat / timeouts / retries, and the thinking block).
 // Both the interactive wizard (onboard-llm.ts profileFor) and the headless
 // `config add`/`update` commands build profiles through this, so a profile
 // configured either way is byte-identical.
@@ -220,6 +220,8 @@ export interface ProfileBuildSettings {
   readonly effort?: ReasoningEffort;
   /** Output-token ceiling. */
   readonly maxTokens: number;
+  /** Per-call LLM request timeout in ms (user-settable). Omit → default 300000. */
+  readonly requestTimeoutMs?: number;
   /** SSE streaming preference. */
   readonly stream: "auto" | "always" | "never";
   /** null = omit temperature (provider default). */
@@ -263,9 +265,8 @@ export function buildLLMProfile(input: {
       ...(hasFeatures ? { features: s.features } : {}),
     },
     thinking,
-    timeouts: { requestMs: 30000, connectMs: 10000 },
-    retries: { maxAttempts: 2, backoffMs: 500 },
-    budgets: { maxCostUSDPerMatch: 1.0, maxOutputTokensPerDecision: 4096 },
+    timeouts: { requestMs: s.requestTimeoutMs ?? 300000 },
+    retries: { maxAttempts: 2 },
   };
 }
 

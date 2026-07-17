@@ -46,6 +46,10 @@ SemVer on `../VERSION`:
   continue to work; new clients may use the new feature.
 - **Patch bump** — doc-only or non-observable internal change.
 
+One documented exception to the major-bump rule exists: the
+2026-07-16 in-place revision of v1.2.0 (see Version history below for
+the full rationale).
+
 The server sends its version in every
 [`welcome`](../schema/messages/server_welcome.schema.json) message
 (`data.server_protocol_version`, required since 2026-04-23). The
@@ -78,6 +82,29 @@ leading integer of `../VERSION`).
 
 ## Version history
 
+- **v1.2.0 revision (2026-07-16, in-place)** — the `request_id` echo
+  on the client `action` message is now REQUIRED, and connections
+  declaring `X-AIFight-Protocol-Version` < v1.2.0 (or no header, or an
+  unparseable value) are refused at the WebSocket handshake with a
+  readable `error` frame. Rationale: the server handles frames from a
+  connection sequentially, so an id-less duplicate `action` that
+  enters the handler only after its first copy resolved the decision
+  is indistinguishable from a fresh answer to the NEXT decision —
+  tolerating the omission left a deterministic cross-decision double
+  apply open, and the echo only closes it if it is mandatory.
+  Enforcement: a submission without `request_id` is answered with
+  `error` + `action_stale` — never judged, no lease consumed, no
+  penalty; the turn resolves on its own clock (timeout → deterministic
+  fallback + strike). By the letter of the SemVer policy above this
+  changes the required-field set and would demand a major bump; it
+  ships as an in-place revision of v1.2.0 instead (owner-approved,
+  2026-07-16, pre-launch): zero pre-v1.2 users exist, every shipped
+  v1.2.0 client already echoes unconditionally (observed behavior
+  unchanged), and a major bump would make those same conformant
+  clients hard-refuse the server on `welcome` major mismatch —
+  strictly worse than the exception. Schemas, generated types, golden
+  transcripts (re-recorded with ids), SDKs and docs are revised in the
+  same change.
 - **v1.2.0 (2026-06-12, F07/R3-01)** — additive: action-request epochs.
   `action_request.data` gains a server-generated `request_id`; the
   client `action` message gains an optional `request_id` echo; new

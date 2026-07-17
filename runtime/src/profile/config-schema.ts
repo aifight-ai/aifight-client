@@ -110,7 +110,12 @@ export interface RequestConfig {
    * temperature=1 in that mode).
    */
   temperature?: number | null;
-  /** Maximum output tokens per LLM call. */
+  /**
+   * Maximum output tokens per LLM call — the SOLE authority on decision output
+   * length. Bounded only by the model's real output ceiling (to avoid a 400);
+   * an unknown model's value is not clamped. No hidden per-decision budget
+   * silently shrinks it.
+   */
   maxTokens?: number;
   /**
    * Response format hint. "json" instructs the provider to return JSON where
@@ -161,24 +166,24 @@ export interface ThinkingConfig {
 // ---------------------------------------------------------------------------
 
 export interface TimeoutsConfig {
-  /** Total request timeout in milliseconds. */
+  /**
+   * Per-call LLM request timeout in milliseconds — how long the app/CLI waits
+   * for a single model call. User-settable; default 300000 (5 min), max 300000.
+   * Purely client-side: the platform only enforces "submit a legal decision
+   * within its turn deadline" and never reads this value. Set it shorter to fit
+   * several retries inside a turn; set it to 300000 to let one call use the
+   * whole turn.
+   */
   requestMs?: number;
-  /** TCP connection timeout in milliseconds. */
-  connectMs?: number;
 }
 
 export interface RetriesConfig {
-  /** Maximum number of attempts (1 = no retry). */
+  /**
+   * Number of retries on transient API errors (rate limit / 5xx / timeout /
+   * network). 0 = no retry. Default 2. Exponential back-off is applied
+   * internally on a fixed schedule (not user-tunable).
+   */
   maxAttempts?: number;
-  /** Base back-off in milliseconds (exponential back-off applied). */
-  backoffMs?: number;
-}
-
-export interface BudgetsConfig {
-  /** Abort a match if cumulative LLM cost exceeds this (USD). */
-  maxCostUSDPerMatch?: number;
-  /** Truncate / warn when a single decision consumes more than this many tokens. */
-  maxOutputTokensPerDecision?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,8 +215,6 @@ export interface LLMProfile {
   timeouts?: TimeoutsConfig;
   /** Retry policy on transient errors (429, 503, network). */
   retries?: RetriesConfig;
-  /** Cost and token budgets that trigger warnings or hard stops. */
-  budgets?: BudgetsConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +268,17 @@ export interface LLMConfig {
   routing: RoutingConfig;
   /** Post-match self-review behavior (optional; absent = feature off). */
   selfReview?: SelfReviewConfig;
+  /**
+   * Capture the model's reasoning/thinking text for each decision into the
+   * LOCAL session log (decisions.jsonl) so replay and self-review can show
+   * what the model was thinking. Default false. Purely local: the outgoing
+   * action message has no field for reasoning text, so it never reaches the
+   * platform. Where the provider supports it, enabling this asks for a
+   * summary (Anthropic adaptive-thinking display, OpenAI Responses
+   * reasoning.summary); DeepSeek reasoner output is stored truncated;
+   * protocols without reasoning output record nothing.
+   */
+  captureReasoning?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -314,11 +328,10 @@ function isObject(v: unknown): v is Record<string, unknown> {
 // token count, wait forever, or retry endlessly. Generous enough that no valid
 // real-world config is rejected (the defaults sit far below these).
 const MAX_REQUEST_MAX_TOKENS = 1_000_000;
-const MAX_TIMEOUT_MS = 600_000; // 10 minutes
+// requestMs is a per-call client timeout; a turn is 300s, so waiting longer is
+// pointless. Its own ceiling (not the old shared 600s) enforces "<= 300s".
+const MAX_REQUEST_TIMEOUT_MS = 300_000; // 5 minutes
 const MAX_RETRY_ATTEMPTS = 10;
-const MAX_BACKOFF_MS = 600_000;
-const MAX_COST_USD_PER_MATCH = 1_000_000;
-const MAX_OUTPUT_TOKENS_PER_DECISION = 1_000_000;
 
 /**
  * R13-F06: validate a present numeric config field is finite and within a
@@ -526,12 +539,7 @@ function validateProfile(raw: unknown, path: string, errors: string[]): void {
     } else {
       validateBoundedNumber(raw.timeouts.requestMs, `${path}.timeouts.requestMs`, errors, {
         min: 1,
-        max: MAX_TIMEOUT_MS,
-        integer: true,
-      });
-      validateBoundedNumber(raw.timeouts.connectMs, `${path}.timeouts.connectMs`, errors, {
-        min: 1,
-        max: MAX_TIMEOUT_MS,
+        max: MAX_REQUEST_TIMEOUT_MS,
         integer: true,
       });
     }
@@ -543,36 +551,13 @@ function validateProfile(raw: unknown, path: string, errors: string[]): void {
       errors.push(`${path}.retries: must be an object if present`);
     } else {
       validateBoundedNumber(raw.retries.maxAttempts, `${path}.retries.maxAttempts`, errors, {
-        min: 1,
-        max: MAX_RETRY_ATTEMPTS,
-        integer: true,
-      });
-      validateBoundedNumber(raw.retries.backoffMs, `${path}.retries.backoffMs`, errors, {
         min: 0,
-        max: MAX_BACKOFF_MS,
+        max: MAX_RETRY_ATTEMPTS,
         integer: true,
       });
     }
   }
 
-  // budgets (optional)
-  if (raw.budgets !== undefined) {
-    if (!isObject(raw.budgets)) {
-      errors.push(`${path}.budgets: must be an object if present`);
-    } else {
-      validateBoundedNumber(raw.budgets.maxCostUSDPerMatch, `${path}.budgets.maxCostUSDPerMatch`, errors, {
-        min: 0,
-        max: MAX_COST_USD_PER_MATCH,
-        exclusiveMin: true,
-      });
-      validateBoundedNumber(
-        raw.budgets.maxOutputTokensPerDecision,
-        `${path}.budgets.maxOutputTokensPerDecision`,
-        errors,
-        { min: 1, max: MAX_OUTPUT_TOKENS_PER_DECISION, integer: true },
-      );
-    }
-  }
 }
 
 /** F40/R2-09: the provider API key is sent to this URL, so guard the obvious
@@ -742,6 +727,11 @@ export function validateConfig(raw: unknown): ValidationResult {
     errors.push("activeProfile: required non-empty string");
   }
 
+  // captureReasoning (optional)
+  if (raw.captureReasoning !== undefined && typeof raw.captureReasoning !== "boolean") {
+    errors.push("captureReasoning: must be a boolean if present");
+  }
+
   // profiles
   if (!isObject(raw.profiles)) {
     errors.push("profiles: must be a non-empty object");
@@ -816,16 +806,10 @@ export const DEFAULT_CONFIG: LLMConfig = {
         effort: "high",
       },
       timeouts: {
-        requestMs: 30000,
-        connectMs: 10000,
+        requestMs: 300000,
       },
       retries: {
         maxAttempts: 2,
-        backoffMs: 500,
-      },
-      budgets: {
-        maxCostUSDPerMatch: 1.0,
-        maxOutputTokensPerDecision: 4096,
       },
     },
   },

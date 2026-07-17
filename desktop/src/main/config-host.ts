@@ -248,6 +248,7 @@ export async function getConfig(slug: string = DEFAULT_SLUG): Promise<ConfigView
       effort: def.thinking?.effort ?? null,
       temperature: def.request?.temperature ?? null,
       maxTokens: def.request?.maxTokens ?? 16000,
+      requestTimeoutMs: def.timeouts?.requestMs ?? null,
       stream: def.request?.stream ?? "auto",
       verbosity: def.request?.verbosity ?? null,
       features: def.request?.features ?? {},
@@ -311,9 +312,13 @@ export async function saveProfile(slug: string, input: ProfileInput): Promise<Co
           return e ? { effort: e } : {};
         })(),
       },
-      timeouts: existing?.timeouts ?? { requestMs: 30000, connectMs: 10000 },
-      retries: existing?.retries ?? { maxAttempts: 2, backoffMs: 500 },
-      budgets: existing?.budgets ?? { maxCostUSDPerMatch: 1.0, maxOutputTokensPerDecision: 4096 },
+      timeouts: {
+        requestMs:
+          typeof input.requestTimeoutMs === "number" && input.requestTimeoutMs > 0
+            ? input.requestTimeoutMs
+            : existing?.timeouts?.requestMs ?? 300000,
+      },
+      retries: existing?.retries ?? { maxAttempts: 2 },
     };
     if (baseURL.length > 0) profile.baseURL = baseURL; // else omit → protocol default
 

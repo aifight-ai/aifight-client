@@ -15,6 +15,7 @@
 // Secret-handling rule: the raw API key NEVER passes through argv. set-key
 // only stores an indirection (env var name or a key-file path).
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -61,6 +62,7 @@ const USAGE = [
   "       aifight config route <game> <profile> [agent-slug]",
   "       aifight config use <profile> [agent-slug]",
   "       aifight config review [auto <off|all|losses_only> | model <profile|none>] [agent-slug]",
+  "       aifight config reasoning [on|off] [agent-slug]",
   "       aifight config validate [agent-slug]",
   "       aifight config init [agent-slug]                advanced: scaffold config files non-interactively",
   "  Configure direct-LLM mode. Your key is read only when you paste it or point",
@@ -111,6 +113,8 @@ export async function runConfig(args: HandlerArgs, env: HandlerEnv): Promise<num
       return runConfigUse(rest, env);
     case "review":
       return runConfigReview(rest, env);
+    case "reasoning":
+      return runConfigReasoning(rest, env);
     default: {
       const guess = suggestClosest(sub, KNOWN_CONFIG_SUBS);
       throw new UsageError(
@@ -365,6 +369,17 @@ async function editProfileInteractive(slug: string, view: ProfileView, io: Onboa
     else {
       const n = Number.parseInt(mtRaw, 10);
       if (n !== p.request?.maxTokens) flags["max-tokens"] = n;
+    }
+  }
+
+  // per-call request timeout (whole seconds; stored as ms in the profile)
+  const rtCur = p.timeouts?.requestMs !== undefined ? Math.round(p.timeouts.requestMs / 1000) : 300;
+  const rtRaw = (await io.promptLine(`  Per-call request timeout in seconds [keep ${rtCur}]: `)).trim();
+  if (rtRaw !== "") {
+    if (!/^\d+$/.test(rtRaw)) env.stdout("  (request timeout must be a whole number of seconds — keeping the current value.)\n");
+    else {
+      const sec = Number.parseInt(rtRaw, 10);
+      if (sec !== rtCur) flags["request-timeout"] = sec;
     }
   }
 
@@ -645,6 +660,11 @@ async function runConfigExplain(args: HandlerArgs, env: HandlerEnv): Promise<num
     String(p.request?.stream ?? "auto"),
     "SSE streaming. auto streams large/reasoning outputs; always|never to force.",
   );
+  field(
+    "timeouts.requestMs",
+    String(p.timeouts?.requestMs ?? "(default 300000)"),
+    "Per-call LLM request timeout (ms). How long each model call waits; a turn is 300s, so ≤ 300000.",
+  );
   const thinkingOn = caps.supportsThinking && p.thinking?.enabled !== false;
   const tempNote =
     thinkingOn || caps.samplingIgnoredWhenThinking
@@ -863,6 +883,47 @@ function printReviewConfig(env: HandlerEnv, slug: string, config: LLMConfig, jso
   return 0;
 }
 
+// ─── reasoning (capture model thinking locally) ──────────────────────
+//
+// Get/set config.captureReasoning: opt-in, LOCAL-ONLY persistence of the
+// model's per-decision thinking into decisions.jsonl (replay + self-review).
+// The wire protocol has no field for reasoning text, so it never uploads.
+// The desktop Settings panel drives the same subcommand via cliRun.
+
+async function runConfigReasoning(args: HandlerArgs, env: HandlerEnv): Promise<number> {
+  const usage = "usage: aifight config reasoning [on|off] [agent-slug]";
+  const action = args.positional[0];
+
+  if (action === "on" || action === "off") {
+    expectArity(args, 1, 2, usage);
+    const slug = (args.positional[1] as string | undefined) ?? "default";
+    const { configPath, config } = await readConfigJson(slug);
+    const next: LLMConfig = { ...config };
+    if (action === "on") next.captureReasoning = true;
+    else delete next.captureReasoning; // absent = off (keeps config.json minimal)
+    await writeConfigJson(configPath, next);
+    return printReasoningConfig(env, slug, next, args.jsonMode);
+  }
+
+  // No action → show current setting (optional agent-slug positional).
+  expectArity(args, 0, 1, usage);
+  const slug = (action as string | undefined) ?? "default";
+  const { config } = await readConfigJson(slug);
+  return printReasoningConfig(env, slug, config, args.jsonMode);
+}
+
+function printReasoningConfig(env: HandlerEnv, slug: string, config: LLMConfig, jsonMode: boolean): number {
+  const enabled = config.captureReasoning === true;
+  if (jsonMode) {
+    env.stdout(JSON.stringify({ agentSlug: slug, captureReasoning: enabled }) + "\n");
+    return 0;
+  }
+  env.stdout(`aifight config reasoning: agent "${slug}"\n`);
+  env.stdout(`  capture model thinking : ${enabled ? "on" : "off"}\n`);
+  env.stdout(`  storage                : local decisions.jsonl only — never uploaded\n`);
+  return 0;
+}
+
 // ─── shared config.json read/write ───────────────────────────────────
 
 async function readConfigJson(slug: string): Promise<{ configPath: string; config: LLMConfig }> {
@@ -894,7 +955,15 @@ async function writeConfigJson(configPath: string, config: LLMConfig): Promise<v
   if (!result.ok) {
     throw new CommandError("config_write_invalid", `refusing to write invalid config: ${result.errors.join("; ")}`);
   }
-  const tmp = `${configPath}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(config, null, 2) + "\n", "utf8");
-  await fs.rename(tmp, configPath);
+  // Unique temp name per writer: two concurrent `aifight config …` processes
+  // sharing one fixed ".tmp" could rename a torn file into place (same fix as
+  // the desktop config-host). rename() stays atomic per writer; last one wins.
+  const tmp = `${configPath}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify(config, null, 2) + "\n", "utf8");
+    await fs.rename(tmp, configPath);
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }

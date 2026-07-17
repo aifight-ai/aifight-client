@@ -100,6 +100,9 @@ export interface ClientMessageEnvelope {
   data?: unknown;
   /** REQUIRED for type=action (per client_action.schema.json), optional otherwise. */
   match_id?: string;
+  /** REQUIRED for type=action (v1.2 enforcement 2026-07-16): the echo of
+   *  action_request.data.request_id. ajv rejects an id-less action outbound. */
+  request_id?: string;
   /** Only meaningful for type=action (protocol v1.1): optional model usage
    *  metadata — token counts only. ajv enforces the inner shape. */
   usage?: unknown;

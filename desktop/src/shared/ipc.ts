@@ -143,6 +143,8 @@ export type BridgeDecisionTrace =
       readonly profileId?: string;
       /** Set when the provider auto-raised maxTokens and retried this decision. */
       readonly selfHealed?: { readonly from: number; readonly to: number };
+      /** Captured model reasoning (opt-in via config.captureReasoning; local-only). */
+      readonly reasoning?: { readonly text: string; readonly truncated?: boolean };
     }
   | {
       readonly type: "runtime_failure";
@@ -205,6 +207,8 @@ export type CliOp =
   | { readonly kind: "accept"; readonly url: string }
   | { readonly kind: "configReviewGet" }
   | { readonly kind: "configReviewSet"; readonly mode: "off" | "all" | "losses_only" }
+  | { readonly kind: "configReasoningGet" }
+  | { readonly kind: "configReasoningSet"; readonly enabled: boolean }
   | { readonly kind: "configTest"; readonly slug: string; readonly profileId: string }
   | { readonly kind: "review"; readonly sessionId: string; readonly mode: "default" | "regen" | "no-generate" }
   | { readonly kind: "sessionsList" }
@@ -337,6 +341,8 @@ export interface ConfigProfileView {
   readonly effort: string | null;
   readonly temperature: number | null;
   readonly maxTokens: number;
+  /** Per-call LLM request timeout in ms; null when the profile leaves it at the default. */
+  readonly requestTimeoutMs: number | null;
   readonly stream: "auto" | "always" | "never";
   readonly verbosity: string | null;
   /** Model-specific opt-in feature flags (e.g. { jsonObjectMode: true } for DeepSeek V4). */
@@ -375,6 +381,8 @@ export interface ProfileInput {
   readonly effort?: string;
   readonly temperature?: number | null;
   readonly maxTokens?: number;
+  /** Per-call LLM request timeout in ms (user-settable; ≤ 300000). Omit → keep existing / default. */
+  readonly requestTimeoutMs?: number;
   readonly stream?: "auto" | "always" | "never";
   readonly verbosity?: string;
   /** Model-specific opt-in feature flags (e.g. { jsonObjectMode: true }). */

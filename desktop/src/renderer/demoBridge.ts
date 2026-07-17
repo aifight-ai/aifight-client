@@ -189,6 +189,11 @@ export function installDemoBridge(): void {
       // Self-review settings (Settings tri-state reads autoMode).
       if (op.kind === "configReviewGet")
         return Promise.resolve(cliResult({ agentSlug: "default", selfReview: { autoMode: "off", model: "", maxTurns: null } }));
+      // Reasoning-capture setting (Settings on/off toggle).
+      if (op.kind === "configReasoningGet")
+        return Promise.resolve(cliResult({ agentSlug: "default", captureReasoning: false }));
+      if (op.kind === "configReasoningSet")
+        return Promise.resolve(cliResult({ agentSlug: "default", captureReasoning: op.enabled }));
       // Post-match self-review — a lively populated review for both the read-only
       // check (no-generate) and the explicit generate, so screenshots are useful.
       if (op.kind === "review")

@@ -173,8 +173,8 @@ function resolvedProfile(baseURL: string): LLMProfile {
     baseURL,
     temperature: null,
     maxTokens: 256,
-    timeouts: { requestMs: 2000, connectMs: 2000 },
-    retries: { maxAttempts: 1, backoffMs: 0 },
+    timeouts: { requestMs: 2000 },
+    retries: { maxAttempts: 1 },
   };
 }
 

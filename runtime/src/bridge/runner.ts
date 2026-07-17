@@ -20,6 +20,7 @@ import {
   type BridgeRuntimeProvider,
 } from "./provider";
 import { createDirectLLMRuntimeProvider } from "./direct-llm-provider";
+import { MatchContextTracker } from "./match-context-tracker";
 import { appendUsageRecord } from "../usage/usage-log";
 import { loadAgentProfile, resolveAgentDir } from "../profile/profile-loader";
 import { runSelfReview } from "../review/self-review";
@@ -98,6 +99,8 @@ function isDeviceMismatchError(err: unknown): boolean {
 export class BridgeRunner {
   readonly #opts: BridgeRunnerOptions;
   #agent: AgentInstance | null = null;
+  /** Per-match player-view event log + rules summary for the decision prompt. */
+  #matchContext = new MatchContextTracker();
   /** R13-F08: last credential observed on disk — logs rotation exactly once. */
   #lastKnownApiKey: string;
   #manualSeries: {
@@ -133,6 +136,14 @@ export class BridgeRunner {
       decisionProvider: this.#buildDecisionProvider(provider, sessionStore),
       ...(this.#opts.connect !== undefined ? { connect: this.#opts.connect } : {}),
       onServerMessage: (message) => {
+        // Feed the match-context tracker first: the very next decision may
+        // depend on the events this message carries. Additive only — a tracker
+        // failure must never block message handling or session persistence.
+        try {
+          this.#matchContext.observe(message);
+        } catch {
+          /* context is best-effort; the decision path degrades gracefully */
+        }
         this.#opts.onServerMessage?.(message);
         if (sessionStore === null) return;
         this.#recordSession(() => sessionStore.recordServerMessage(this.#opts.config, message));
@@ -341,6 +352,7 @@ export class BridgeRunner {
         const startedAt = new Date();
         const decisionProvider = buildBridgeDecisionProvider(provider, {
           loadStrategy: ({ game }) => loadLocalStrategy(this.#opts.config.agentId, game),
+          loadMatchContext: ({ matchId }) => this.#matchContext.get(matchId),
           onTrace: (trace) => {
             traces.push(trace);
             this.#opts.onTrace?.(trace);

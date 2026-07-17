@@ -88,10 +88,11 @@ export type WSClientMessage =
       type: "action";
       match_id: string;
       data: unknown;
-      /** Optional echo of action_request.data.request_id (protocol v1.2,
-       *  F07/R3-01) so the server can answer a superseded request with a
-       *  benign action_stale instead of judging it. */
-      request_id?: string;
+      /** REQUIRED echo of action_request.data.request_id (protocol v1.2,
+       *  F07/R3-01; enforced 2026-07-16). Pins the submission to the decision
+       *  it answers; the server refuses an id-less action unjudged
+       *  (error + action_stale, no penalty). */
+      request_id: string;
       /** Optional model usage metadata (protocol v1.1) — token counts
        *  only, never content. See client_action.schema.json `usage`. */
       usage?: {
@@ -699,10 +700,11 @@ export async function createWSClient(
       const headers: Record<string, string> = { "X-API-Key": opts.apiKey };
       if (opts.deviceId) headers["X-Device-Id"] = opts.deviceId;
       // Declare the protocol version our bundled schemas speak (F07,
-      // protocol v1.2): the server only emits additive fields like
-      // action_request.data.request_id to clients that declare >= v1.2.0 —
-      // older bundles would reject the whole frame (additionalProperties:
-      // false) and silently lose their turn.
+      // protocol v1.2). Since the 2026-07-16 enforcement the server REFUSES
+      // handshakes below v1.2.0 (readable error frame + close): every
+      // action_request carries request_id unconditionally, action submissions
+      // must echo it, and a pre-v1.2 bundle would reject those frames
+      // (additionalProperties: false) and silently lose every turn.
       headers["X-AIFight-Protocol-Version"] = opts.expectedProtocolVersion;
       // R13-F03: bound the inbound frame size. An oversize frame makes `ws`
       // close with 1009 ("message too big"), which flows through the normal

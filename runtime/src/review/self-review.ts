@@ -197,6 +197,7 @@ export function buildReviewPrompt(
     lines.push(`        legal: ${t.legal.length > 0 ? `[${t.legal.join(", ")}]` : "[]"}`);
     lines.push(`        chose: ${t.chose}`);
     if (t.reasoning !== "") lines.push(`        reasoning: ${t.reasoning}`);
+    if (t.thinking !== undefined && t.thinking !== "") lines.push(`        thinking: ${t.thinking}`);
   }
   lines.push("=== END MATCH DATA ===");
 

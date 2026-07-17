@@ -15,8 +15,8 @@ function profile(over: Partial<LLMProfile> = {}): LLMProfile {
     maxTokens: 32000,
     responseFormat: "json",
     reasoning: { enabled: true, mode: "enabled", effort: "high" },
-    timeouts: { requestMs: 30000, connectMs: 10000 },
-    retries: { maxAttempts: 2, backoffMs: 500 },
+    timeouts: { requestMs: 30000 },
+    retries: { maxAttempts: 2 },
     ...over,
   };
 }

@@ -22,8 +22,8 @@ function resolved(
     apiKey: "sk-test",
     temperature: null,
     maxTokens: 256,
-    timeouts: { requestMs: 1000, connectMs: 1000 },
-    retries: { maxAttempts: 1, backoffMs: 0 },
+    timeouts: { requestMs: 1000 },
+    retries: { maxAttempts: 1 },
     ...partial,
   };
 }

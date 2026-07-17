@@ -70,19 +70,11 @@ export function resolveLLMProfile(
     ...(def.request?.verbosity !== undefined ? { verbosity: def.request.verbosity } : {}),
     ...(def.request?.features !== undefined ? { features: def.request.features } : {}),
     timeouts: {
-      requestMs: def.timeouts?.requestMs ?? 30000,
-      connectMs: def.timeouts?.connectMs ?? 10000,
+      requestMs: def.timeouts?.requestMs ?? 300000,
     },
     retries: {
       maxAttempts: def.retries?.maxAttempts ?? 2,
-      backoffMs: def.retries?.backoffMs ?? 500,
     },
-    budgets: def.budgets
-      ? {
-          maxCostUSDPerMatch: def.budgets.maxCostUSDPerMatch,
-          maxOutputTokensPerDecision: def.budgets.maxOutputTokensPerDecision,
-        }
-      : undefined,
     // Map the config's thinking block into the canonical reasoning config so
     // the user's reasoning settings actually reach every adapter.
     reasoning: def.thinking ? mapThinkingToReasoning(def.thinking) : undefined,

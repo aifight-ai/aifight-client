@@ -50,10 +50,14 @@ import {
 
 const DEFAULT_MAX_TOKENS = 32000;
 const MIN_MAX_TOKENS = 256;
+// Per-call request timeout is user-set in whole seconds; a turn is 300s, so a
+// longer wait is pointless. Stored in the profile as ms (seconds × 1000).
+const MIN_REQUEST_TIMEOUT_SEC = 1;
+const MAX_REQUEST_TIMEOUT_SEC = 300;
 
 const ADD_USAGE = [
   "usage: aifight config add <profile> --protocol <claude|gpt|compat|gemini> (--env NAME | --file PATH | --key-stdin)",
-  "         [--base-url URL] [--model NAME] [--display-name S] [--max-tokens N]",
+  "         [--base-url URL] [--model NAME] [--display-name S] [--max-tokens N] [--request-timeout SEC]",
   "         [--stream auto|always|never] [--thinking on|off] [--effort LEVEL]",
   "         [--temperature T] [--verbosity low|medium|high] [--feature k=on|off ...]",
   "         [--use] [--no-test] [agent-slug]",
@@ -116,7 +120,7 @@ export async function runConfigAdd(args: HandlerArgs, env: HandlerEnv): Promise<
 
 const UPDATE_USAGE = [
   "usage: aifight config update <profile> [--model NAME] [--base-url URL] [--display-name S]",
-  "         [--env NAME | --file PATH | --key-stdin] [--max-tokens N] [--stream auto|always|never]",
+  "         [--env NAME | --file PATH | --key-stdin] [--max-tokens N] [--request-timeout SEC] [--stream auto|always|never]",
   "         [--thinking on|off] [--effort LEVEL] [--temperature T] [--verbosity low|medium|high]",
   "         [--feature k=on|off ...] [--use] [--no-test] [agent-slug]",
   "  Change fields of an existing profile. To change the protocol, add a new",
@@ -194,6 +198,7 @@ export function settingsFromProfile(p: LLMProfile): ProfileBuildSettings {
     thinkingEnabled: p.thinking?.enabled ?? true,
     ...(p.thinking?.effort ? { effort: p.thinking.effort } : {}),
     maxTokens: p.request?.maxTokens ?? DEFAULT_MAX_TOKENS,
+    ...(p.timeouts?.requestMs !== undefined ? { requestTimeoutMs: p.timeouts.requestMs } : {}),
     stream: p.request?.stream ?? "auto",
     temperature: p.request?.temperature ?? null,
     ...(p.request?.verbosity ? { verbosity: p.request.verbosity } : {}),
@@ -395,6 +400,20 @@ export function resolveProfileSettings(
   }
   if (caps.maxOutputTokens && maxTokens > caps.maxOutputTokens) maxTokens = caps.maxOutputTokens;
 
+  // ── request timeout (per-call, whole seconds; stored as ms) ──
+  let requestTimeoutMs = base?.requestTimeoutMs;
+  const rt = numberFlag(flags, "request-timeout");
+  if (rt !== undefined) {
+    if (!Number.isInteger(rt) || rt < MIN_REQUEST_TIMEOUT_SEC || rt > MAX_REQUEST_TIMEOUT_SEC) {
+      throw configError("config_bad_request_timeout", {
+        problem: `--request-timeout must be a whole number of seconds in [${MIN_REQUEST_TIMEOUT_SEC}, ${MAX_REQUEST_TIMEOUT_SEC}] (got ${rt})`,
+        valid:
+          "It's how long each LLM call waits. A turn is 300s, so 300 is the max; set it lower to fit several retries inside one turn.",
+      });
+    }
+    requestTimeoutMs = rt * 1000;
+  }
+
   // ── stream ──
   let stream: "auto" | "always" | "never" = base?.stream ?? "auto";
   const s = stringFlag(flags, "stream");
@@ -478,6 +497,7 @@ export function resolveProfileSettings(
     thinkingEnabled,
     ...(effort ? { effort } : {}),
     maxTokens,
+    ...(requestTimeoutMs !== undefined ? { requestTimeoutMs } : {}),
     stream,
     temperature,
     ...(verbosity ? { verbosity } : {}),

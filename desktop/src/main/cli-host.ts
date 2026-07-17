@@ -77,6 +77,12 @@ export function argvForCliOp(op: CliOp): string[] | null {
       return op.mode === "off" || op.mode === "all" || op.mode === "losses_only"
         ? ["config", "review", "auto", op.mode]
         : null;
+    case "configReasoningGet":
+      return ["config", "reasoning", "--json"];
+    case "configReasoningSet":
+      return typeof op.enabled === "boolean"
+        ? ["config", "reasoning", op.enabled ? "on" : "off", "--json"]
+        : null;
     case "configTest":
       return isString(op.slug) && SLUG_RE.test(op.slug) && isString(op.profileId) && PROFILE_ID_RE.test(op.profileId)
         ? ["config", "test", op.slug, "--profile", op.profileId, "--json"]
@@ -96,6 +102,26 @@ export function argvForCliOp(op: CliOp): string[] | null {
   }
 }
 
+// All desktop CLI ops run strictly one-at-a-time, in call order. The config
+// subcommands are read-modify-write on the shared config.json, so two
+// concurrent ops could interleave reads and let the OLDER click's write land
+// last (UI says off, disk says on — Codex re-review finding). Serializing here
+// fixes that ordering at the root, and makes the stdin.isTTY save/restore in
+// runCliArgv actually safe (it always assumed sequential runs). Ops are quick
+// local commands; a queued op just waits its turn.
+let cliOpChain: Promise<unknown> = Promise.resolve();
+
+/** Exported for tests: enqueue a task on the strict FIFO CLI chain. A failed
+ *  task never breaks the chain for the next one. */
+export function enqueueCliTask<T>(task: () => Promise<T>): Promise<T> {
+  const run = cliOpChain.then(task, task);
+  cliOpChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 /**
  * Run an enumerated CLI operation: build + validate the argv, then execute it.
  * Invalid operations (unknown kind / bad value) never touch the CLI.
@@ -105,7 +131,7 @@ export async function runCliOp(op: CliOp): Promise<CliRunResult> {
   if (argv === null) {
     return { exitCode: 2, stdout: "", stderr: "", error: "invalid cli operation" };
   }
-  return runCliArgv(argv);
+  return enqueueCliTask(() => runCliArgv(argv));
 }
 
 async function runCliArgv(argv: string[]): Promise<CliRunResult> {
@@ -130,8 +156,9 @@ async function runCliArgv(argv: string[]): Promise<CliRunResult> {
   // prompt would block forever on stdin the user can't answer (the prompt text is
   // captured, not shown). The desktop must NEVER prompt — so we force stdin to look
   // non-interactive for the duration of the run, which makes every prompt guard take
-  // its safe non-interactive branch. Restored in `finally` (desktop runs are
-  // sequential). This is belt-and-suspenders on top of always passing --json.
+  // its safe non-interactive branch. Restored in `finally` (desktop runs ARE
+  // sequential — enforced by the enqueueCliTask FIFO chain above). This is
+  // belt-and-suspenders on top of always passing --json.
   const stdinObj = process.stdin as unknown as { isTTY?: boolean };
   const prevIsTTY = stdinObj.isTTY;
   try {

@@ -63,6 +63,11 @@ protocol/
 ## Version policy
 
 - `VERSION` uses semver. Breaking wire-protocol changes require major bump.
+  (One documented, owner-approved exception: the 2026-07-16 in-place revision
+  of v1.2.0 — the `action.request_id` echo became REQUIRED and the server now
+  refuses < v1.2.0 handshakes. Pre-launch, zero affected users, and a major
+  bump would have hard-refused every shipped conformant client; full
+  rationale in `spec/00-overview.md` Version history.)
 - Backend and runtime both declare their supported protocol version on
   connect (`welcome.server_protocol_version`); mismatch triggers clear
   error, not silent failure.

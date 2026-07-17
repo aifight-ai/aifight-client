@@ -27,10 +27,12 @@ import type { LLMConfig } from "../profile/config-schema.js";
 import { loadAgentProfile, resolveAgentDir } from "../profile/profile-loader.js";
 import { resolveSecret } from "../profile/secret-ref.js";
 import type {
+  BridgeDecisionReasoning,
   BridgeRuntimeDecisionRequest,
   BridgeRuntimeDecisionResult,
   BridgeRuntimeProvider,
 } from "./provider.js";
+import type { BridgeMatchContext, MatchEventRecord } from "./match-context-tracker.js";
 
 /** Minimum turn budget (ms) left before a self-heal retry is worth issuing: a
  *  retry is a full model call, so with less than this we skip it and let the
@@ -41,10 +43,21 @@ const MIN_SELF_HEAL_BUDGET_MS = 10_000;
 const GLOBAL_DECISION_HARD_CAP_MS = 600_000; // 10 min absolute ceiling per call
 const MIN_DECISION_TIMEOUT_MS = 1_000; // floor so a call always gets some time
 
-// R13-F06 per-match output-token guard bounds (a full USD ledger is a follow-up).
-const MATCH_OUTPUT_TOKEN_GUARD_DECISIONS = 400; // generous decisions-per-match multiplier
-const MATCH_OUTPUT_TOKEN_GUARD_ABSOLUTE = 8_000_000; // absolute per-match output-token ceiling
-const MAX_TRACKED_MATCHES = 512; // cap on the per-match token map so it can't grow unbounded
+// Local storage cap for captured reasoning text (config.captureReasoning).
+// DeepSeek returns the FULL chain of thought; bound it before it reaches the
+// session log so a single decisions.jsonl line stays small.
+const REASONING_CAPTURE_MAX_CHARS = 4_000;
+
+// Match-history block bounds: enough for several Texas hands of step-by-step
+// detail while keeping the added prompt cost flat late in a long match. The
+// aggregate standings always live in `state` regardless (e.g. per-player net).
+const HISTORY_MAX_EVENTS = 80;
+const HISTORY_MAX_LINE_CHARS = 200;
+const HISTORY_MAX_BLOCK_CHARS = 10_000;
+// Rules-summary bounds (defensive caps on server-provided text).
+const RULES_SUMMARY_MAX_CHARS = 2_000;
+const RULES_MAX_KEY_RULES = 12;
+const RULES_KEY_RULE_MAX_CHARS = 200;
 
 export interface DirectLLMProviderOptions {
   /** Agent profile slug under <aifight-home>/agents/. Defaults to "default". */
@@ -69,21 +82,6 @@ export function createDirectLLMRuntimeProvider(
   // file). The strategy file was already re-read per decision; this brings
   // provider/model/key to the same behavior.
   let configCacheStamp: { mtimeMs: number; size: number } | null = null;
-
-  // R13-F06 lightweight per-match spend guard: cumulative model OUTPUT tokens
-  // per match, so a pathological loop (a wedged model emitting max-token replies
-  // turn after turn) can be stopped before it silently drains the user's balance.
-  // Insertion-ordered and size-capped so it can never grow without bound over a
-  // long-lived bridge's many matches (a full USD ledger is a follow-up).
-  const matchOutputTokens = new Map<string, number>();
-  const addMatchOutputTokens = (matchId: string, tokens: number | undefined): void => {
-    if (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens <= 0) return;
-    if (!matchOutputTokens.has(matchId) && matchOutputTokens.size >= MAX_TRACKED_MATCHES) {
-      const oldest = matchOutputTokens.keys().next().value;
-      if (oldest !== undefined) matchOutputTokens.delete(oldest);
-    }
-    matchOutputTokens.set(matchId, (matchOutputTokens.get(matchId) ?? 0) + tokens);
-  };
 
   const ensureAdapters = (): Promise<void> =>
     (adaptersReady ??= (opts.registerAdapters ?? registerBuiltinAdapters)());
@@ -142,6 +140,23 @@ export function createDirectLLMRuntimeProvider(
       const adapter = requireAdapter(resolved.protocol);
       const { systemPrompt, userPrompt } = buildDirectPrompt(req);
 
+      // Opt-in reasoning capture (config.captureReasoning): where the profile
+      // already has a reasoning config, ask the provider to return a thinking
+      // summary (Anthropic thinking display, OpenAI Responses reasoning.summary).
+      // Never forces thinking ON for a profile that has it off/unset.
+      const captureReasoning = config.captureReasoning === true;
+      const reasoningOverride =
+        captureReasoning && resolved.reasoning !== undefined
+          ? {
+              ...resolved.reasoning,
+              display: "summarized" as const,
+              summary:
+                resolved.reasoning.summary != null && resolved.reasoning.summary !== "off"
+                  ? resolved.reasoning.summary
+                  : ("auto" as const),
+            }
+          : undefined;
+
       const callWith = (maxTokens: number, timeoutMs: number) => {
         // R13-F02: cancel the paid HTTP call on EITHER the turn-deadline timeout
         // OR a supersede (a newer action_request replaced this decision). Same
@@ -154,6 +169,7 @@ export function createDirectLLMRuntimeProvider(
             maxTokens,
             temperature: resolved.temperature,
             responseFormat: "json",
+            ...(reasoningOverride !== undefined ? { reasoning: reasoningOverride } : {}),
             ...(signal !== undefined ? { signal } : {}),
           },
           resolved,
@@ -175,16 +191,15 @@ export function createDirectLLMRuntimeProvider(
       // actually exceeds the current cap. Cost is incurred only on an already-
       // wasted truncated turn.
       const ceiling = resolveModelCapabilities(resolved.protocol, resolved.model).maxOutputTokens;
-      // R13-F06: enforce the declared per-decision output-token budget, not just
-      // display it. `budget` is what the FIRST call actually requests — clamped
-      // down when the profile's maxTokens exceeds budgets.maxOutputTokensPerDecision
-      // or the model's own ceiling. `perDecisionCap` is the hard limit self-heal
-      // may raise toward but never past (the ceiling and the declared budget,
-      // WITHOUT the starting maxTokens term so a raise above maxTokens is allowed).
+      // maxTokens is the sole authority on decision output length: the FIRST
+      // call requests it, bounded only by the model's real output ceiling (to
+      // avoid a provider 400). No hidden per-decision or per-match budget
+      // silently shrinks it.
       const budget = effectiveDecisionBudget(resolved, ceiling);
-      const perDecisionCap = perDecisionHardCap(resolved, ceiling);
+      // Self-heal raises toward the model's ceiling (or a generous bump when the
+      // ceiling is unknown) — never past what the model can actually emit.
       const raiseTarget = (cur: number): number | undefined => {
-        const to = Math.min(ceiling ?? Math.max(65536, cur * 2), perDecisionCap);
+        const to = ceiling ?? Math.max(65536, cur * 2);
         return to > cur ? to : undefined;
       };
       // R13-F06 wall-time: a single decision call may run no longer than the
@@ -192,27 +207,27 @@ export function createDirectLLMRuntimeProvider(
       // timeout, and a global hard cap — never unbounded — with a floor so a
       // tiny/zero config can't starve the call to nothing.
       const effectiveTimeoutMs = clampDecisionTimeout(req.timeoutMs, resolved.timeouts.requestMs);
-      // R13-F06 per-match guard: refuse to spend once this match's cumulative
-      // output tokens reach a generous ceiling — play the deterministic legal
-      // fallback instead (non-retryable, so the decision loop does not retry).
-      const matchCap = matchOutputTokenCap(resolved, ceiling);
-      const startedAtMs = Date.now();
-      const remainingMs = (): number => effectiveTimeoutMs - (Date.now() - startedAtMs);
-
-      if ((matchOutputTokens.get(req.matchId) ?? 0) >= matchCap) {
-        throw makeNonRetryableBudgetError(
-          `direct: per-match output-token budget reached for ${req.matchId} (>= ${matchCap}); ` +
-            "playing the legal fallback to protect your balance",
+      // A near-deadline retry can clamp below a usable call length (this only happens
+      // when a positive server deadline is nearly up — clampDecisionTimeout floors the
+      // no-server case at MIN). The platform has effectively already timed this turn
+      // out; paying for a call whose answer it will discard is pure waste — skip it and
+      // let the turn resolve server-side.
+      if (effectiveTimeoutMs < MIN_DECISION_TIMEOUT_MS) {
+        throw tagProfile(
+          new Error(
+            `decision wall-time ${effectiveTimeoutMs}ms is below the ${MIN_DECISION_TIMEOUT_MS}ms minimum (server turn nearly expired) — skipping a doomed paid call`,
+          ),
           resolved.profileId,
         );
       }
+      const startedAtMs = Date.now();
+      const remainingMs = (): number => effectiveTimeoutMs - (Date.now() - startedAtMs);
 
       let selfHealed: { from: number; to: number } | undefined;
       let output: Awaited<ReturnType<typeof callWith>> | undefined;
       let firstError: unknown;
       try {
         output = await callWith(budget, effectiveTimeoutMs);
-        addMatchOutputTokens(req.matchId, output.outputTokens);
       } catch (err) {
         // R13-F02: a supersede-abort is not a token-limit; bubble it so the
         // decision is discarded WITHOUT a self-heal retry (the result is unused).
@@ -221,14 +236,12 @@ export function createDirectLLMRuntimeProvider(
         firstError = err; // token-limit throw (e.g. empty-because-truncated)
       }
 
-      // Self-heal exactly once, only when the first call was cut off by the cap,
-      // the decision has not been superseded (no point paying for a retry whose
-      // answer will be thrown away), and the match is still within its token
-      // guard (don't raise the cap on a match that has already overspent).
+      // Self-heal exactly once, only when the first call was cut off by the cap
+      // and the decision has not been superseded (no point paying for a retry
+      // whose answer will be thrown away).
       if (
         (output?.truncated === true || firstError !== undefined) &&
-        req.signal?.aborted !== true &&
-        (matchOutputTokens.get(req.matchId) ?? 0) < matchCap
+        req.signal?.aborted !== true
       ) {
         const to = raiseTarget(budget);
         // Enough of the (clamped) wall-time budget left for a second full call?
@@ -237,7 +250,6 @@ export function createDirectLLMRuntimeProvider(
           selfHealed = { from: budget, to };
           try {
             output = await callWith(to, remainingMs()); // the one and only retry
-            addMatchOutputTokens(req.matchId, output.outputTokens);
           } catch (retryErr) {
             selfHealed = undefined; // the retry didn't land
             if (output === undefined) throw tagProfile(retryErr, resolved.profileId); // nothing usable
@@ -249,6 +261,11 @@ export function createDirectLLMRuntimeProvider(
         throw tagProfile(firstError ?? new Error("direct: no decision output"), resolved.profileId);
       }
 
+      // Reasoning capture is gated here (not at the adapter): with the switch
+      // off, an adapter that always returns reasoning (DeepSeek) still writes
+      // nothing to disk — exactly today's behavior.
+      const capturedReasoning = captureReasoning ? capReasoningText(output.reasoningSummary) : undefined;
+
       // §7A: hand the adapter-parsed token counts up with the text, so the
       // runner can append the local usage ledger. Counts only — never the
       // prompt or the raw response. Also forward the truncation signal + which
@@ -258,6 +275,7 @@ export function createDirectLLMRuntimeProvider(
         ...(output.stopReason !== undefined ? { stopReason: output.stopReason } : {}),
         ...(output.truncated ? { truncated: true } : {}),
         ...(selfHealed !== undefined ? { selfHealed } : {}),
+        ...(capturedReasoning !== undefined ? { reasoning: capturedReasoning } : {}),
         profileId: resolved.profileId,
         usage: {
           provider: resolved.protocol,
@@ -310,10 +328,17 @@ function isTokenLimitError(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as { tokenLimit?: unknown }).tokenLimit === true;
 }
 
-/** Minimal view of the resolved profile fields the token/budget clamps read. */
+/** Trim + cap the adapter's reasoning text for the local session log. */
+function capReasoningText(text: string | undefined): BridgeDecisionReasoning | undefined {
+  const trimmed = text?.trim();
+  if (trimmed === undefined || trimmed === "") return undefined;
+  if (trimmed.length <= REASONING_CAPTURE_MAX_CHARS) return { text: trimmed };
+  return { text: `${trimmed.slice(0, REASONING_CAPTURE_MAX_CHARS)}…[truncated]`, truncated: true };
+}
+
+/** Minimal view of the resolved profile fields the decision-budget clamp reads. */
 interface BudgetedProfile {
   readonly maxTokens: number;
-  readonly budgets?: { readonly maxOutputTokensPerDecision?: number };
 }
 
 /** A finite, positive number or `Infinity` (the "no cap" identity for min). */
@@ -322,11 +347,10 @@ function positiveOrInfinity(value: number | undefined): number {
 }
 
 /**
- * R13-F06: the max output tokens the FIRST decision call may request — the
- * smallest of the profile's configured maxTokens, its declared per-decision
- * budget, and the model's own output ceiling. So a profile that sets a huge
- * maxTokens but a small budgets.maxOutputTokensPerDecision actually asks for the
- * budgeted amount, not the huge one.
+ * The max output tokens the FIRST decision call may request: the profile's
+ * configured maxTokens (the sole authority), bounded only by the model's own
+ * output ceiling so an over-large value can't trigger a provider 400. An
+ * unknown ceiling is not clamped.
  */
 export function effectiveDecisionBudget(
   resolved: BudgetedProfile,
@@ -334,20 +358,6 @@ export function effectiveDecisionBudget(
 ): number {
   return Math.min(
     positiveOrInfinity(resolved.maxTokens),
-    positiveOrInfinity(resolved.budgets?.maxOutputTokensPerDecision),
-    positiveOrInfinity(modelCeiling),
-  );
-}
-
-/**
- * R13-F06: the hard ceiling a self-heal retry may raise toward but never past —
- * the declared per-decision budget and the model ceiling, WITHOUT the starting
- * maxTokens (self-heal legitimately raises above maxTokens, just not above the
- * user's declared budget).
- */
-function perDecisionHardCap(resolved: BudgetedProfile, modelCeiling: number | undefined): number {
-  return Math.min(
-    positiveOrInfinity(resolved.budgets?.maxOutputTokensPerDecision),
     positiveOrInfinity(modelCeiling),
   );
 }
@@ -370,48 +380,33 @@ function combineDecisionSignals(
 }
 
 /**
- * R13-F06 wall-time: bound the per-call timeout so a missing or absurd server
- * value can never run unbounded, WITHOUT undercutting a legitimate turn budget.
- * The server's `timeout_ms` is the authoritative per-turn deadline (a slow
- * reasoning model may legitimately need most of it), so when the server
- * specifies one we honor it, capped only by an absolute ceiling. The profile's
- * requestMs is the fallback used when the server does not send a deadline
- * (previously that path was unbounded). Floored so a zero/tiny input never
- * starves the call. Exported for unit testing.
+ * Wall-time bound for a single decision call: min(server turn deadline, client
+ * requestMs), then clamped to [MIN_DECISION_TIMEOUT_MS, GLOBAL_DECISION_HARD_CAP_MS]
+ * so a missing or absurd value can never run unbounded. `requestMs` is the
+ * client's own per-call budget — set it shorter than the turn to fit several
+ * calls inside one turn; the platform only requires a legal decision within the
+ * turn deadline and never reads requestMs itself. Whichever bound is absent
+ * drops out (server 0 = "no deadline" → requestMs governs; no requestMs → the
+ * server deadline governs). Floored so a zero/tiny input never starves the
+ * call. Exported for unit testing.
  */
 export function clampDecisionTimeout(serverMs: number, profileRequestMs: number | undefined): number {
   const hasServer = typeof serverMs === "number" && Number.isFinite(serverMs) && serverMs > 0;
-  const base = hasServer
-    ? serverMs
-    : typeof profileRequestMs === "number" && Number.isFinite(profileRequestMs) && profileRequestMs > 0
-      ? profileRequestMs
-      : GLOBAL_DECISION_HARD_CAP_MS;
+  const hasReq =
+    typeof profileRequestMs === "number" && Number.isFinite(profileRequestMs) && profileRequestMs > 0;
+  if (hasServer) {
+    // A positive server deadline is authoritative. Bound the call by
+    // min(server, requestMs) and only CAP it — never round it UP to the floor:
+    // flooring a near-deadline retry back to MIN_DECISION_TIMEOUT_MS would spend a
+    // paid call the platform has already timed out. min(requestMs, server) exactly
+    // (spec §1/§3). The caller skips the call when this is too small to be useful.
+    const base = hasReq ? Math.min(serverMs, profileRequestMs!) : serverMs;
+    return Math.min(base, GLOBAL_DECISION_HARD_CAP_MS);
+  }
+  // No server deadline (server 0 = "no deadline"): requestMs governs, or the hard
+  // cap if it too is absent. Floor so a zero/tiny requestMs never starves the call.
+  const base = hasReq ? profileRequestMs! : GLOBAL_DECISION_HARD_CAP_MS;
   return Math.max(Math.min(base, GLOBAL_DECISION_HARD_CAP_MS), MIN_DECISION_TIMEOUT_MS);
-}
-
-/**
- * R13-F06: a generous cumulative OUTPUT-token ceiling for one match — far above
- * any honest game, so it only trips on a pathological loop. Derived from the
- * declared per-decision budget (or the model ceiling) times a generous
- * decisions-per-match multiplier, capped by an absolute ceiling.
- */
-function matchOutputTokenCap(resolved: BudgetedProfile, modelCeiling: number | undefined): number {
-  const declared = resolved.budgets?.maxOutputTokensPerDecision;
-  const perDecision =
-    typeof declared === "number" && Number.isFinite(declared) && declared > 0
-      ? declared
-      : typeof modelCeiling === "number" && Number.isFinite(modelCeiling) && modelCeiling > 0
-        ? modelCeiling
-        : 32_000;
-  return Math.min(MATCH_OUTPUT_TOKEN_GUARD_ABSOLUTE, perDecision * MATCH_OUTPUT_TOKEN_GUARD_DECISIONS);
-}
-
-/** A non-retryable decision error: the transient-retry loop treats
- *  `retryable === false` as terminal (classifyDecisionError), so the bridge
- *  takes the deterministic legal fallback instead of retrying. */
-function makeNonRetryableBudgetError(message: string, profileId: string): Error {
-  const err = Object.assign(new Error(message), { retryable: false });
-  return tagProfile(err, profileId) as Error;
 }
 
 /**
@@ -440,6 +435,10 @@ function buildDirectPrompt(req: BridgeRuntimeDecisionRequest): {
     "Choose exactly one legal action. Return ONLY JSON in this shape:",
     '{"action":"<type>","data":{},"summary":"short reason"}',
   ];
+  // Platform rules summary (game_start) before the user's strategy: facts
+  // first, then how the owner wants to play them.
+  const rulesBlock = renderRulesBlock(req.matchContext);
+  if (rulesBlock !== "") system.push("", rulesBlock);
   for (const section of req.strategy?.sections ?? []) {
     system.push("", section.content);
   }
@@ -451,13 +450,77 @@ function buildDirectPrompt(req: BridgeRuntimeDecisionRequest): {
     legal_actions: req.legalActions,
     timeout_ms: req.timeoutMs,
   });
+  const parts: string[] = [];
+  // Match history (accumulated player-view events, rendered fresh each turn):
+  // completed hands/rounds + this round's step-by-step actions — so the model
+  // reasons over the match, not just the current snapshot.
+  const historyBlock = renderHistoryBlock(req.matchContext);
+  if (historyBlock !== "") {
+    parts.push(historyBlock);
+    parts.push(`CURRENT TURN (state + legal actions):\n${base}`);
+  } else {
+    parts.push(base);
+  }
   // §3 Phase A corrective retry: surface what was wrong with the previous
   // reply as plain text after the JSON payload — explicit instructions beat
   // a field buried in the state dump.
   const feedback = req.illegalFeedback;
-  const userPrompt =
-    feedback === undefined
-      ? base
-      : `${base}\n\nRETRY ${feedback.attempt}: ${feedback.message}\nYour previous invalid reply was:\n${feedback.priorRaw}`;
-  return { systemPrompt: system.join("\n"), userPrompt };
+  if (feedback !== undefined) {
+    parts.push(
+      `RETRY ${feedback.attempt}: ${feedback.message}\nYour previous invalid reply was:\n${feedback.priorRaw}`,
+    );
+  }
+  return { systemPrompt: system.join("\n"), userPrompt: parts.join("\n\n") };
+}
+
+function renderRulesBlock(context: BridgeMatchContext | undefined): string {
+  const rules = context?.rules;
+  if (rules === undefined) return "";
+  const lines: string[] = ["Game rules (from the platform):"];
+  if (rules.summary !== undefined && rules.summary !== "") {
+    lines.push(hardCap(rules.summary, RULES_SUMMARY_MAX_CHARS));
+  }
+  for (const rule of (rules.keyRules ?? []).slice(0, RULES_MAX_KEY_RULES)) {
+    lines.push(`- ${hardCap(rule, RULES_KEY_RULE_MAX_CHARS)}`);
+  }
+  return lines.length > 1 ? lines.join("\n") : "";
+}
+
+/**
+ * Render the accumulated player-view event log, oldest first, newest always
+ * kept. Pure function of the raw events — no cross-turn render state.
+ */
+function renderHistoryBlock(context: BridgeMatchContext | undefined): string {
+  const events = context?.events ?? [];
+  if (events.length === 0) return "";
+  const kept = events.slice(-HISTORY_MAX_EVENTS);
+  let lines = kept.map(renderEventLine);
+  // Char budget: drop oldest lines first — the tail (current round) matters most.
+  while (lines.length > 1 && lines.join("\n").length > HISTORY_MAX_BLOCK_CHARS) {
+    lines = lines.slice(1);
+  }
+  const omitted = events.length - lines.length;
+  const header =
+    omitted > 0
+      ? `MATCH HISTORY — your view, oldest first (${omitted} earlier events omitted):`
+      : "MATCH HISTORY — your view, oldest first:";
+  return [header, ...lines].join("\n");
+}
+
+function renderEventLine(event: MatchEventRecord): string {
+  const actor = event.playerId !== undefined ? ` ${event.playerId}` : "";
+  const data = event.data === undefined ? "" : ` ${safeCompactJSON(event.data)}`;
+  return hardCap(`#${event.seq}${actor} ${event.type}${data}`, HISTORY_MAX_LINE_CHARS);
+}
+
+function safeCompactJSON(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function hardCap(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max)}…`;
 }
