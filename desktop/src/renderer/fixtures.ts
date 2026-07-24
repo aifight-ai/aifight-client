@@ -52,11 +52,16 @@ function ev(type: string, data: Record<string, unknown>, player_id?: string): Ma
 
 // Only the owner's (p0) hole cards are revealed. The opponent's cards are NOT
 // dealt-revealed, so the board renders them face-down — same as the platform.
+// Numbers follow the live tournament rules (Rules v2, 2026-07-22): blinds
+// 100/200 for hands 1-5 (doubling at hand 6), 10,000 starting stacks. The
+// explicit small_blind/big_blind fields mirror real engine new_hand events so
+// the board never falls back to the legacy escalation guess (200/400).
 const texasEvents: MatchEvent[] = [
   ev("game_start", {}),
-  ev("new_hand", { hand_num: 1, max_hands: 10, chips: { p0: 10000, p1: 10000 }, bets: { p0: 50, p1: 100 } }),
+  ev("new_hand", { hand_num: 1, max_hands: 10, small_blind: 100, big_blind: 200, chips: { p0: 10000, p1: 10000 }, bets: { p0: 100, p1: 200 } }),
   ev("cards_dealt", { cards: ["As", "Ks"] }, OWNER),
-  ev("player_action", { action: "call", amount: 50, total_bet: 100 }, "p0"),
+  // Heads-up: BTN posts the small blind and completes 100 → 200 preflop.
+  ev("player_action", { action: "call", amount: 100, total_bet: 200 }, "p0"),
   ev("community_cards", { cards: ["Ah", "7d", "2c"] }),
   ev("player_action", { action: "check" }, "p1"),
 ];
@@ -84,7 +89,7 @@ export interface GameFixture {
 
 // Owner-only private views for the demo strip. These are p0's OWN secrets (the
 // only info a real bridge ever sees about its own agent) — never an opponent's.
-const texasOwn: OwnerPrivate = { holeCards: ["As", "Ks"], chips: 9950, position: "BTN" };
+const texasOwn: OwnerPrivate = { holeCards: ["As", "Ks"], chips: 9800, position: "BTN" };
 const liarsDiceOwn: OwnerPrivate = { dice: [2, 5, 5, 3, 6] };
 const coupOwn: OwnerPrivate = { influence: ["Duke", "Captain"], coins: 2 };
 

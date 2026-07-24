@@ -14,9 +14,9 @@
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Inbox, UserPlus, Link2, Loader2, Copy, Check, Swords, Pause, Play, RefreshCw,
-  ShieldAlert, ExternalLink, Percent, Gauge, Trophy, Globe, LayoutDashboard, TrendingUp,
-  Coins, History, Zap, Cpu, AlertTriangle, Pencil, X, type LucideIcon,
+  UserPlus, Link2, Loader2, Copy, Check, Swords, Pause, Play, RefreshCw,
+  ShieldAlert, ExternalLink, Percent, Gauge, Trophy, Globe, LayoutDashboard,
+  Coins, Zap, Cpu, AlertTriangle, Pencil, X, type LucideIcon,
 } from "lucide-react";
 
 import {
@@ -89,13 +89,14 @@ export function divisionOf(rating: number | null, totalGames: number): string {
 /** Derived agent activity for the hero status pill. */
 type Activity = "offline" | "in_match" | "paused" | "resting" | "idle" | "matching";
 
+/** Activity → v3-dv-pill tone(v3:实时/橘,在线/绿,警示/琥珀,错误/红,其余中性)。 */
 const ACTIVITY_TONE: Record<Activity, string> = {
-  offline: "bg-rose-500/15 text-rose-400",
-  in_match: "bg-[var(--accent-soft)] text-[var(--accent-text)]",
-  matching: "bg-emerald-500/15 text-emerald-400",
-  resting: "bg-amber-500/15 text-amber-400",
-  idle: "bg-[var(--surface-2)] text-[var(--text-muted)]",
-  paused: "bg-[var(--surface-2)] text-[var(--text-muted)]",
+  offline: "err",
+  in_match: "accent",
+  matching: "ok",
+  resting: "warn",
+  idle: "neutral",
+  paused: "neutral",
 };
 
 // ── Cockpit cache ────────────────────────────────────────────────────────────
@@ -271,9 +272,9 @@ function TermsConsentCard({ policy, onAccepted }: { policy: AgentPolicy; onAccep
   };
 
   return (
-    <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-5 py-4">
+    <div className="v3-dv-card v3-dv-card--warn px-5 py-4">
       <div className="flex items-start gap-2.5">
-        <ShieldAlert size={18} className="mt-0.5 shrink-0 text-amber-500" />
+        <ShieldAlert size={18} className="v3-dv-warn mt-0.5 shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="text-[14px] font-medium text-[var(--text)]">{t("play.terms.title")}</div>
           <div className="mt-0.5 text-[12px] text-[var(--text-muted)]">{t("play.terms.body")}</div>
@@ -283,16 +284,16 @@ function TermsConsentCard({ policy, onAccepted }: { policy: AgentPolicy; onAccep
             </div>
           )}
           {done ? (
-            <div className="mt-2 flex items-center gap-1.5 text-[12px] text-emerald-600">
+            <div className="v3-dv-ok mt-2 flex items-center gap-1.5 text-[12px]">
               <Check size={14} /> {t("play.terms.success")}
             </div>
           ) : (
             <>
               <div className="mt-2 flex flex-wrap items-center gap-4">
-                <button onClick={() => void openLegal("terms")} className="app-no-drag inline-flex items-center gap-1 text-[12px] text-[var(--accent)] hover:underline">
+                <button onClick={() => void openLegal("terms")} className="app-no-drag v3-dv-acc inline-flex items-center gap-1 text-[12px] hover:underline">
                   <ExternalLink size={12} /> {t("play.terms.viewTerms")}
                 </button>
-                <button onClick={() => void openLegal("privacy")} className="app-no-drag inline-flex items-center gap-1 text-[12px] text-[var(--accent)] hover:underline">
+                <button onClick={() => void openLegal("privacy")} className="app-no-drag v3-dv-acc inline-flex items-center gap-1 text-[12px] hover:underline">
                   <ExternalLink size={12} /> {t("play.terms.viewPrivacy")}
                 </button>
               </div>
@@ -304,7 +305,7 @@ function TermsConsentCard({ policy, onAccepted }: { policy: AgentPolicy; onAccep
                 <button
                   onClick={() => void onConfirm()}
                   disabled={!agreed || submitting}
-                  className="flex items-center gap-1.5 rounded-md bg-amber-500 px-3.5 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                  className="v3-dv-btn v3-dv-btn--primary"
                 >
                   {submitting && <Loader2 size={13} className="animate-spin" />}
                   {submitting ? t("play.terms.submitting") : t("play.terms.confirm")}
@@ -313,7 +314,7 @@ function TermsConsentCard({ policy, onAccepted }: { policy: AgentPolicy; onAccep
                   {t("play.terms.browserFallback")}
                 </button>
               </div>
-              {error !== null && <div className="mt-2 text-[12px] text-red-500">{error}</div>}
+              {error !== null && <div className="v3-dv-err mt-2 text-[12px]">{error}</div>}
             </>
           )}
         </div>
@@ -420,7 +421,7 @@ function Onboarding({ refresh }: { refresh: () => void }) {
             value={code}
             onChange={(e) => setCode(e.target.value)}
             placeholder={t("play.onboard.codePlaceholder")}
-            className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-[13px] text-[var(--text)] outline-none focus:border-[var(--accent)]"
+            className="v3-dv-input min-w-0 flex-1"
           />
           <Btn
             busy={busy === "connect"}
@@ -562,14 +563,9 @@ function SetupGuide({
           setApplied(null);
           setError("");
         }}
-        className={
-          "flex-1 rounded-xl border px-4 py-3 text-left transition-colors " +
-          (active
-            ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-            : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]/40")
-        }
+        className={"v3-dv-preset" + (active ? " on" : "")}
       >
-        <div className={"font-mono text-[20px] font-semibold tabular-nums " + (active ? "text-[var(--accent-text)]" : "text-[var(--text)]")}>
+        <div className={"font-mono text-[20px] font-semibold tabular-nums " + (active ? "text-[var(--v3-acc-deep)]" : "text-[var(--text)]")}>
           {label}
         </div>
         <div className="mt-0.5 text-[11px] leading-snug text-[var(--text-muted)]">{sub}</div>
@@ -581,13 +577,7 @@ function SetupGuide({
   // green check once the step is done. Gives the guide an explicit "do these in
   // order" shape instead of four look-alike cards.
   const stepBadge = (num: number, done: boolean) => (
-    <div
-      className={
-        "flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[12px] font-semibold tabular-nums " +
-        (done ? "bg-emerald-500 text-white" : "bg-[var(--accent-soft)] text-[var(--accent-text)]")
-      }
-      aria-hidden
-    >
+    <div className={"v3-dv-stepbadge" + (done ? " v3-dv-stepbadge--done" : "")} aria-hidden>
       {done ? <Check size={13} /> : num}
     </div>
   );
@@ -602,7 +592,7 @@ function SetupGuide({
       <PageHeader eyebrow={t("guide.eyebrow")} title={t("guide.title")} subtitle={t("guide.subtitle")} />
 
       {/* Step 1 — name your agent (a nice name is pre-filled; keep or change it) */}
-      <div className="app-card px-5 py-4">
+      <div className="v3-dv-card px-5 py-4">
         <div className="flex items-start gap-2.5">
           {stepBadge(1, nameApplied)}
           <div className="min-w-0 flex-1">
@@ -617,25 +607,25 @@ function SetupGuide({
                   setNameApplied(false);
                   setNameError("");
                 }}
-                className="w-56 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[14px] text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                className="v3-dv-input w-56 text-[14px]"
               />
               <Btn busy={nameBusy} disabled={nameApplied || nameDraft.trim() === ""} onClick={() => void applyName()}>
                 {nameApplied ? t("guide.nameAppliedBtn") : t("guide.nameApplyBtn")}
               </Btn>
               {nameApplied && (
-                <span className="flex items-center gap-1 text-[12px] text-emerald-500">
+                <span className="v3-dv-ok flex items-center gap-1 text-[12px]">
                   <Check size={13} />
                   {t("guide.nameApplied", { name: nameDraft.trim() })}
                 </span>
               )}
-              {nameError !== "" && <span className="text-[12px] text-red-400">{nameError}</span>}
+              {nameError !== "" && <span className="v3-dv-err text-[12px]">{nameError}</span>}
             </div>
           </div>
         </div>
       </div>
 
       {/* Step 2 — the daily auto-match cap (the core of the guide) */}
-      <div className="app-card px-5 py-4">
+      <div className="v3-dv-card px-5 py-4">
         <div className="flex items-start gap-2.5">
           {stepBadge(2, capChosen)}
           <div className="min-w-0 flex-1">
@@ -653,14 +643,9 @@ function SetupGuide({
                   setApplied(null);
                   setError("");
                 }}
-                className={
-                  "flex-1 rounded-xl border px-4 py-3 text-left transition-colors " +
-                  (custom
-                    ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-                    : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]/40")
-                }
+                className={"v3-dv-preset" + (custom ? " on" : "")}
               >
-                <div className={"font-mono text-[20px] font-semibold " + (custom ? "text-[var(--accent-text)]" : "text-[var(--text)]")}>
+                <div className={"font-mono text-[20px] font-semibold " + (custom ? "text-[var(--v3-acc-deep)]" : "text-[var(--text)]")}>
                   {custom ? cap : "…"}
                 </div>
                 <div className="mt-0.5 text-[11px] leading-snug text-[var(--text-muted)]">{t("guide.capCustomSub")}</div>
@@ -680,16 +665,16 @@ function SetupGuide({
                     setApplied(null);
                     setError("");
                   }}
-                  className="w-24 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[13px] tabular-nums text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                  className="v3-dv-input w-24 tabular-nums"
                 />
                 <span className="text-[12px] text-[var(--text-muted)]">{t("play.auto.capUnit")}</span>
               </div>
             )}
 
             {confirming ? (
-              <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3.5 py-3">
+              <div className="v3-dv-card v3-dv-card--warn mt-3 px-3.5 py-3">
                 <div className="flex items-start gap-2">
-                  <AlertTriangle size={15} className="mt-0.5 shrink-0 text-amber-500" />
+                  <AlertTriangle size={15} className="v3-dv-warn mt-0.5 shrink-0" />
                   <div className="min-w-0 flex-1">
                     <div className="text-[12.5px] font-medium text-[var(--text)]">{t("guide.capConfirmTitle", { n: cap })}</div>
                     <div className="mt-0.5 text-[11.5px] leading-relaxed text-[var(--text-muted)]">{t("guide.capConfirmBody")}</div>
@@ -697,14 +682,14 @@ function SetupGuide({
                       <button
                         onClick={() => void apply(cap)}
                         disabled={busy}
-                        className="flex items-center gap-1.5 rounded-md bg-amber-500 px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-60"
+                        className="v3-dv-btn v3-dv-btn--primary v3-dv-btn--sm"
                       >
                         {busy && <Loader2 size={12} className="animate-spin" />}
                         {t("guide.capConfirmBtn", { n: cap })}
                       </button>
                       <button
                         onClick={() => setConfirming(false)}
-                        className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-[12px] text-[var(--text-muted)] hover:text-[var(--text)]"
+                        className="v3-dv-btn v3-dv-btn--ghost v3-dv-btn--sm"
                       >
                         {t("common.cancel")}
                       </button>
@@ -718,12 +703,12 @@ function SetupGuide({
                   {applied === cap ? t("guide.capAppliedBtn") : t("guide.capApplyBtn")}
                 </Btn>
                 {applied === cap && (
-                  <span className="flex items-center gap-1 text-[12px] text-emerald-500">
+                  <span className="v3-dv-ok flex items-center gap-1 text-[12px]">
                     <Check size={13} />
                     {cap === 0 ? t("guide.capAppliedManual") : t("guide.capApplied", { n: cap })}
                   </span>
                 )}
-                {error !== "" && <span className="text-[12px] text-red-400">{error}</span>}
+                {error !== "" && <span className="v3-dv-err text-[12px]">{error}</span>}
               </div>
             )}
           </div>
@@ -731,7 +716,7 @@ function SetupGuide({
       </div>
 
       {/* Step 2 — connect the LLM key */}
-      <div className="app-card flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+      <div className="v3-dv-card flex flex-wrap items-center justify-between gap-3 px-5 py-4">
         <div className="flex min-w-0 items-start gap-2.5">
           {stepBadge(3, llmDone)}
           <div className="min-w-0">
@@ -739,17 +724,14 @@ function SetupGuide({
             <div className="mt-0.5 text-[12px] text-[var(--text-muted)]">{t("guide.llmBody")}</div>
           </div>
         </div>
-        <button
-          onClick={() => onNavigate?.("models")}
-          className="flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2 text-[12px] text-[var(--text)] hover:border-[var(--accent)]/40"
-        >
+        <button onClick={() => onNavigate?.("models")} className="v3-dv-btn v3-dv-btn--ghost shrink-0">
           <Cpu size={13} />
           {t("guide.llmBtn")}
         </button>
       </div>
 
       {/* Step 3 — claim the agent */}
-      <div className="app-card flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+      <div className="v3-dv-card flex flex-wrap items-center justify-between gap-3 px-5 py-4">
         <div className="flex min-w-0 items-start gap-2.5">
           {stepBadge(4, claimDone)}
           <div className="min-w-0">
@@ -757,10 +739,7 @@ function SetupGuide({
             <div className="mt-0.5 text-[12px] text-[var(--text-muted)]">{t("guide.claimBody")}</div>
           </div>
         </div>
-        <button
-          onClick={() => void openClaim()}
-          className="flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2 text-[12px] text-[var(--text)] hover:border-[var(--accent)]/40"
-        >
+        <button onClick={() => void openClaim()} className="v3-dv-btn v3-dv-btn--ghost shrink-0">
           <ExternalLink size={13} />
           {t("guide.claimBtn")}
         </button>
@@ -768,7 +747,7 @@ function SetupGuide({
 
       <div className="pt-1">
         {!capChosen && (
-          <div className="mb-2 flex items-center justify-end gap-1.5 text-[11.5px] text-amber-500">
+          <div className="v3-dv-warn mb-2 flex items-center justify-end gap-1.5 text-[11.5px]">
             <AlertTriangle size={13} className="shrink-0" />
             {t("guide.enterLockedHint")}
           </div>
@@ -781,7 +760,7 @@ function SetupGuide({
             onClick={onDone}
             disabled={!capChosen}
             title={!capChosen ? t("guide.enterLockedHint") : undefined}
-            className="flex items-center gap-2 rounded-md bg-[var(--accent)] px-5 py-2.5 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            className="v3-dv-btn v3-dv-btn--primary px-5 py-2.5"
           >
             {t("guide.enter")}
           </button>
@@ -1106,9 +1085,9 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
     <div className="mx-auto max-w-6xl space-y-4">
       {/* Claim banner — an agent must be claimed before it can play ranked. */}
       {claim === "unclaimed" && (
-        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-5 py-4">
+        <div className="v3-dv-card v3-dv-card--warn px-5 py-4">
           <div className="flex items-start gap-2.5">
-            <ShieldAlert size={18} className="mt-0.5 shrink-0 text-amber-500" />
+            <ShieldAlert size={18} className="v3-dv-warn mt-0.5 shrink-0" />
             <div className="min-w-0 flex-1">
               <div className="text-[14px] font-medium text-[var(--text)]">{t("play.claim.title")}</div>
               <div className="mt-0.5 text-[12px] text-[var(--text-muted)]">{t("play.claim.body")}</div>
@@ -1116,14 +1095,14 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                 <button
                   onClick={doClaim}
                   disabled={busy === "claim"}
-                  className="flex items-center gap-1.5 rounded-md bg-amber-500 px-3.5 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+                  className="v3-dv-btn v3-dv-btn--primary"
                 >
                   {busy === "claim" ? <Loader2 size={14} className="animate-spin" /> : <ExternalLink size={14} />}
                   {t("play.claim.btn")}
                 </button>
                 <button
                   onClick={checkClaim}
-                  className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[12px] text-[var(--text-muted)] hover:text-[var(--text)]"
+                  className="v3-dv-btn v3-dv-btn--ghost v3-dv-btn--sm"
                 >
                   {t("play.claim.recheck")}
                 </button>
@@ -1147,7 +1126,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
       )}
 
       {/* ── Hero: identity + live activity ── */}
-      <div className="app-card px-6 py-5">
+      <div className="v3-dv-card px-6 py-5">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex min-w-0 items-center gap-4">
             <button
@@ -1172,13 +1151,13 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                         if (e.key === "Enter") void applyRename();
                         else if (e.key === "Escape") setEditingName(false);
                       }}
-                      className="w-44 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1 font-display text-[16px] text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                      className="v3-dv-input v3-dv-display w-44 px-2 py-1 text-[16px]"
                     />
                     <button
                       onClick={() => void applyRename()}
                       disabled={busy === "rename"}
                       title={t("common.apply")}
-                      className="rounded-md p-1 text-[var(--text-muted)] hover:text-[var(--accent)] disabled:opacity-60"
+                      className="rounded-md p-1 text-[var(--text-muted)] hover:text-[var(--v3-acc-deep)] disabled:opacity-60"
                     >
                       {busy === "rename" ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
                     </button>
@@ -1192,7 +1171,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                   </div>
                 ) : (
                   <>
-                    <span className="truncate font-display text-[20px] leading-tight text-[var(--text)]">{displayName}</span>
+                    <span className="v3-dv-display truncate text-[20px] leading-tight text-[var(--text)]">{displayName}</span>
                     <button
                       type="button"
                       onClick={() => {
@@ -1201,7 +1180,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                         setFeedback(null);
                       }}
                       title={t("play.rename.edit")}
-                      className="app-no-drag rounded-md p-0.5 text-[var(--text-faint)] hover:text-[var(--accent)]"
+                      className="app-no-drag rounded-md p-0.5 text-[var(--text-faint)] hover:text-[var(--v3-acc-deep)]"
                     >
                       <Pencil size={13} />
                     </button>
@@ -1234,7 +1213,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
               <button
                 onClick={retry}
                 disabled={busy === "retry"}
-                className="flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-60"
+                className="v3-dv-btn v3-dv-btn--primary v3-dv-btn--sm"
               >
                 {busy === "retry" ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
                 {t("play.status.retry")}
@@ -1245,9 +1224,9 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
           </div>
         </div>
         {avatarOpen && (
-          <div className="mt-4 border-t border-[var(--border)] pt-4">
+          <div className="mt-4 border-t border-[var(--v3-hairline)] pt-4">
             <div className="mb-3 flex items-center justify-between">
-              <span className="font-display text-[15px] text-[var(--text)]">{t("play.avatar.title")}</span>
+              <span className="v3-dv-display text-[15px] text-[var(--text)]">{t("play.avatar.title")}</span>
               <button
                 type="button"
                 onClick={() => setAvatarOpen(false)}
@@ -1270,7 +1249,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
       </div>
 
       {/* ── KPI strip ── */}
-      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--border)] sm:grid-cols-3 lg:grid-cols-6">
+      <div className="v3-dv-kpis">
         <Kpi icon={Gauge} label={t("play.stats.rating")} value={stats?.rating != null ? String(stats.rating) : "—"} accent />
         <Kpi icon={Trophy} label={t("play.stats.rank")} value={stats?.rank != null ? `#${stats.rank}` : "—"} accent />
         <Kpi
@@ -1304,12 +1283,14 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
       {/* ── Ranked-progress hint (only renders when not yet on the leaderboard) ── */}
       {rankedHint !== null && (
         <div
-          className="app-card flex flex-wrap items-center justify-between gap-3 px-5 py-3"
-          style={rankedHint.tone === "warn" ? { borderColor: "var(--accent)" } : undefined}
+          className={
+            "v3-dv-card flex flex-wrap items-center justify-between gap-3 px-5 py-3" +
+            (rankedHint.tone === "warn" ? " v3-dv-card--warn" : "")
+          }
         >
           <div className="flex items-start gap-2 text-[12.5px] leading-relaxed text-[var(--text-muted)]">
             {rankedHint.tone === "warn" ? (
-              <AlertTriangle size={15} className="mt-0.5 shrink-0 text-amber-500" />
+              <AlertTriangle size={15} className="v3-dv-warn mt-0.5 shrink-0" />
             ) : (
               <Trophy size={15} className="mt-0.5 shrink-0 text-[var(--text-faint)]" />
             )}
@@ -1331,31 +1312,22 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="flex flex-col gap-4 lg:col-span-2">
           {ratings.length > 0 && (
-            <div className="app-card px-5 py-4">
-              <div className="mb-3 flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
-                <Gauge size={13} className="text-[var(--text-muted)]" />
-                {t("home.perGame")}
-              </div>
+            <div className="v3-dv-card px-5 py-4">
+              <div className="v3-dv-hd mb-3">{t("home.perGame")}</div>
               <PerGameCards ratings={ratings} />
             </div>
           )}
-          <div className="app-card px-5 py-4">
-            <div className="mb-3 flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
-              <TrendingUp size={13} className="text-[var(--text-muted)]" />
-              {t("home.ratingTrend")}
-            </div>
+          <div className="v3-dv-card px-5 py-4">
+            <div className="v3-dv-hd mb-3">{t("home.ratingTrend")}</div>
             <RatingChart history={history} />
           </div>
 
           {/* Recent matches — a row click opens THAT match's replay in the
               Watch tab (owner ruling: a click means "show me the details";
               the History tab stays one click away via 查看全部). */}
-          <div className="app-card flex flex-1 flex-col px-5 py-4">
+          <div className="v3-dv-card flex flex-1 flex-col px-5 py-4">
             <div className="mb-3 flex items-center justify-between gap-2">
-              <span className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
-                <History size={13} className="text-[var(--text-muted)]" />
-                {t("home.recent.title")}
-              </span>
+              <span className="v3-dv-hd">{t("home.recent.title")}</span>
               <button
                 onClick={() => onNavigate?.("history")}
                 className="text-[11.5px] text-[var(--text-muted)] hover:text-[var(--text)]"
@@ -1368,7 +1340,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
             ) : sessions.length === 0 ? (
               <div className="flex flex-1 items-center justify-center py-3 text-[12px] text-[var(--text-faint)]">{t("home.recent.empty")}</div>
             ) : (
-              <div className="divide-y divide-[var(--border)]">
+              <div>
                 {sessions.map((s) => (
                   <button
                     key={s.session_id}
@@ -1382,7 +1354,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                       onNavigate?.("watch");
                     }}
                     title={t("home.recent.openReplay")}
-                    className="flex w-full items-center justify-between gap-3 py-2.5 text-left transition-colors hover:bg-[var(--hover)]"
+                    className="v3-dv-row v3-dv-row--flush"
                   >
                     <div className="flex min-w-0 items-center gap-2.5">
                       <ResultDot label={s.result_label} />
@@ -1425,16 +1397,13 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
           />
 
           {/* Auto-match control */}
-          <div className="app-card px-5 py-4">
+          <div className="v3-dv-card px-5 py-4">
             <div className="mb-3 flex items-center justify-between gap-2">
-              <span className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
-                <Zap size={13} className="text-[var(--text-muted)]" />
-                {t("play.auto.title")}
-              </span>
+              <span className="v3-dv-hd">{t("play.auto.title")}</span>
               <button
                 onClick={togglePause}
                 disabled={!connected || busy === "pause"}
-                className="flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-50"
+                className="v3-dv-btn v3-dv-btn--ghost v3-dv-btn--xs"
               >
                 {paused ? <Play size={12} /> : <Pause size={12} />}
                 {paused ? t("play.auto.resume") : t("play.auto.pause")}
@@ -1465,7 +1434,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                       setDay(e.target.value === "" ? 0 : clampInt(Number(e.target.value), 0, CAP_MAX));
                       setCapConfirming(false);
                     }}
-                    className="w-16 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[13px] tabular-nums text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                    className="v3-dv-input w-16 px-2 py-1.5 tabular-nums"
                   />
                   <span className="text-[11px] text-[var(--text-muted)]">{t("play.auto.capUnit")}</span>
                   <Btn busy={busy === "policy"} disabled={!policyDirty} onClick={onApplyPolicyClick}>
@@ -1476,9 +1445,9 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
             </div>
 
             {capConfirming && (
-              <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3.5 py-3">
+              <div className="v3-dv-card v3-dv-card--warn mt-3 px-3.5 py-3">
                 <div className="flex items-start gap-2">
-                  <AlertTriangle size={15} className="mt-0.5 shrink-0 text-amber-500" />
+                  <AlertTriangle size={15} className="v3-dv-warn mt-0.5 shrink-0" />
                   <div className="min-w-0 flex-1">
                     <div className="text-[12.5px] font-medium text-[var(--text)]">{t("guide.capConfirmTitle", { n: clampInt(day, 0, CAP_MAX) })}</div>
                     <div className="mt-0.5 text-[11.5px] leading-relaxed text-[var(--text-muted)]">{t("guide.capConfirmBody")}</div>
@@ -1486,14 +1455,14 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                       <button
                         onClick={() => void applyPolicy()}
                         disabled={busy === "policy"}
-                        className="flex items-center gap-1.5 rounded-md bg-amber-500 px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-60"
+                        className="v3-dv-btn v3-dv-btn--primary v3-dv-btn--sm"
                       >
                         {busy === "policy" && <Loader2 size={12} className="animate-spin" />}
                         {t("guide.capConfirmBtn", { n: clampInt(day, 0, CAP_MAX) })}
                       </button>
                       <button
                         onClick={() => setCapConfirming(false)}
-                        className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-[12px] text-[var(--text-muted)] hover:text-[var(--text)]"
+                        className="v3-dv-btn v3-dv-btn--ghost v3-dv-btn--sm"
                       >
                         {t("common.cancel")}
                       </button>
@@ -1505,12 +1474,9 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
           </div>
 
           {/* Quick actions: one game selector → play now / create challenge; then accept */}
-          <div id="play-quick-actions" className="app-card flex-1 space-y-4 px-5 py-4">
+          <div id="play-quick-actions" className="v3-dv-card flex-1 space-y-4 px-5 py-4">
             <div>
-              <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
-                <Swords size={13} className="text-[var(--text-muted)]" />
-                {t("play.actions.title")}
-              </div>
+              <div className="v3-dv-hd mb-2">{t("play.actions.title")}</div>
               <GamePicker value={game} onChange={setGame} />
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <Btn busy={busy === "match"} disabled={!connected || matchFlash} onClick={doRequest}>
@@ -1520,7 +1486,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                   {t("play.challenge.btn")}
                 </Btn>
                 {matchFlash && (
-                  <span className="flex items-center gap-1 text-[11px] font-medium text-emerald-500">
+                  <span className="v3-dv-ok flex items-center gap-1 text-[11px] font-medium">
                     <Check size={12} /> {t("play.match.queued")}
                   </span>
                 )}
@@ -1530,13 +1496,13 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                 <div>· {t("play.challenge.hint")}</div>
               </div>
               {challenges.length > 0 && (
-                <div className="mt-3 space-y-2 border-t border-[var(--border)] pt-3">
+                <div className="mt-3 space-y-2 border-t border-[var(--v3-hairline)] pt-3">
                   {challenges.map((c) => (
                     <div key={c.url}>
                       <div className="mb-1 flex items-center gap-2 text-[11px]">
                         <span className="font-medium text-[var(--text)]">{gameLabel(c.game)}</span>
-                        <span className="inline-flex items-center gap-1 font-mono uppercase tracking-[0.06em] text-[var(--accent-text)]">
-                          <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+                        <span className="v3-dv-chip" data-tone="accent">
+                          <i className="dot pulse" />
                           {t("home.challengeWaiting")}
                         </span>
                       </div>
@@ -1548,17 +1514,14 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
               )}
             </div>
 
-            <div className="border-t border-[var(--border)] pt-3.5">
-              <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
-                <Inbox size={13} className="text-[var(--text-muted)]" />
-                {t("play.accept.title")}
-              </div>
+            <div className="border-t border-[var(--v3-hairline)] pt-3.5">
+              <div className="v3-dv-hd mb-2">{t("play.accept.title")}</div>
               <div className="flex w-full gap-2">
                 <input
                   value={acceptUrl}
                   onChange={(e) => setAcceptUrl(e.target.value)}
                   placeholder={t("play.accept.placeholder")}
-                  className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-[13px] text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                  className="v3-dv-input min-w-0 flex-1"
                 />
                 <Btn busy={busy === "accept"} disabled={!connected || acceptUrl.trim() === ""} onClick={doAccept}>
                   {t("play.accept.btn")}
@@ -1568,14 +1531,11 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
           </div>
 
           {/* Local token usage (§7A) */}
-          <div className="app-card px-5 py-4">
+          <div className="v3-dv-card px-5 py-4">
             <div className="mb-2.5 flex items-center justify-between gap-2">
-              <span className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
-                <Coins size={13} className="text-[var(--text-muted)]" />
-                {t("home.usage.title")}
-              </span>
+              <span className="v3-dv-hd">{t("home.usage.title")}</span>
               {usage !== null && usage.hasPrices && usage.month.total.estimatedCost !== undefined && (
-                <span className="font-mono text-[12px] tabular-nums text-[var(--accent-text)]">
+                <span className="font-mono text-[12px] tabular-nums text-[var(--v3-acc-deep)]">
                   ≈ {usage.currency}{usage.month.total.estimatedCost.toFixed(2)}
                 </span>
               )}
@@ -1600,7 +1560,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                             <span className="truncate">{m.key}</span>
                             <span className="tabular-nums">{formatTokens(mine)}</span>
                           </div>
-                          <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-[var(--surface-2)]">
+                          <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-[var(--color-deep)]">
                             <div className="h-full rounded-full bg-[var(--accent)]" style={{ width: `${pct}%` }} />
                           </div>
                         </div>
@@ -1632,19 +1592,11 @@ function FeedbackBar({ feedback, onClaim }: { feedback: NonNullable<Feedback>; o
   const { t } = useTranslation();
   const err = feedback.tone === "err";
   return (
-    <div
-      className={
-        "rounded-xl border px-4 py-3 text-[12px] leading-relaxed " +
-        (err ? "border-red-500/30 bg-red-500/10 text-red-300" : "border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)]")
-      }
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <div className={"v3-dv-banner" + (err ? " v3-dv-err" : "")} data-tone={err ? "err" : "neutral"}>
+      <div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-2">
         <span className="min-w-0">{feedback.text}</span>
         {feedback.action === "claim" && (
-          <button
-            onClick={onClaim}
-            className="flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-2.5 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90"
-          >
+          <button onClick={onClaim} className="v3-dv-btn v3-dv-btn--primary v3-dv-btn--xs shrink-0">
             <ExternalLink size={12} />
             {t("errors.needClaimAction")}
           </button>
@@ -1669,21 +1621,15 @@ export function fmtTimePoint(iso: string | undefined, locale: string, now: Date 
 }
 
 function ResultDot({ label }: { label: string | undefined }) {
-  const tone =
-    label === "win" ? "bg-emerald-400" : label === "loss" ? "bg-rose-400" : "bg-[var(--text-faint)]";
-  return <span className={"inline-block h-1.5 w-1.5 shrink-0 rounded-full " + tone} />;
+  const cls = label === "win" ? "v3-dv-dot v3-dv-dot--acc" : label === "loss" ? "v3-dv-dot v3-dv-dot--err" : "v3-dv-dot";
+  return <span className={cls} />;
 }
 
 function ResultChip({ label, t }: { label: string; t: (k: string) => string }) {
   const key = label === "win" ? "cockpit.outcomeWin" : label === "loss" ? "cockpit.outcomeLoss" : label === "draw" ? "cockpit.outcomeDraw" : "";
-  const tone =
-    label === "win"
-      ? "bg-emerald-500/15 text-emerald-400"
-      : label === "loss"
-        ? "bg-rose-500/15 text-rose-400"
-        : "bg-[var(--surface-2)] text-[var(--text-muted)]";
+  const tone = label === "win" ? "accent" : label === "loss" ? "err" : "neutral";
   return (
-    <span className={"rounded-full px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.06em] " + tone}>
+    <span className="v3-dv-chip" data-tone={tone}>
       {key !== "" ? t(key) : label}
     </span>
   );
@@ -1697,7 +1643,7 @@ function ProgressRing({ value, idle, children }: { value: number; idle: boolean;
   return (
     <div className="relative h-[76px] w-[76px] shrink-0">
       <svg viewBox="0 0 76 76" className="h-full w-full -rotate-90">
-        <circle cx="38" cy="38" r={R} fill="none" stroke="var(--surface-2)" strokeWidth="6" />
+        <circle cx="38" cy="38" r={R} fill="none" stroke="var(--color-deep)" strokeWidth="6" />
         {!idle && (
           <circle
             cx="38"
@@ -1728,7 +1674,7 @@ function UsageMini({
   t: (k: string, o?: Record<string, unknown>) => string;
 }) {
   return (
-    <div className="rounded-lg bg-[var(--surface-2)] px-3 py-2.5">
+    <div className="v3-dv-inset px-3 py-2.5">
       <div className="font-mono text-[9.5px] uppercase tracking-[0.08em] text-[var(--text-muted)]">{label}</div>
       <div className="mt-0.5 font-mono text-[16px] font-semibold tabular-nums text-[var(--text)]">{formatTokens(tokens)}</div>
       <div className="text-[10px] text-[var(--text-faint)]">{t("home.usage.calls", { n: calls })}</div>
@@ -1740,7 +1686,7 @@ function ActivityPill({ activity, connecting }: { activity: Activity; connecting
   const { t } = useTranslation();
   if (connecting) {
     return (
-      <span className="flex items-center gap-1.5 rounded-md bg-amber-500/15 px-2.5 py-1 text-[12px] font-medium text-amber-400">
+      <span className="v3-dv-pill" data-tone="warn">
         <Loader2 size={12} className="animate-spin" />
         {t("play.activity.connecting")}
       </span>
@@ -1748,8 +1694,8 @@ function ActivityPill({ activity, connecting }: { activity: Activity; connecting
   }
   const pulse = activity === "in_match" || activity === "matching";
   return (
-    <span className={"flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] font-medium " + ACTIVITY_TONE[activity]}>
-      <span className={"inline-block h-1.5 w-1.5 rounded-full bg-current " + (pulse ? "animate-pulse" : "")} />
+    <span className="v3-dv-pill" data-tone={ACTIVITY_TONE[activity]}>
+      <i className={"dot" + (pulse ? " pulse" : "")} />
       {t(`play.activity.${activity}`)}
     </span>
   );
@@ -1769,18 +1715,11 @@ function Kpi({
   accent?: boolean;
 }) {
   return (
-    <div className={"flex flex-col items-center gap-1 px-3 py-3.5 " + (accent ? "bg-[var(--accent-soft)]" : "bg-[var(--surface-2)]")}>
-      <Icon size={13} className={accent ? "text-[var(--accent-text)]" : "text-[var(--text-faint)]"} />
-      <div
-        className={
-          "text-[19px] font-semibold leading-none tabular-nums " +
-          (accent ? "text-[var(--accent-text)]" : "text-[var(--text)]")
-        }
-      >
-        {value}
-      </div>
-      <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{label}</div>
-      {sub !== undefined && <div className="font-mono text-[9.5px] text-[var(--text-faint)]">{sub}</div>}
+    <div className={"v3-dv-kpi" + (accent ? " v3-dv-kpi--acc" : "")}>
+      <Icon size={13} className="k-ic" />
+      <div className="k-val">{value}</div>
+      <div className="k-lab">{label}</div>
+      {sub !== undefined && <div className="k-sub">{sub}</div>}
     </div>
   );
 }
@@ -1797,7 +1736,7 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <div className="app-card px-5 py-4">
+    <div className="v3-dv-card px-5 py-4">
       <div className="mb-3 flex items-start gap-2.5">
         {Icon !== undefined && <Icon size={16} className="mt-0.5 shrink-0 text-[var(--text-muted)]" />}
         <div>
@@ -1822,11 +1761,7 @@ function Btn({
   disabled?: boolean;
 }) {
   return (
-    <button
-      onClick={onClick}
-      disabled={busy || disabled}
-      className="flex shrink-0 items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-    >
+    <button onClick={onClick} disabled={busy || disabled} className="v3-dv-btn v3-dv-btn--primary shrink-0">
       {busy && <Loader2 size={14} className="animate-spin" />}
       {children}
     </button>
@@ -1844,8 +1779,7 @@ function QuickLink({
   children: ReactNode;
   onClick?: () => void;
 }) {
-  const cls =
-    "inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-[12px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)]/40 hover:text-[var(--text)]";
+  const cls = "v3-dv-btn v3-dv-btn--ghost v3-dv-btn--sm";
   // onClick variant (e.g. SSO "Open Dashboard") renders a button so we control the
   // navigation; otherwise a plain external anchor. The ExternalLink glyph stays in
   // both, since both ultimately open the system browser.
@@ -1870,16 +1804,9 @@ function QuickLink({
 function GamePicker({ value, onChange }: { value: string; onChange: (g: string) => void }) {
   const games = useLiveGames();
   return (
-    <div className="inline-flex gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-0.5">
+    <div className="v3-dv-seg">
       {games.map((g) => (
-        <button
-          key={g}
-          onClick={() => onChange(g)}
-          className={
-            "rounded-md px-2.5 py-1.5 text-[12px] transition-colors " +
-            (value === g ? "bg-[var(--surface)] text-[var(--text)] shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text)]")
-          }
-        >
+        <button key={g} onClick={() => onChange(g)} className={"v3-dv-seg-btn" + (value === g ? " on" : "")}>
           {gameLabel(g)}
         </button>
       ))}
@@ -1894,13 +1821,13 @@ function CopyRow({ text }: { text: string }) {
     setCopied(true);
   };
   return (
-    <div className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2">
+    <div className="v3-dv-inset flex items-center gap-2 px-3 py-2">
       <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-[var(--text)]">{text}</span>
       <button
         onClick={copy}
         className="flex shrink-0 items-center gap-1.5 rounded px-2 py-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text)]"
       >
-        {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
+        {copied ? <Check size={13} className="v3-dv-ok" /> : <Copy size={13} />}
       </button>
     </div>
   );
@@ -1910,8 +1837,8 @@ function ActionLog({ text, error = false }: { text: string; error?: boolean }) {
   return (
     <pre
       className={
-        "max-h-56 overflow-auto whitespace-pre-wrap rounded-xl border p-3 font-mono text-[11.5px] leading-relaxed " +
-        (error ? "border-red-500/30 bg-red-500/10 text-red-300" : "border-[var(--border)] bg-[var(--surface-2)] text-[var(--text)]")
+        "max-h-56 overflow-auto whitespace-pre-wrap p-3 font-mono text-[11.5px] leading-relaxed " +
+        (error ? "v3-dv-card v3-dv-card--err v3-dv-err" : "v3-dv-inset")
       }
     >
       {text}

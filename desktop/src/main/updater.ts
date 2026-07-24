@@ -84,6 +84,27 @@ export async function checkForUpdates(): Promise<void> {
 }
 
 /**
+ * Manual download of the update the last check surfaced ("Update & restart").
+ * This is the missing middle of the opted-OUT flow: with automatic updates
+ * disabled a check stops at "available" and nothing in the app could move it
+ * forward — the user saw the new version but had no way to install it.
+ * Progress/completion arrive via the status stream; electron-updater requires
+ * a prior check in this session, which the renderer guarantees by only
+ * offering this action from the "available" state.
+ */
+export async function downloadUpdate(): Promise<void> {
+  if (!app.isPackaged) {
+    send({ state: "not-available" });
+    return;
+  }
+  try {
+    await autoUpdater.downloadUpdate();
+  } catch (err) {
+    send({ state: "error", message: errMessage(err) });
+  }
+}
+
+/**
  * Quit and install a downloaded update (the "Restart & update" prompt). The
  * caller sets `isQuitting` first so the close-to-tray handler lets the quit
  * through (see main.ts); electron-updater then installs and relaunches. Windows

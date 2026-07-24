@@ -25,56 +25,43 @@ function TraceRow({ trace }: { trace: BridgeDecisionTrace }) {
   switch (trace.type) {
     case "decision_request":
       return (
-        <div className="flex items-center gap-2 px-1 pt-1.5 text-[11px] text-[var(--text-muted)]">
-          <Brain size={13} className="shrink-0 text-[var(--accent)]" />
-          <span className="font-medium text-[var(--text)]">{t("cockpit.decision")}</span>
-          <span>· {trace.legalActionCount} {t("cockpit.legalActions")}</span>
+        <div className="v3-tr-row v3-tr-decision">
+          <Brain size={13} className="shrink-0 text-[var(--v3-acc)]" />
+          <span>
+            <b>{t("cockpit.decision")}</b>
+            {` · ${trace.legalActionCount} ${t("cockpit.legalActions")}`}
+          </span>
         </div>
       );
     case "runtime_success":
       return (
-        <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-2.5">
+        <div className="v3-tr-card">
           {trace.reasoning !== undefined && (
             <div className="mb-2">
-              <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--accent)]">
-                {t("cockpit.modelThinking")}
-              </div>
-              <div className="whitespace-pre-wrap text-[11.5px] leading-relaxed text-[var(--text-muted)]">
-                {trace.reasoning.text}
-              </div>
+              <div className="v3-tr-label">{t("cockpit.modelThinking")}</div>
+              <div className="v3-tr-thinking">{trace.reasoning.text}</div>
             </div>
           )}
-          <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
-            {t("cockpit.modelOutput")}
-          </div>
-          <div className="whitespace-pre-wrap font-mono text-[11.5px] leading-relaxed text-[var(--text)]">
-            {trace.raw.preview}
-          </div>
-          <div className="mt-1.5 text-[10px] text-[var(--text-faint)]">
+          <div className="v3-tr-label v3-tr-label--dim">{t("cockpit.modelOutput")}</div>
+          <div className="v3-tr-output">{trace.raw.preview}</div>
+          <div className="v3-tr-meta">
             {trace.raw.bytes}B · sha {trace.raw.sha256}
           </div>
         </div>
       );
     case "final_action":
       return (
-        <div className="flex items-center gap-2 px-1 pb-1.5 text-[12px]">
-          <ArrowRight size={13} className="shrink-0 text-[var(--text-muted)]" />
-          <span className="font-mono font-medium text-[var(--text)]">{actionLabel(trace.action, t)}</span>
-          <span
-            className={
-              "rounded px-1.5 py-0.5 text-[10px] " +
-              (trace.source === "runtime"
-                ? "bg-emerald-500/15 text-emerald-400"
-                : "bg-amber-500/15 text-amber-400")
-            }
-          >
+        <div className="v3-tr-row v3-tr-final">
+          <ArrowRight size={13} className="shrink-0 text-[var(--v3-t3)]" />
+          <b>{actionLabel(trace.action, t)}</b>
+          <span className="v3-tr-src" data-kind={trace.source === "runtime" ? "runtime" : "fallback"}>
             {trace.source === "runtime" ? t("cockpit.fromRuntime") : t("cockpit.fromFallback")}
           </span>
         </div>
       );
     case "runtime_failure":
       return (
-        <div className="flex items-start gap-2 px-1 text-[11px] text-red-400">
+        <div className="v3-tr-row v3-tr-err">
           <AlertTriangle size={13} className="mt-0.5 shrink-0" />
           <span>
             {t("cockpit.runtimeFailed")} #{trace.attempt}
@@ -84,7 +71,7 @@ function TraceRow({ trace }: { trace: BridgeDecisionTrace }) {
       );
     case "strategy_error":
       return (
-        <div className="flex items-start gap-2 px-1 text-[11px] text-amber-400">
+        <div className="v3-tr-row v3-tr-warn">
           <AlertTriangle size={13} className="mt-0.5 shrink-0" />
           <span>
             {t("cockpit.strategyError")}: {trace.error}
@@ -112,27 +99,24 @@ export function ReasoningTracePanel({
     endRef.current?.scrollIntoView({ block: "end" });
   }, [traces.length]);
 
-  const badgeColor =
-    badge === "live" ? "text-emerald-400" : badge === "replay" ? "text-[var(--accent)]" : "text-[var(--text-faint)]";
-  const dotColor =
-    badge === "live" ? "bg-emerald-400" : badge === "replay" ? "bg-[var(--accent)]" : "bg-[var(--text-faint)]";
   const badgeLabel = badge === "live" ? t("cockpit.live") : badge === "replay" ? t("cockpit.replay") : t("cockpit.demo");
 
   return (
-    <div className="flex h-full min-h-0 flex-col rounded-xl border border-[var(--border)] bg-[var(--surface)]">
-      <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
-        <div>
-          <div className="text-[13px] font-medium text-[var(--text)]">{t("cockpit.reasoning")}</div>
-          <div className="text-[11px] text-[var(--text-muted)]">{t("cockpit.reasoningHint")}</div>
+    <div className="v3-trace">
+      <div className="v3-tr-hd">
+        <span className="v3-tr-sq" />
+        <div className="v3-tr-titles">
+          <div className="v3-tr-title">{t("cockpit.reasoning")}</div>
+          <div className="v3-tr-sub">{t("cockpit.reasoningHint")}</div>
         </div>
-        <span className={"flex items-center gap-1.5 rounded-md px-2 py-1 text-[10px] " + badgeColor}>
-          <span className={"inline-block h-1.5 w-1.5 rounded-full " + dotColor} />
+        <span className="v3-tr-badge" data-kind={badge}>
+          <i />
           {badgeLabel}
         </span>
       </div>
-      <div className="flex-1 space-y-1.5 overflow-auto p-3">
+      <div className="v3-tr-body">
         {traces.length === 0 ? (
-          <div className="px-2 py-10 text-center text-[12px] text-[var(--text-faint)]">{emptyHint ?? t("cockpit.noTraces")}</div>
+          <div className="v3-tr-empty">{emptyHint ?? t("cockpit.noTraces")}</div>
         ) : (
           traces.map((tr, i) => <TraceRow key={i} trace={tr} />)
         )}

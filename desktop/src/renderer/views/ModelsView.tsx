@@ -307,28 +307,24 @@ export function ModelsView() {
         title={t("nav.models")}
         subtitle={t("models.intro")}
         right={
-          <button
-            onClick={load}
-            title={t("models.refresh")}
-            className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
-          >
+          <button onClick={load} title={t("models.refresh")} className="v3-dv-iconbtn">
             <RotateCw size={14} />
           </button>
         }
       />
 
       {error !== null && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-400">{error}</div>
+        <div className="v3-dv-banner v3-dv-err" data-tone="err">{error}</div>
       )}
 
       {/* First-run: choose a PROTOCOL family */}
       {!configured && form === null && (
-        <div className="app-card p-5">
-          <div className="mb-1 text-[14px] font-medium text-[var(--text)]">{t("models.firstTitle")}</div>
+        <div className="v3-dv-card p-5">
+          <div className="v3-dv-hd mb-2">{t("models.firstTitle")}</div>
           <div className="mb-3 text-[12px] text-[var(--text-muted)]">{t("models.firstHint")}</div>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {FAMILIES.map((f) => (
-              <button key={f.key} onClick={() => openAdd(f.key)} className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2.5 text-left text-[13px] text-[var(--text)] transition-colors hover:border-[var(--accent)]/40">
+              <button key={f.key} onClick={() => openAdd(f.key)} className="v3-dv-choice">
                 {t(`models.fam.${f.key}`)}
               </button>
             ))}
@@ -363,12 +359,12 @@ export function ModelsView() {
 
           <div className="space-y-2">
             {profiles.map((p) => (
-              <div key={p.id} className="app-card px-5 py-4">
+              <div key={p.id} className="v3-dv-card px-5 py-4">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <span className="text-[14px] font-medium text-[var(--text)]">{p.displayName}</span>
                     {p.id === view?.activeProfile && (
-                      <span className="flex items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-400">
+                      <span className="v3-dv-chip" data-tone="ok">
                         <Star size={10} /> {t("models.activeBadge")}
                       </span>
                     )}
@@ -388,17 +384,17 @@ export function ModelsView() {
                   <span className="flex items-center gap-1.5">
                     <KeyRound size={13} className="text-[var(--text-faint)]" />
                     {p.keyResolvable ? (
-                      <span className="flex items-center gap-1 text-emerald-400"><Check size={12} /> {t("models.keyOk")}</span>
+                      <span className="v3-dv-ok flex items-center gap-1"><Check size={12} /> {t("models.keyOk")}</span>
                     ) : (
-                      <span className="flex items-center gap-1 text-amber-400"><X size={12} /> {t("models.keyMissing")}</span>
+                      <span className="v3-dv-warn flex items-center gap-1"><X size={12} /> {t("models.keyMissing")}</span>
                     )}
                   </span>
                   {p.thinkingEnabled && <span className="text-[var(--text-muted)]">{t("models.thinking")}{p.effort ? `: ${p.effort}` : ""}</span>}
                   {p.family === "openai_chat" && <span className="text-[var(--text-muted)]">{t("models.streaming")}: {p.stream}</span>}
                   {p.verbosity && <span className="text-[var(--text-muted)]">{t("models.verbosityLabel")}: {p.verbosity}</span>}
-                  {p.features?.jsonObjectMode && <span className="rounded bg-[var(--surface-2)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)]">{t("models.featDeepseekJsonShort")}</span>}
+                  {p.features?.jsonObjectMode && <span className="v3-dv-chip">{t("models.featDeepseekJsonShort")}</span>}
                   {testResult[p.id] && (
-                    <span className={testResult[p.id]!.ok ? "text-emerald-400" : "text-red-400"}>· {testResult[p.id]!.msg}</span>
+                    <span className={testResult[p.id]!.ok ? "v3-dv-ok" : "v3-dv-err"}>· {testResult[p.id]!.msg}</span>
                   )}
                 </div>
 
@@ -425,8 +421,8 @@ export function ModelsView() {
           </div>
 
           {profiles.length > 1 && (
-            <div className="app-card px-5 py-4">
-              <div className="mb-2 text-[13px] font-medium text-[var(--text)]">{t("models.routing")}</div>
+            <div className="v3-dv-card px-5 py-4">
+              <div className="v3-dv-hd mb-2">{t("models.routing")}</div>
               <RouteRow label={t("models.routeDefault")} value={view?.routing.default ?? ""} profiles={profiles} onChange={(id) => onRoute("default", id)} />
               {games.map((g) => (
                 <RouteRow key={g} label={gameLabel(g)} value={view?.routing.byGame?.[g] ?? view?.routing.default ?? ""} profiles={profiles} onChange={(id) => onRoute(g, id)} />
@@ -490,8 +486,8 @@ function ProfileForm({ form, setForm, onSave, onCancel, saving, t }: {
     });
   };
   return (
-    <div className="space-y-3 rounded-xl border border-[var(--accent)]/40 bg-[var(--surface)] p-5">
-      <div className="text-[14px] font-medium text-[var(--text)]">{form.isNew ? t("models.addModel") : t("models.edit")}</div>
+    <div className="v3-dv-card v3-dv-card--acc space-y-3 p-5">
+      <div className="v3-dv-hd">{form.isNew ? t("models.addModel") : t("models.edit")}</div>
 
       <Row label={t("models.name")}>
         <input className={inputCls} value={form.displayName} onChange={(e) => up({ displayName: e.target.value })} placeholder={t("models.namePh")} />
@@ -514,7 +510,7 @@ function ProfileForm({ form, setForm, onSave, onCancel, saving, t }: {
           <datalist id="model-suggest">{fdef.models.map((m) => <option key={m} value={m} />)}</datalist>
         </>
       </Row>
-      {hint && <div className="-mt-1 pl-0 text-[11px] text-[var(--accent)] sm:pl-[124px]">{t("models.detected")}: {hint}</div>}
+      {hint && <div className="v3-dv-acc -mt-1 pl-0 text-[11px] sm:pl-[124px]">{t("models.detected")}: {hint}</div>}
       <Row label={t("models.baseUrl")}>
         <input className={inputCls} value={form.baseURL} onChange={(e) => up({ baseURL: e.target.value })} placeholder={t(fdef.baseURLPlaceholderKey)} />
       </Row>
@@ -536,7 +532,7 @@ function ProfileForm({ form, setForm, onSave, onCancel, saving, t }: {
           <input className={inputCls + " max-w-[110px]"} value={form.requestTimeoutSec} onChange={(e) => up({ requestTimeoutSec: e.target.value })} placeholder="270" />
           <span className="text-[11px] text-[var(--text-faint)]">{t("models.requestTimeoutLabel")}</span>
         </div>
-        {tokenHint && <div className="mt-1 text-[11px] leading-snug text-[var(--accent)]">{tokenHint}</div>}
+        {tokenHint && <div className="v3-dv-acc mt-1 text-[11px] leading-snug">{tokenHint}</div>}
       </Row>
 
       {form.family === "openai_chat" && (
@@ -598,7 +594,7 @@ function ProfileForm({ form, setForm, onSave, onCancel, saving, t }: {
 
       <div className="flex items-center justify-end gap-2 pt-1">
         <SmallBtn onClick={onCancel}>{t("models.cancel")}</SmallBtn>
-        <button onClick={onSave} disabled={saving || form.model.trim() === ""} className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-[13px] text-white transition-colors hover:opacity-90 disabled:opacity-50">
+        <button onClick={onSave} disabled={saving || form.model.trim() === ""} className="v3-dv-btn v3-dv-btn--primary">
           {saving ? t("models.saving") : t("models.save")}
         </button>
       </div>
@@ -606,7 +602,7 @@ function ProfileForm({ form, setForm, onSave, onCancel, saving, t }: {
   );
 }
 
-const inputCls = "w-full rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[13px] text-[var(--text)] outline-none focus:border-[var(--accent)]/50";
+const inputCls = "v3-dv-input";
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -621,7 +617,7 @@ function RouteRow({ label, value, profiles, onChange }: { label: string; value: 
   return (
     <div className="flex items-center justify-between gap-3 py-0.5 text-[12px]">
       <span className="text-[var(--text-muted)]">{label}</span>
-      <select className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1 text-[12px] text-[var(--text)] outline-none" value={value} onChange={(e) => onChange(e.target.value)}>
+      <select className="v3-dv-input w-auto px-2 py-1 text-[12px]" value={value} onChange={(e) => onChange(e.target.value)}>
         {profiles.map((p) => <option key={p.id} value={p.id}>{p.displayName}</option>)}
       </select>
     </div>
@@ -629,13 +625,9 @@ function RouteRow({ label, value, profiles, onChange }: { label: string; value: 
 }
 
 function SmallBtn({ onClick, children, accent, danger }: { onClick: () => void; children: React.ReactNode; accent?: boolean; danger?: boolean }) {
-  const cls = danger
-    ? "border-red-500/30 text-red-400 hover:bg-red-500/10"
-    : accent
-      ? "border-[var(--accent)]/40 text-[var(--accent)] hover:bg-[var(--accent)]/10"
-      : "border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)]";
+  const variant = danger ? "v3-dv-btn--danger" : accent ? "v3-dv-btn--oline" : "v3-dv-btn--ghost";
   return (
-    <button onClick={onClick} className={"flex items-center gap-1 rounded-md border bg-[var(--surface)] px-2.5 py-1.5 text-[12px] transition-colors " + cls}>
+    <button onClick={onClick} className={"v3-dv-btn v3-dv-btn--sm " + variant}>
       {children}
     </button>
   );

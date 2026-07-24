@@ -212,3 +212,87 @@ describe("redact helpers (R13 F-09)", () => {
     expect(out.startsWith("prefix [REDACTED]")).toBe(true);
   });
 });
+
+// 2026-07-19: Gemini-protocol gateways/proxies can return thought-summary parts
+// (thought: true) even though the runtime never requests includeThoughts. Those
+// parts are chain-of-thought — joining them into the reply surfaced the model's
+// reasoning as its answer. They must be skipped unconditionally.
+describe("gemini_generate_content: unsolicited thought parts are never the answer", () => {
+  const GEMINI_BASE = "https://generativelanguage.googleapis.com";
+  const input = { systemPrompt: "sys", userPrompt: "usr", maxTokens: 64, temperature: 0, responseFormat: "json" } as const;
+
+  it("skips thought parts and returns only the answer part", async () => {
+    await registerBuiltinAdapters();
+    const adapter = requireAdapter("gemini_generate_content");
+    stubFetch(200, {
+      candidates: [
+        {
+          content: {
+            parts: [
+              { text: "**My Reasoning Process** weighing the greeting", thought: true },
+              { text: "HELLO" },
+            ],
+          },
+        },
+      ],
+      usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 },
+    });
+    const out = await adapter.generateDecision(
+      input,
+      resolved({ protocol: "gemini_generate_content", baseURL: GEMINI_BASE, model: "test-model" }),
+    );
+    expect(out.text).toBe("HELLO");
+  });
+
+  it("thought-only response is a missing-text error, not a thought reply", async () => {
+    await registerBuiltinAdapters();
+    const adapter = requireAdapter("gemini_generate_content");
+    stubFetch(200, {
+      candidates: [{ content: { parts: [{ text: "only private thoughts here", thought: true }] } }],
+    });
+    await expect(
+      adapter.generateDecision(
+        input,
+        resolved({ protocol: "gemini_generate_content", baseURL: GEMINI_BASE, model: "test-model" }),
+      ),
+    ).rejects.toThrow(/missing/);
+  });
+});
+
+// 2026-07-19: Gemini bills thinking tokens as output but reports them in a
+// separate usageMetadata field (thoughtsTokenCount). Reading only
+// candidatesTokenCount under-counted a reasoning model's output massively.
+describe("gemini_generate_content: thoughtsTokenCount folds into outputTokens", () => {
+  const GEMINI_BASE = "https://generativelanguage.googleapis.com";
+  const input = { systemPrompt: "sys", userPrompt: "usr", maxTokens: 64, temperature: 0, responseFormat: "json" } as const;
+
+  it("output usage = candidates + thoughts", async () => {
+    await registerBuiltinAdapters();
+    const adapter = requireAdapter("gemini_generate_content");
+    stubFetch(200, {
+      candidates: [{ content: { parts: [{ text: "HELLO" }] } }],
+      usageMetadata: { promptTokenCount: 11, candidatesTokenCount: 7, thoughtsTokenCount: 93, cachedContentTokenCount: 3 },
+    });
+    const out = await adapter.generateDecision(
+      input,
+      resolved({ protocol: "gemini_generate_content", baseURL: GEMINI_BASE, model: "test-model" }),
+    );
+    expect(out.inputTokens).toBe(11);
+    expect(out.outputTokens).toBe(100);
+    expect(out.cachedTokens).toBe(3);
+  });
+
+  it("no thoughtsTokenCount → unchanged candidates-only accounting", async () => {
+    await registerBuiltinAdapters();
+    const adapter = requireAdapter("gemini_generate_content");
+    stubFetch(200, {
+      candidates: [{ content: { parts: [{ text: "HELLO" }] } }],
+      usageMetadata: { promptTokenCount: 11, candidatesTokenCount: 7 },
+    });
+    const out = await adapter.generateDecision(
+      input,
+      resolved({ protocol: "gemini_generate_content", baseURL: GEMINI_BASE, model: "test-model" }),
+    );
+    expect(out.outputTokens).toBe(7);
+  });
+});

@@ -2,19 +2,24 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://aifight.ai/protocol/v1/games/texas_holdem/config.schema.json",
   "title": "TexasHoldemConfig",
-  "description": "Per-match configuration delivered in server_game_start.data.config when game == 'texas_holdem'. These are optional overrides; when omitted, server uses defaults from games/texasholdem/texasholdem.go NewState() (sb=200, bb=400, starting_chips=10000, max_hands=10). All values arrive as JSON numbers (Go side casts from float64).",
+  "description": "Per-match configuration delivered in server_game_start.data.config when game == 'texas_holdem'. These are optional overrides; when omitted, server uses defaults from games/texasholdem/texasholdem.go NewState() (tournament format, sb=100, bb=200, starting_chips=10000, max_hands=10; blinds double at hand 6). Since 2026-07 all production matches run the tournament default with no config injected, so game_start typically carries no config at all. All values arrive as JSON numbers (Go side casts from float64).",
   "type": "object",
   "additionalProperties": true,
   "properties": {
+    "format": {
+      "type": "string",
+      "enum": ["cash", "tournament"],
+      "description": "Match economy. Omitted/'tournament' (the production default since 2026-07): stacks carry over between hands, blinds double at hand 6, most chips at match end wins. 'cash' is a legacy/configurable format (per-hand stack reset, fixed blinds, ranked by cumulative net) no longer injected on any production path."
+    },
     "small_blind": {
       "type": "number",
       "minimum": 1,
-      "description": "Small blind amount for early hands. Default 200. Doubles at hand 6 automatically (server-side)."
+      "description": "Small blind amount for early hands. Default 100 (tournament); 50 when format is 'cash'. Doubles at hand 6 automatically (server-side; tournament only — cash blinds stay fixed)."
     },
     "big_blind": {
       "type": "number",
       "minimum": 1,
-      "description": "Big blind amount for early hands. Default 400."
+      "description": "Big blind amount for early hands. Default 200 (tournament); 100 when format is 'cash'."
     },
     "starting_chips": {
       "type": "number",
@@ -24,7 +29,7 @@
     "max_hands": {
       "type": "number",
       "minimum": 1,
-      "description": "Number of hands in the match. Default 10. Match ends after max_hands OR when only one player has chips."
+      "description": "Number of hands in the match. Default 10. Match ends after max_hands OR (tournament) earlier when only one player has chips."
     }
   }
 }

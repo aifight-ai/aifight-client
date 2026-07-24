@@ -41,8 +41,8 @@ export function DecisionErrorBanner({ traces, isLive }: { traces: readonly Bridg
 
   const prof = fatal.profileId ? ` (${fatal.profileId})` : "";
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-[12px] text-[var(--text)]">
-      <AlertTriangle size={15} className="shrink-0 text-red-500" />
+    <div className="v3-dv-banner" data-tone="err">
+      <AlertTriangle size={15} className="v3-dv-err shrink-0" />
       <span className="min-w-0 flex-1">
         {t(MESSAGE_KEY[fatal.cls] ?? "cockpit.decErrConfig", { n: fatal.count })}
         {prof}

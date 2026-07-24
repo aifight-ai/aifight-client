@@ -95,11 +95,7 @@ export function HistoryView() {
   }
 
   const refreshBtn = (
-    <button
-      onClick={loadList}
-      title={t("history.refresh")}
-      className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-[12px] text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
-    >
+    <button onClick={loadList} title={t("history.refresh")} className="v3-dv-btn v3-dv-btn--ghost v3-dv-btn--sm">
       <RotateCw size={13} />
       {t("history.refresh")}
     </button>
@@ -139,7 +135,7 @@ export function HistoryView() {
       )}
       {list.kind === "ready" && list.sessions.length === 0 && (
         <div className="px-4 py-14 text-center">
-          <div className="font-display text-[40px] italic leading-none text-[var(--border)]">—</div>
+          <div className="v3-dv-display text-[40px] leading-none text-[var(--border)]">—</div>
           <div className="mt-3 text-[13px] text-[var(--text-muted)]">{t("history.empty")}</div>
         </div>
       )}
@@ -175,13 +171,13 @@ export function HistoryView() {
             <div className="px-4 py-12 text-center text-[13px] text-[var(--text-muted)]">{t("history.noMatch")}</div>
           ) : (
             <>
-              <div className="space-y-2">
+              <div className="v3-dv-list">
                 {visible.map((s) => (
                   <button
                     key={s.session_id}
                     onClick={() => openSession(s)}
                     disabled={opening !== null}
-                    className="app-card app-card-hover flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left disabled:opacity-60"
+                    className="v3-dv-row"
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
@@ -196,7 +192,7 @@ export function HistoryView() {
                         {fmtDate(s.updated_at, i18n.language)} · {t("history.decisions", { n: s.decision_count ?? 0 })}
                       </div>
                     </div>
-                    <span className="shrink-0 text-[11px] text-[var(--text-muted)]">
+                    <span className="shrink-0 font-mono text-[11px] text-[var(--text-muted)]">
                       {opening === s.session_id ? t("history.opening") : t("history.open")}
                     </span>
                   </button>
@@ -204,10 +200,7 @@ export function HistoryView() {
               </div>
               {visible.length < filtered.length && (
                 <div className="mt-3 flex justify-center">
-                  <button
-                    onClick={() => setShown((n) => n + PAGE_SIZE)}
-                    className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-[12px] text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
-                  >
+                  <button onClick={() => setShown((n) => n + PAGE_SIZE)} className="v3-dv-btn v3-dv-btn--ghost">
                     {t("common.loadMore")} ({filtered.length - visible.length})
                   </button>
                 </div>
@@ -220,19 +213,12 @@ export function HistoryView() {
   );
 }
 
-/** Compact segmented filter (matches the leaderboard scope tabs). */
+/** Compact segmented filter (v3 .tabs/.tab:选中白底 + 橘小方). */
 function Seg({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: { v: string; l: string }[] }) {
   return (
-    <div className="inline-flex gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-0.5">
+    <div className="v3-dv-seg">
       {options.map((o) => (
-        <button
-          key={o.v}
-          onClick={() => onChange(o.v)}
-          className={
-            "rounded-md px-2.5 py-1 text-[12px] transition-colors " +
-            (value === o.v ? "bg-[var(--surface)] text-[var(--text)] shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text)]")
-          }
-        >
+        <button key={o.v} onClick={() => onChange(o.v)} className={"v3-dv-seg-btn" + (value === o.v ? " on" : "")}>
           {o.l}
         </button>
       ))}
@@ -253,10 +239,7 @@ function HistoryDetail({
   const { state, traces } = replay;
 
   const backBtn = (
-    <button
-      onClick={onBack}
-      className="flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-[12px] text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
-    >
+    <button onClick={onBack} className="v3-dv-btn v3-dv-btn--ghost v3-dv-btn--sm">
       <ChevronLeft size={14} />
       {t("history.back")}
     </button>
@@ -275,19 +258,10 @@ function HistoryDetail({
     <div className="flex flex-wrap items-center gap-2.5">
       {backBtn}
       <span className="text-[13px] font-medium text-[var(--text)]">{gameLabel(state.game)}</span>
-      {item.result_label && (
-        <span className="rounded-md bg-[var(--surface-2)] px-2 py-0.5 text-[11px] text-[var(--text-muted)]">
-          {item.result_label}
-        </span>
-      )}
+      {item.result_label && <span className="v3-dv-chip">{item.result_label}</span>}
       <span className="font-mono text-[11px] text-[var(--text-faint)]">{fmtDate(item.updated_at, i18n.language)}</span>
       {item.replay_url && (
-        <a
-          href={item.replay_url}
-          target="_blank"
-          rel="noreferrer"
-          className="flex items-center gap-1 text-[12px] text-[var(--text-muted)] hover:text-[var(--text)]"
-        >
+        <a href={item.replay_url} target="_blank" rel="noreferrer" className="v3-cp-link">
           <ExternalLink size={13} />
           {t("cockpit.openReplay")}
         </a>

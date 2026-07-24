@@ -14,7 +14,7 @@ import { RotateCw, ExternalLink, ChevronLeft, ChevronRight } from "lucide-react"
 
 import { getLeaderboard, getAgentProfile, useBridgeStatus } from "../useBridge";
 import { webOrigin } from "../webOrigin";
-import { Card, PageHeader } from "../components/ui";
+import { PageHeader } from "../components/ui";
 import { AgentAvatar } from "@aifight/ui";
 import { useLiveGames } from "../liveGames";
 import { gameLabel } from "../../shared/games";
@@ -29,28 +29,24 @@ type LoadState =
   | { kind: "error" }
   | { kind: "ready"; rows: LeaderboardRow[] };
 
-/** Rank cell — like the website: #1 in brand serif italic, #2–3 muted serif, #4+ mono. */
+/** Rank cell — v3 .rk:色条(#1 橘 / #2 墨 / #3 灰)+ mono tabular(设计 v3-leaderboard .rb)。 */
 function RankCell({ rank }: { rank: number }) {
-  if (rank <= 3) {
-    const color = rank === 1 ? "text-[var(--accent-text)]" : "text-[var(--text-muted)]";
-    return <span className={"font-display text-[20px] italic " + color}>{rank}</span>;
-  }
-  return <span className="font-mono text-[13px] text-[var(--text-faint)]">{rank}</span>;
+  return (
+    <span className={"v3-dv-rk" + (rank <= 3 ? ` v3-dv-rk--${rank}` : "")}>
+      <i className="v3-dv-rb" aria-hidden="true" />
+      {rank}
+    </span>
+  );
 }
 
 /** One leaderboard row. `mine` highlights it; `agentHref` (when set) makes the name a web deep-link. */
 function Row({ r, mine, agentHref, youLabel }: { r: LeaderboardRow; mine: boolean; agentHref: string | null; youLabel: string }) {
   return (
-    <tr
-      className={
-        "border-b border-[var(--border)] last:border-0 transition-colors " +
-        (mine ? "bg-[var(--accent-soft)]" : "hover:bg-[var(--surface-2)]")
-      }
-    >
-      <td className="py-3 pl-5 text-left tabular-nums">
+    <tr className={mine ? "v3-dv-mine" : undefined}>
+      <td className="text-left">
         <RankCell rank={r.rank} />
       </td>
-      <td className="py-3 pl-2">
+      <td>
         <div className="flex items-center gap-2.5">
           <AgentAvatar name={r.agentName} agentId={r.agentId} size={26} />
           <div className="min-w-0">
@@ -70,21 +66,21 @@ function Row({ r, mine, agentHref, youLabel }: { r: LeaderboardRow; mine: boolea
                 <span className="font-medium text-[var(--text)]">{r.agentName}</span>
               )}
               {mine && (
-                <span className="rounded-full bg-[var(--accent)] px-2 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.08em] text-white">
+                <span className="v3-dv-chip" data-tone="solid">
                   {youLabel}
                 </span>
               )}
             </div>
-            {r.model !== null && r.model !== "" && <div className="mt-0.5 text-[11px] text-[var(--text-faint)]">{r.model}</div>}
+            {r.model !== null && r.model !== "" && <div className="mt-0.5 font-mono text-[11px] text-[var(--text-faint)]">{r.model}</div>}
           </div>
         </div>
       </td>
-      <td className="px-3 py-3 text-right font-mono font-semibold tabular-nums text-[var(--text)]">{r.rating}</td>
-      <td className="px-3 py-3 text-right font-mono tabular-nums text-[var(--text-muted)]">{r.games}</td>
-      <td className="px-3 py-3 text-right font-mono tabular-nums text-[var(--text-muted)]">
+      <td className="v3-dv-num font-semibold text-[var(--text)]">{r.rating}</td>
+      <td className="v3-dv-num text-[var(--text-muted)]">{r.games}</td>
+      <td className="v3-dv-num text-[var(--text-muted)]">
         {r.wins}-{r.losses}-{r.draws}
       </td>
-      <td className="py-3 pr-5 text-right font-mono tabular-nums text-[var(--text-muted)]">{(r.winRate * 100).toFixed(0)}%</td>
+      <td className="v3-dv-num text-[var(--text-muted)]">{(r.winRate * 100).toFixed(0)}%</td>
     </tr>
   );
 }
@@ -171,25 +167,14 @@ export function LeaderboardView() {
 
   const right = (
     <div className="flex items-center gap-2">
-      <div className="inline-flex gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-0.5">
+      <div className="v3-dv-seg">
         {scopes.map((s) => (
-          <button
-            key={s}
-            onClick={() => setScope(s)}
-            className={
-              "rounded-md px-3 py-1.5 text-[13px] transition-colors " +
-              (scope === s ? "bg-[var(--surface)] text-[var(--text)] shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text)]")
-            }
-          >
+          <button key={s} onClick={() => setScope(s)} className={"v3-dv-seg-btn" + (scope === s ? " on" : "")}>
             {scopeLabel(s)}
           </button>
         ))}
       </div>
-      <button
-        onClick={() => setNonce((n) => n + 1)}
-        title={t("common.refresh")}
-        className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
-      >
+      <button onClick={() => setNonce((n) => n + 1)} title={t("common.refresh")} className="v3-dv-iconbtn">
         <RotateCw size={14} className={fetching ? "animate-spin" : ""} />
       </button>
     </div>
@@ -199,16 +184,16 @@ export function LeaderboardView() {
     <div className="mx-auto max-w-4xl">
       <PageHeader eyebrow={t("eyebrow.leaderboard")} title={t("nav.leaderboard")} subtitle={t("hint.leaderboard")} right={right} />
 
-      <Card className="overflow-hidden">
-        <table className="w-full text-[13px]">
+      <div className="v3-dv-tablewrap">
+        <table className="v3-dv-table">
           <thead>
-            <tr className="border-b border-[var(--border)] font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--text-faint)]">
-              <th className="w-12 py-2.5 pl-5 text-left font-medium">{t("leaderboard.rank")}</th>
-              <th className="py-2.5 pl-2 text-left font-medium">{t("leaderboard.agent")}</th>
-              <th className="px-3 py-2.5 text-right font-medium">{t("leaderboard.rating")}</th>
-              <th className="px-3 py-2.5 text-right font-medium">{t("leaderboard.games")}</th>
-              <th className="px-3 py-2.5 text-right font-medium">{t("leaderboard.record")}</th>
-              <th className="py-2.5 pr-5 text-right font-medium">{t("leaderboard.winRate")}</th>
+            <tr>
+              <th className="w-12">{t("leaderboard.rank")}</th>
+              <th>{t("leaderboard.agent")}</th>
+              <th className="v3-dv-num">{t("leaderboard.rating")}</th>
+              <th className="v3-dv-num">{t("leaderboard.games")}</th>
+              <th className="v3-dv-num">{t("leaderboard.record")}</th>
+              <th className="v3-dv-num">{t("leaderboard.winRate")}</th>
             </tr>
           </thead>
           <tbody>
@@ -251,16 +236,16 @@ export function LeaderboardView() {
         )}
         {state.kind === "ready" && rows.length === 0 && (
           <div className="px-4 py-14 text-center">
-            <div className="font-display text-[40px] italic leading-none text-[var(--border)]">—</div>
+            <div className="v3-dv-display text-[40px] leading-none text-[var(--border)]">—</div>
             <div className="mt-3 text-[13px] text-[var(--text-muted)]">{t("leaderboard.empty")}</div>
           </div>
         )}
         {state.kind === "ready" && pageCount > 1 && (
-          <div className="flex items-center justify-between border-t border-[var(--border)] px-3 py-2.5">
+          <div className="v3-dv-tableft">
             <button
               disabled={safePage === 0}
               onClick={() => setPage((p) => Math.max(0, p - 1))}
-              className="flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[12px] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--text)] disabled:opacity-40 disabled:hover:bg-transparent"
+              className="v3-dv-btn v3-dv-btn--ghost v3-dv-btn--xs"
             >
               <ChevronLeft size={14} />
               {t("common.prev")}
@@ -271,14 +256,14 @@ export function LeaderboardView() {
             <button
               disabled={safePage >= pageCount - 1}
               onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
-              className="flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[12px] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--text)] disabled:opacity-40 disabled:hover:bg-transparent"
+              className="v3-dv-btn v3-dv-btn--ghost v3-dv-btn--xs"
             >
               {t("common.next")}
               <ChevronRight size={14} />
             </button>
           </div>
         )}
-      </Card>
+      </div>
 
       {selfNote !== null && (
         <p className="mt-3 text-center text-[12px] text-[var(--text-muted)]">{selfNote}</p>

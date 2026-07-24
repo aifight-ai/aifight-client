@@ -813,15 +813,19 @@ export type TexasHoldemAction =
 
 // ─── games/texas_holdem/config.schema.json ───
 /**
- * Per-match configuration delivered in server_game_start.data.config when game == 'texas_holdem'. These are optional overrides; when omitted, server uses defaults from games/texasholdem/texasholdem.go NewState() (sb=200, bb=400, starting_chips=10000, max_hands=10). All values arrive as JSON numbers (Go side casts from float64).
+ * Per-match configuration delivered in server_game_start.data.config when game == 'texas_holdem'. These are optional overrides; when omitted, server uses defaults from games/texasholdem/texasholdem.go NewState() (tournament format, sb=100, bb=200, starting_chips=10000, max_hands=10; blinds double at hand 6). Since 2026-07 all production matches run the tournament default with no config injected, so game_start typically carries no config at all. All values arrive as JSON numbers (Go side casts from float64).
  */
 export interface TexasHoldemConfig {
   /**
-   * Small blind amount for early hands. Default 200. Doubles at hand 6 automatically (server-side).
+   * Match economy. Omitted/'tournament' (the production default since 2026-07): stacks carry over between hands, blinds double at hand 6, most chips at match end wins. 'cash' is a legacy/configurable format (per-hand stack reset, fixed blinds, ranked by cumulative net) no longer injected on any production path.
+   */
+  format?: "cash" | "tournament";
+  /**
+   * Small blind amount for early hands. Default 100 (tournament); 50 when format is 'cash'. Doubles at hand 6 automatically (server-side; tournament only — cash blinds stay fixed).
    */
   small_blind?: number;
   /**
-   * Big blind amount for early hands. Default 400.
+   * Big blind amount for early hands. Default 200 (tournament); 100 when format is 'cash'.
    */
   big_blind?: number;
   /**
@@ -829,7 +833,7 @@ export interface TexasHoldemConfig {
    */
   starting_chips?: number;
   /**
-   * Number of hands in the match. Default 10. Match ends after max_hands OR when only one player has chips.
+   * Number of hands in the match. Default 10. Match ends after max_hands OR (tournament) earlier when only one player has chips.
    */
   max_hands?: number;
   [k: string]: any;
@@ -890,28 +894,79 @@ export type TexasHoldemEvent =
        * Player IDs who won (tie-split gives multiple entries).
        */
       winners: string[];
-      pot: number;
       /**
-       * How the hand was decided (e.g. 'all_others_folded', 'showdown').
+       * Total chips on the table this hand. Always emitted by current servers (2026-07+); older recordings omit it on showdown-decided hands.
+       */
+      pot?: number;
+      /**
+       * How the hand was decided: 'all_folded' or 'showdown'.
        */
       reason?: string;
       /**
-       * Per-player cards + hand-ranking at showdown (only when reason='showdown'). Key = player_id.
+       * 1-based number of the hand this result settles. Servers emit it from 2026-07; absent on older recorded events.
        */
-      showdown?: {
+      hand?: number;
+      /**
+       * Map of player_id -> chips taken from the pot this hand (side-pot aware; only winners appear). Servers emit it from 2026-07; absent on older recorded events.
+       */
+      payouts?: {
+        [k: string]: number;
+      };
+      /**
+       * Cash format only: map of player_id -> cumulative net chips across all completed hands INCLUDING this one — the figure the match is ranked on (same semantics as match_result.net_chips). Can be negative. Servers emit it from 2026-07; absent on older recorded events.
+       */
+      net_chips?: {
+        [k: string]: number;
+      };
+      /**
+       * Map of player_id -> {cards?: string[], hand?: string, folded?: bool}. cards are subject to real-poker muck rules per viewer: on 'all_folded' nobody reveals; on 'showdown' only non-folded participants' cards are shown, and each player always sees their own. 'hand' is the ranking name for showdown participants.
+       */
+      hands?: {
         [k: string]: any;
       };
       [k: string]: any;
     }
   | {
       /**
-       * Player ID with most chips at match end. Empty string on tie.
+       * Match winner's player ID — cash format ranks by cumulative net (see net_chips), tournament by final chips. Empty string on a tie (see is_draw / winners).
        */
       winner: string;
       /**
-       * Map of player_id -> final chip count.
+       * All player IDs tied for the best score (length > 1 means a draw). Always emitted by current servers.
        */
-      final_chips: {
+      winners?: string[];
+      /**
+       * True when more than one player ties for the lead. Always emitted by current servers.
+       */
+      is_draw?: boolean;
+      /**
+       * Number of hands actually played. Always emitted by current servers.
+       */
+      hand?: number;
+      /**
+       * 'max_hands_reached' or 'opponent_eliminated' (tournament only; cash never eliminates). Always emitted by current servers.
+       */
+      reason?: string;
+      /**
+       * Map of player_id -> final chip stack. Always emitted by current servers. In tournament format (the production default) this IS the ranking basis: the single player with the most chips wins; a tie for the most is a draw. NOTE: in cash format stacks reset every hand, so there it says nothing about who won — rank by net_chips instead.
+       */
+      chips?: {
+        [k: string]: number;
+      };
+      /**
+       * Cash format only: map of player_id -> cumulative net chips across all hands — the figure the match is ranked on. Can be negative.
+       */
+      net_chips?: {
+        [k: string]: number;
+      };
+      /**
+       * Present as 'cash' on cash-format matches; absent on tournament matches.
+       */
+      format?: string;
+      /**
+       * Legacy field from pre-2026-06 servers; current servers emit 'chips' instead. Kept for old recordings.
+       */
+      final_chips?: {
         [k: string]: number;
       };
       [k: string]: any;
@@ -982,7 +1037,13 @@ export interface TexasHoldemState {
    * Total hands in this match.
    */
   max_hands: number;
+  /**
+   * Current small blind. In tournament format blinds double at hand 6; this is always the level in effect for the current hand.
+   */
   small_blind: number;
+  /**
+   * Current big blind. In tournament format blinds double at hand 6; this is always the level in effect for the current hand.
+   */
   big_blind: number;
   /**
    * Player ID currently on the action. Omitted when hand is over or match is done.
@@ -1020,11 +1081,11 @@ export interface TexasHoldemState {
    */
   your_player_id?: string;
   /**
-   * Match economy. "cash" = stacks reset each hand, scored by cumulative net (bb/100). Current servers only send this for cash matches; absent = tournament.
+   * Match economy. Only sent as "cash" on cash-format matches (legacy/configurable: stacks reset each hand, scored by cumulative net); absent = tournament, the production default since 2026-07 (stacks carry over, blinds double at hand 6, most chips at match end wins).
    */
   format?: "cash" | "tournament";
   /**
-   * Hands already completed (cumulative net reflects these; divisor for bb/100). Hand N in progress → N-1 completed; at phase 'done' the final hand is banked → N. Always sent by current servers; kept optional for backward compatibility with older recordings.
+   * Hands already completed. Hand N in progress → N-1 completed; at phase 'done' the final hand is banked → N. (On cash matches this is also the divisor for bb/100.) Always sent by current servers; kept optional for backward compatibility with older recordings.
    */
   hands_completed?: number;
   /**

@@ -125,6 +125,33 @@ describe("aifight accept-terms", () => {
     expect(body).toEqual({ terms_version: "2026-06-23", privacy_version: "2026-06-23" });
   });
 
+  // K3 复审 N7: callsite-level guard regression test. If this callsite ever
+  // reverts to bare fetch, a platform-side (or MITM'd) 302 would leak the
+  // X-API-Key to an attacker origin via Node's default redirect-follow. The
+  // guarded fetch must refuse and never issue a second request.
+  it("refuses a cross-origin redirect and never follows it (fetchNoFollow at the callsite)", async () => {
+    useTempHome();
+    writeBridgeConfig(testBridgeConfig());
+    const calls: string[] = [];
+    const impl = (async (input: RequestInfo | URL): Promise<Response> => {
+      calls.push(String(input));
+      return new Response(null, {
+        status: 302,
+        headers: { Location: "https://evil.example.com/steal-key" },
+      });
+    }) as unknown as typeof fetch;
+
+    const { code } = await runCapture(["accept-terms", "--yes"], impl);
+
+    // The command wraps network-layer failures in a friendly "could not
+    // reach" message, so the assertions are behavioral: it failed, it made
+    // exactly ONE request, and the attacker origin was never contacted. A
+    // bare-fetch revert follows the 302 — the second call trips both counts.
+    expect(code).not.toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls.some((u) => u.includes("evil.example.com"))).toBe(false);
+  });
+
   it("does nothing (no accept call) when terms are already accepted", async () => {
     useTempHome();
     writeBridgeConfig(testBridgeConfig());

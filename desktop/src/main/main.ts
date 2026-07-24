@@ -14,7 +14,7 @@ import { getTrustedRendererUrl } from "./trusted-url";
 import { buildAppMenu } from "./menu";
 import { loadWindowState, persistWindowState } from "./window-state";
 import { getFlag, setFlag } from "./ui-flags";
-import { initUpdater, checkForUpdates, quitAndInstall } from "./updater";
+import { initUpdater, checkForUpdates, downloadUpdate, quitAndInstall } from "./updater";
 import { IPC } from "../shared/ipc";
 
 // A stable product name for the macOS app menu, About panel, and userData folder.
@@ -116,6 +116,10 @@ ipcMain.handle(IPC.focusWindow, (event) => {
 ipcMain.handle(IPC.updateCheck, (event) => {
   if (!authorizeIpcSender(event)) throw new Error("unauthorized ipc sender");
   return checkForUpdates();
+});
+ipcMain.handle(IPC.updateDownload, (event) => {
+  if (!authorizeIpcSender(event)) throw new Error("unauthorized ipc sender");
+  return downloadUpdate();
 });
 ipcMain.handle(IPC.updateInstall, (event) => {
   if (!authorizeIpcSender(event)) throw new Error("unauthorized ipc sender");

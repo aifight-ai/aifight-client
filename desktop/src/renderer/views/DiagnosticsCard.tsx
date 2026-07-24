@@ -61,17 +61,13 @@ export function DiagnosticsCard() {
   }, []);
 
   return (
-    <div className="app-card px-5 py-4">
+    <div className="v3-dv-card px-5 py-4">
       <div className="mb-2 flex items-center justify-between">
         <div>
           <div className="text-[14px] font-medium text-[var(--text)]">{t("diagnostics.title")}</div>
           <div className="text-[12px] text-[var(--text-muted)]">{t("diagnostics.hint")}</div>
         </div>
-        <button
-          onClick={() => load()}
-          title={t("diagnostics.refresh")}
-          className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-1.5 text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
-        >
+        <button onClick={() => load()} title={t("diagnostics.refresh")} className="v3-dv-iconbtn">
           <RotateCw size={13} />
         </button>
       </div>
@@ -115,7 +111,11 @@ function ConnectionSection() {
   if (!active) return null; // nothing connecting → hide (e.g. onboarding)
 
   const connected = health.phase === "running";
-  const dot = connected ? "bg-emerald-400" : health.phase === "starting" ? "bg-amber-400 animate-pulse" : "bg-rose-400";
+  const dot = connected
+    ? "v3-dv-dot v3-dv-dot--ok"
+    : health.phase === "starting"
+      ? "v3-dv-dot v3-dv-dot--warn v3-dv-dot--pulse"
+      : "v3-dv-dot v3-dv-dot--err";
   const stateText = connected
     ? t("diagnostics.conn.online")
     : health.phase === "starting"
@@ -133,9 +133,9 @@ function ConnectionSection() {
     [t("diagnostics.conn.reconnects"), String(health.reconnects)],
   ];
   return (
-    <div className="mt-3 border-t border-[var(--border)] pt-3">
+    <div className="mt-3 border-t border-[var(--v3-hairline)] pt-3">
       <div className="mb-1.5 flex items-center gap-1.5 text-[12px] text-[var(--text-muted)]">
-        <span className={"inline-block h-1.5 w-1.5 rounded-full " + dot} />
+        <span className={dot} />
         {t("diagnostics.conn.title")}
       </div>
       <div className="grid grid-cols-1 gap-1 text-[12px] sm:grid-cols-2">

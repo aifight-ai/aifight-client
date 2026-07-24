@@ -1,0 +1,1190 @@
+/* ============================================================================
+ * AIFight desktop — v3 cockpit 视觉(feat/ui-v3 · Phase 4a, 2026-07-19)
+ *
+ * 设计事实源:docs/design/ui-demos-2026-07-v2/v3-app-cockpit.html(桌面驾驶舱)
+ * + v3-home.html(对局台解剖);令牌值与 web/src/components/v3/v3.css 对齐。
+ *
+ * 作用域:cockpit 规则挂在 `.v3-cockpit`(CockpitPanel 根)之下——只影响 watch /
+ * history 回放的 cockpit 面;共享 packages/ui 代码零改动。
+ * 对局台(GameStateVisual,packages/ui)不改一行:此处用更高优先级选择器
+ * (.v3-cockpit .aifight-game-canvas …)把统一解剖(v3 牌面/座位/状态)覆盖到
+ * 它的固定 DOM 上;旧 game-visuals.css 保留不动。
+ *
+ * Phase 4b(2026-07-22):文件末追加「其余视图」段(`.v3-dv-` 前缀)——Play /
+ * History / Leaderboard / Events / Models / Strategy / Settings 诊断卡等非
+ * cockpit 视图跟进同一语言(暖面板/hairline/橘点睛/mono 标签/display 标题);
+ * 这些视图的功能、数据流、事件处理一字未改,仅 className 与样式。
+ *
+ * 动画:keyframes 仅 transform/opacity;prefers-reduced-motion 在文件末作用域
+ * 冻结。cockpit 无自嗨 JS 循环(全部实时/回放数据驱动),无需 document.hidden
+ * 暂停逻辑。
+ * ==========================================================================*/
+
+/* ─── v3 令牌:引用 vendored @theme(game-visuals.css),dark remap 自动跟随 ─── */
+:root {
+  /* v3 展示字型(Space Grotesk 栈;@theme 的 --font-label 同栈,此处给语义名) */
+  --font-display: "Space Grotesk", "Avenir Next", "Helvetica Neue", "PingFang SC", sans-serif;
+
+  /* v3 语义 ok 绿(实时徽章/成功) */
+  --color-v3-ok: #1e9e62;
+  --color-v3-ok-tint: rgba(30, 158, 98, 0.12);
+
+  /* 组件令牌 → 引用现有令牌(dark 由 [data-theme="dark"] 自动 remap) */
+  --v3-panel: var(--color-surface-container);   /* #FFFFFF / #1A1A1D */
+  --v3-hairline: var(--color-border-2);          /* #E5E1D8 / #2D2D34 */
+  --v3-hairline-2: var(--color-border-3);        /* #D8D2C4 / #3B3B42 */
+  --v3-ink: var(--color-ink-1);                  /* #1A1A1A / #F4F1EA */
+  --v3-t2: var(--color-ink-3);                   /* #4A4A4A / #B9B4A8 */
+  --v3-t3: var(--color-ink-5);                   /* #8A8A8A / #6B675E */
+  --v3-acc: var(--color-terracotta);             /* #FF700A / #FF8A3D */
+  --v3-acc-tint: var(--color-terracotta-50);     /* #FFEEDB / rgba(255,138,61,.10) */
+  --v3-acc-soft: var(--color-terracotta-100);    /* #FFD6A8 / rgba(255,138,61,.18) */
+  --v3-acc-deep: var(--color-terracotta-700);    /* #D85C00 / #FFA870 */
+  --v3-shadow-1: var(--shadow-paper-1);
+  --v3-shadow-2: var(--shadow-paper-2);
+
+  /* v3 独有:暖底(dark 下须比 panel 更深)与径向橘晕 */
+  --v3-warm: #f4f3ee;
+  --v3-acc-glow: rgba(255, 112, 10, 0.1);
+
+  /* v3-dv(P4b)语义 tint/line:引用 @theme 语义色的透明阶,dark 单独 remap */
+  --v3-warn-line: rgba(184, 134, 11, 0.45);
+  --v3-warn-tint: rgba(184, 134, 11, 0.09);
+  --v3-err-line: rgba(166, 40, 40, 0.4);
+  --v3-err-tint: rgba(166, 40, 40, 0.08);
+  --v3-ok-line: rgba(30, 158, 98, 0.45);
+}
+
+[data-theme="dark"] {
+  --color-v3-ok: #57c98b;
+  --color-v3-ok-tint: rgba(87, 201, 139, 0.14);
+  --v3-warm: #141417;
+  --v3-acc-glow: rgba(255, 138, 61, 0.12);
+  --v3-warn-line: rgba(230, 185, 94, 0.45);
+  --v3-warn-tint: rgba(230, 185, 94, 0.12);
+  --v3-err-line: rgba(255, 107, 107, 0.4);
+  --v3-err-tint: rgba(255, 107, 107, 0.1);
+  --v3-ok-line: rgba(87, 201, 139, 0.45);
+}
+
+/* ─── 共享小件:LIVE 呼吸点 / sidebar 字标 ─── */
+.v3-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--v3-acc);
+  animation: v3-livePulse 1.6s ease-in-out infinite;
+  flex: 0 0 auto;
+}
+@keyframes v3-livePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+
+/* sidebar 字标:v3 wordmark(Space Grotesk 700,紧字距) */
+.v3-wordmark {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+/* ═══ ① cockpit 顶条:对局信息 + LIVE 徽章 + 桥接芯片 + 走带 ═══ */
+.v3-cp-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 9px 14px;
+  background: var(--v3-panel);
+  border: 1px solid var(--v3-hairline);
+  border-radius: 12px;
+  box-shadow: var(--v3-shadow-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--v3-t2);
+}
+.v3-cp-left { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
+.v3-cp-right { display: flex; align-items: center; gap: 10px; margin-left: auto; flex-wrap: wrap; }
+.v3-cp-info { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.v3-cp-info .mid { color: var(--v3-t3); }
+.v3-cp-info b { color: var(--v3-ink); font-weight: 600; }
+.v3-cp-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--v3-t2);
+}
+.v3-cp-fin {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--color-deep);
+  color: var(--v3-t3);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+.v3-cp-outcome { color: var(--v3-acc-deep); font-weight: 600; }
+.v3-cp-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--v3-t3);
+  transition: color 0.15s ease;
+}
+.v3-cp-link:hover { color: var(--v3-ink); }
+
+/* 桥接状态芯片(design:.bridge-chip) */
+.v3-bridge-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  background: var(--v3-acc-tint);
+  color: var(--v3-acc-deep);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.v3-bridge-chip i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--v3-acc);
+  animation: v3-livePulse 1.6s ease-in-out infinite;
+  flex: 0 0 auto;
+}
+/* 非 running 态:中性化(不假装在线) */
+.v3-bridge-chip[data-on="0"] {
+  background: var(--color-deep);
+  color: var(--v3-t3);
+}
+.v3-bridge-chip[data-on="0"] i { background: var(--v3-t3); animation: none; }
+
+/* 走带(回放/步进)按钮 */
+.v3-cp-transport { display: flex; align-items: center; gap: 6px; }
+.v3-tbtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--v3-hairline);
+  background: var(--v3-panel);
+  color: var(--v3-t3);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+.v3-tbtn:hover { color: var(--v3-ink); background: var(--v3-warm); }
+.v3-tbtn--acc { background: var(--v3-acc); border-color: var(--v3-acc); color: #fff; }
+.v3-tbtn--acc:hover { background: var(--v3-acc-deep); color: #fff; }
+.v3-cp-count {
+  margin-left: 4px;
+  font-size: 10.5px;
+  color: var(--v3-t3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ═══ ② 对局台:统一解剖覆盖(顶层画布) ═══ */
+.v3-cockpit .aifight-game-canvas {
+  width: 100%;
+  overflow: hidden;
+  background: var(--v3-panel);
+  border: 1px solid var(--v3-hairline);
+  border-radius: 14px;
+  box-shadow: var(--v3-shadow-1);
+}
+.v3-board-note {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--color-ink-6);
+}
+
+/* stage 外壳交还给画布(去掉旧面板二重边框) */
+.v3-cockpit .aifight-game-canvas .poker-stage {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* 标题栏(design:.tbl-hd — LIVE 点 + 标题 + HAND n/max) */
+.v3-cockpit .aifight-game-canvas .poker-stage-head {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--v3-hairline);
+}
+.v3-cockpit .aifight-game-canvas .poker-stage-title {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--v3-t2);
+}
+.v3-cockpit .aifight-game-canvas .poker-stage-sub {
+  font-size: 10px;
+  color: var(--v3-t3);
+  letter-spacing: 0.1em;
+}
+.v3-cockpit .aifight-game-canvas .poker-stage-right {
+  font-size: 10px;
+  color: var(--v3-t3);
+}
+
+/* 牌面区:暖底 + 顶部橘晕(design:.tbl-board) */
+.v3-cockpit .aifight-game-canvas .board-wrap {
+  padding: 18px 14px 16px;
+  border-bottom: 1px solid var(--v3-hairline);
+  background:
+    radial-gradient(ellipse 60% 90% at 50% 0%, var(--v3-acc-glow), transparent 70%),
+    var(--v3-warm);
+}
+/* 纵向解剖:公共牌槽 → POT → 街序(design 顺序) */
+.v3-cockpit .aifight-game-canvas .board-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.v3-cockpit .aifight-game-canvas .board-row .board { order: 1; }
+.v3-cockpit .aifight-game-canvas .board-row .slot-right { order: 2; }
+.v3-cockpit .aifight-game-canvas .board-row .slot-left { order: 3; }
+.v3-cockpit .aifight-game-canvas .board-row .slot-left,
+.v3-cockpit .aifight-game-canvas .board-row .slot-right {
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* POT(design:.pot — 小标 + 大字 tabular) */
+.v3-cockpit .aifight-game-canvas .pot-big { text-align: center; }
+.v3-cockpit .aifight-game-canvas .pot-big .d {
+  font-size: 8.5px;
+  letter-spacing: 0.18em;
+  color: var(--v3-t3);
+}
+.v3-cockpit .aifight-game-canvas .pot-big .n {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--v3-ink);
+}
+.v3-cockpit .aifight-game-canvas .pot-big .blinds {
+  font-size: 10px;
+  color: var(--v3-t3);
+  margin-top: 2px;
+}
+
+/* 街序芯片 + hand meta */
+.v3-cockpit .aifight-game-canvas .phase-chip {
+  padding: 3px 10px;
+  background: var(--v3-acc-tint);
+  color: var(--v3-acc-deep);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+}
+.v3-cockpit .aifight-game-canvas .hand-meta { font-size: 10px; color: var(--v3-t3); }
+.v3-cockpit .aifight-game-canvas .hand-meta-accent { color: var(--v3-acc-deep); }
+
+/* 街序条(design:.street / phases ribbon) */
+.v3-cockpit .aifight-game-canvas .phases {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--v3-hairline);
+}
+.v3-cockpit .aifight-game-canvas .phase {
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--v3-t3);
+}
+.v3-cockpit .aifight-game-canvas .phase.done { color: var(--v3-t2); }
+.v3-cockpit .aifight-game-canvas .phase.cur {
+  color: var(--v3-acc-deep);
+  border-color: var(--v3-acc);
+  font-weight: 600;
+}
+
+/* ─── 牌砖(design:.card-face / .card-back / .bslot)───
+   亮牌 = 墨底平涂大字块,红花色用橘;背面 = 墨砖 + 橘色虚线内框;未发槽 = 虚线框 */
+.v3-cockpit .aifight-game-canvas .card {
+  background: var(--v3-ink);
+  border: 1.5px solid var(--v3-ink);
+  border-radius: 7px;
+  color: var(--bg);
+  font-family: var(--font-mono);
+  box-shadow: var(--v3-shadow-1);
+}
+.v3-cockpit .aifight-game-canvas .card.red { color: var(--v3-acc); }
+.v3-cockpit .aifight-game-canvas .card.big { width: 38px; height: 52px; font-size: 15px; font-weight: 700; }
+.v3-cockpit .aifight-game-canvas .card.big .suit { font-size: 13px; margin-top: 1px; }
+.v3-cockpit .aifight-game-canvas .card.big.pending {
+  background: transparent;
+  border: 1.5px dashed var(--v3-hairline-2);
+  color: transparent;
+  box-shadow: none;
+}
+.v3-cockpit .aifight-game-canvas .card.sm { width: 21px; height: 29px; border-radius: 5px; font-size: 10px; font-weight: 700; }
+.v3-cockpit .aifight-game-canvas .card.sm .suit { font-size: 8.5px; margin-top: 0; }
+.v3-cockpit .aifight-game-canvas .card.hidden {
+  position: relative;
+  background: var(--v3-ink);
+  border: 1.5px solid var(--v3-ink);
+  color: transparent;
+  box-shadow: none;
+}
+.v3-cockpit .aifight-game-canvas .card.hidden::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 1.5px dashed var(--v3-acc);
+  border-radius: 3px;
+  opacity: 0.9;
+}
+
+/* ─── 玩家区(design:.tbl-seats / .pcard) ─── */
+.v3-cockpit .aifight-game-canvas .seats-zone { padding: 14px; }
+.v3-cockpit .aifight-game-canvas .seats-head {
+  margin-bottom: 10px;
+  font-size: 10px;
+  color: var(--v3-t3);
+}
+.v3-cockpit .aifight-game-canvas .seats-head .n { color: var(--v3-t3); }
+.v3-cockpit .aifight-game-canvas .seats { gap: 10px; }
+
+.v3-cockpit .aifight-game-canvas .seat {
+  background: var(--bg);
+  border: 1px solid var(--v3-hairline);
+  border-radius: 11px;
+  transition: transform 0.18s ease, opacity 0.3s ease, border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+/* thinking(design:.pcard.thinking + ringP 脉冲环) */
+.v3-cockpit .aifight-game-canvas .seat.acting {
+  border-color: var(--v3-acc);
+  background: var(--v3-acc-tint);
+  box-shadow: none;
+}
+.v3-cockpit .aifight-game-canvas .seat.acting::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 11px;
+  border: 1.5px solid var(--v3-acc);
+  opacity: 0;
+  pointer-events: none;
+  animation: v3-ringP 0.8s ease-out infinite;
+}
+@keyframes v3-ringP {
+  0% { opacity: 0.9; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.06, 1.14); }
+}
+.v3-cockpit .aifight-game-canvas .seat.folded { opacity: 0.45; }
+/* out(design:.pcard.out — 名条划线) */
+.v3-cockpit .aifight-game-canvas .seat.busted { opacity: 0.34; filter: none; }
+.v3-cockpit .aifight-game-canvas .seat.busted .seat-name { text-decoration: line-through; }
+.v3-cockpit .aifight-game-canvas .seat.busted .stack-n {
+  text-decoration: none;
+  color: var(--v3-t3);
+}
+/* coup 淘汰同理 */
+.v3-cockpit .aifight-game-canvas .seat.eliminated { opacity: 0.34; }
+.v3-cockpit .aifight-game-canvas .seat.eliminated .seat-name { text-decoration: line-through; }
+/* winner(design:.pcard.winner) */
+.v3-cockpit .aifight-game-canvas .seat.winner {
+  border-color: var(--v3-acc);
+  box-shadow: 0 0 0 4px var(--v3-acc-tint), var(--v3-shadow-2);
+}
+
+/* 头像方块(design:.avatar — 圆角方块,橘底深橘字;图为 identicon/预设,底色拉齐) */
+.v3-cockpit .aifight-game-canvas .seat-avatar {
+  border-radius: 9px;
+  background: var(--v3-acc-tint);
+  color: var(--v3-acc-deep);
+  font-family: var(--font-mono);
+  font-style: normal;
+  font-weight: 700;
+}
+/* 名称/声明模型行(design:.pc-name 600 正体;.pc-model mono) */
+.v3-cockpit .aifight-game-canvas .seat-name {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--v3-ink);
+}
+.v3-cockpit .aifight-game-canvas .seat-crown { color: var(--v3-acc); }
+.v3-cockpit .aifight-game-canvas .seat-num {
+  font-size: 9.5px;
+  color: var(--v3-t3);
+  letter-spacing: 0.06em;
+}
+.v3-cockpit .aifight-game-canvas .seat-flag {
+  font-size: 8px;
+  color: var(--v3-t3);
+}
+.v3-cockpit .aifight-game-canvas .seat.acting .seat-flag { color: var(--v3-acc-deep); }
+
+/* dealer 橘点(design:.dbtn — BTN 芯片统一橘;FFA 语义:不分阵营色,SB/BB 中性) */
+.v3-cockpit .aifight-game-canvas .pos-chip.btn {
+  background: var(--v3-acc);
+  border-color: var(--v3-acc);
+  color: #fff;
+}
+.v3-cockpit .aifight-game-canvas .pos-chip.sb,
+.v3-cockpit .aifight-game-canvas .pos-chip.bb {
+  background: var(--color-deep);
+  border-color: var(--v3-hairline);
+  color: var(--v3-t3);
+}
+
+/* 筹码(design:.pc-chips — mono tabular,值粗) */
+.v3-cockpit .aifight-game-canvas .stack-n { font-weight: 700; color: var(--v3-ink); }
+.v3-cockpit .aifight-game-canvas .stack-d {
+  font-size: 8.5px;
+  letter-spacing: 0.18em;
+  color: var(--v3-t3);
+}
+.v3-cockpit .aifight-game-canvas .seat-row-3 { border-top: 1px dashed var(--v3-hairline); }
+.v3-cockpit .aifight-game-canvas .act-val { color: var(--v3-ink); }
+.v3-cockpit .aifight-game-canvas .act-val.muted { color: var(--v3-t3); }
+.v3-cockpit .aifight-game-canvas .seat.acting .act-val { color: var(--v3-acc-deep); }
+.v3-cockpit .aifight-game-canvas .seat-hand-name { color: var(--v3-t3); }
+/* 本轮下注 pill:行动统一橘,不再按状态换色 */
+.v3-cockpit .aifight-game-canvas .commit {
+  background: var(--v3-ink);
+  color: var(--bg);
+}
+.v3-cockpit .aifight-game-canvas .seat.acting .commit { background: var(--v3-acc); color: #fff; }
+
+/* ─── 你的 agent(design:.pcard.you — 常驻橘边 + YOUR AGENT 徽章) ───
+   座位下标由 CockpitPanel 计算写入 data-owner-seat(数据流不改,纯派生);
+   徽章文案设计中英稿同为 "YOUR AGENT",故走 CSS content 固定串。 */
+.v3-cockpit .aifight-game-canvas[data-owner-seat="0"] .seat[data-seat="0"],
+.v3-cockpit .aifight-game-canvas[data-owner-seat="1"] .seat[data-seat="1"],
+.v3-cockpit .aifight-game-canvas[data-owner-seat="2"] .seat[data-seat="2"],
+.v3-cockpit .aifight-game-canvas[data-owner-seat="3"] .seat[data-seat="3"],
+.v3-cockpit .aifight-game-canvas[data-owner-seat="4"] .seat[data-seat="4"],
+.v3-cockpit .aifight-game-canvas[data-owner-seat="5"] .seat[data-seat="5"],
+.v3-cockpit .aifight-game-canvas[data-owner-seat="6"] .seat[data-seat="6"],
+.v3-cockpit .aifight-game-canvas[data-owner-seat="7"] .seat[data-seat="7"] {
+  border-color: var(--v3-acc);
+  box-shadow: inset 0 0 0 0.5px var(--v3-acc);
+}
+.v3-cockpit .aifight-game-canvas[data-owner-seat="0"] .seat[data-seat="0"]::before,
+.v3-cockpit .aifight-game-canvas[data-owner-seat="1"] .seat[data-seat="1"]::before,
+.v3-cockpit .aifight-game-canvas[data-owner-seat="2"] .seat[data-seat="2"]::before,
+.v3-cockpit .aifight-game-canvas[data-owner-seat="3"] .seat[data-seat="3"]::before,
+.v3-cockpit .aifight-game-canvas[data-owner-seat="4"] .seat[data-seat="4"]::before,
+.v3-cockpit .aifight-game-canvas[data-owner-seat="5"] .seat[data-seat="5"]::before,
+.v3-cockpit .aifight-game-canvas[data-owner-seat="6"] .seat[data-seat="6"]::before,
+.v3-cockpit .aifight-game-canvas[data-owner-seat="7"] .seat[data-seat="7"]::before {
+  content: "YOUR AGENT";
+  position: absolute;
+  top: -8px;
+  left: 10px;
+  z-index: 2;
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  padding: 2.5px 6px;
+  border-radius: 4px;
+  background: var(--v3-acc);
+  color: #fff;
+  white-space: nowrap;
+}
+
+/* ═══ ③ 推理流面板(design:.trace — 橘方块 + mono 标题 + mono 流) ═══ */
+.v3-trace {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--v3-panel);
+  border: 1px solid var(--v3-hairline);
+  border-radius: 14px;
+  box-shadow: var(--v3-shadow-1);
+  overflow: hidden;
+}
+.v3-tr-hd {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--v3-hairline);
+}
+.v3-tr-sq { width: 7px; height: 7px; background: var(--v3-acc); flex: 0 0 auto; }
+.v3-tr-titles { min-width: 0; flex: 1; }
+.v3-tr-title {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--v3-t2);
+}
+.v3-tr-sub { font-size: 10.5px; color: var(--v3-t3); margin-top: 1px; }
+.v3-tr-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 2.5px 7px;
+  border-radius: 4px;
+  background: var(--color-deep);
+  border: 1px solid var(--v3-hairline);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--v3-t3);
+}
+.v3-tr-badge i { width: 6px; height: 6px; border-radius: 50%; background: var(--v3-t3); flex: 0 0 auto; }
+.v3-tr-badge[data-kind="live"] { color: var(--color-v3-ok); }
+.v3-tr-badge[data-kind="live"] i { background: var(--color-v3-ok); animation: v3-livePulse 1.6s ease-in-out infinite; }
+.v3-tr-badge[data-kind="replay"] { color: var(--v3-acc-deep); }
+.v3-tr-badge[data-kind="replay"] i { background: var(--v3-acc); }
+
+.v3-tr-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 11px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--v3-t3);
+}
+.v3-tr-empty { padding: 32px 8px; text-align: center; font-size: 11.5px; color: var(--v3-t3); }
+
+.v3-tr-row { display: flex; align-items: center; gap: 8px; padding: 0 2px; }
+.v3-tr-row svg { flex: 0 0 auto; }
+.v3-tr-decision { color: var(--v3-t2); }
+.v3-tr-decision b { color: var(--v3-ink); font-weight: 600; }
+.v3-tr-final b { color: var(--v3-ink); font-weight: 600; font-family: var(--font-mono); }
+.v3-tr-src {
+  padding: 1.5px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+.v3-tr-src[data-kind="runtime"] { background: var(--color-v3-ok-tint); color: var(--color-v3-ok); }
+.v3-tr-src[data-kind="fallback"] { background: rgba(184, 134, 11, 0.12); color: var(--color-warn); }
+
+.v3-tr-card {
+  border: 1px solid var(--v3-hairline);
+  border-radius: 9px;
+  background: var(--v3-warm);
+  padding: 9px 11px;
+}
+.v3-tr-label {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--v3-acc-deep);
+  margin-bottom: 4px;
+}
+.v3-tr-label--dim { color: var(--v3-t3); }
+.v3-tr-thinking { font-size: 11px; line-height: 1.6; color: var(--v3-t2); white-space: pre-wrap; }
+.v3-tr-output { font-family: var(--font-mono); font-size: 10.5px; line-height: 1.6; color: var(--v3-ink); white-space: pre-wrap; }
+.v3-tr-meta { margin-top: 6px; font-family: var(--font-mono); font-size: 9px; color: var(--v3-t3); }
+
+.v3-tr-err { color: var(--color-err); font-size: 10.5px; align-items: flex-start; }
+.v3-tr-warn { color: var(--color-warn); font-size: 10.5px; align-items: flex-start; }
+
+/* ═══ ④ 自己手牌条(design:.own — 大牌面 + 状态 + mono meta) ═══ */
+.v3-own {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  background: var(--v3-panel);
+  border: 1px solid var(--v3-hairline);
+  border-radius: 14px;
+  box-shadow: var(--v3-shadow-1);
+}
+.v3-own-label {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--v3-acc-deep);
+}
+.v3-own-empty { font-size: 11.5px; color: var(--v3-t3); }
+.v3-own-cards { display: flex; gap: 7px; flex: 0 0 auto; align-items: center; }
+/* 大亮牌(design:.big .card-face — 墨底大字) */
+.v3-big {
+  width: 44px;
+  height: 60px;
+  border-radius: 9px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: var(--v3-ink);
+  border: 1.5px solid var(--v3-ink);
+  color: var(--bg);
+  box-shadow: var(--v3-shadow-1);
+}
+.v3-big .rk { font-family: var(--font-mono); font-size: 18px; font-weight: 700; line-height: 1; letter-spacing: -0.02em; }
+.v3-big .st { font-size: 14px; line-height: 1; }
+.v3-big.rd { color: var(--v3-acc); }
+.v3-own-dice { display: flex; gap: 4px; align-items: center; font-size: 26px; line-height: 1; color: var(--v3-ink); }
+.v3-own-roles { display: flex; gap: 6px; align-items: center; }
+.v3-own-meta {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--v3-t3);
+  letter-spacing: 0.05em;
+  font-variant-numeric: tabular-nums;
+}
+.v3-own-meta b { color: var(--v3-ink); font-weight: 700; }
+
+/* ═══ reduced-motion:cockpit 作用域内全部冻结(不碰其它视图) ═══ */
+@media (prefers-reduced-motion: reduce) {
+  .v3-cockpit *,
+  .v3-cockpit *::before,
+  .v3-cockpit *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .v3-live-dot,
+  .v3-bridge-chip i,
+  .v3-tr-badge i { animation: none !important; }
+}
+
+/* ============================================================================
+ * Phase 4b(2026-07-22)— 其余视图 v3 化(v3-dv- = v3 desktop views)
+ *
+ * 设计来源:docs/design/ui-demos-2026-07-v2/v3-leaderboard.html(表格/seg/
+ * 领奖台色阶)、v3-matches.html(列表行/状态 chip)、v3-home.html(eyebrow/
+ * display 标题)。全部规则只读 --v3-* / @theme 令牌,dark 自动跟随;不引入
+ * 任何写死 hex(语义 tint 走上方 :root / [data-theme=dark] 双份令牌)。
+ * ==========================================================================*/
+
+/* ─── 页面 eyebrow:橘方块 + mono 大写(设计 .eyebrow;共享 PageHeader/Eyebrow 用) ─── */
+.v3-dv-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--v3-t2);
+}
+.v3-dv-eyebrow::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  background: var(--v3-acc);
+  flex: 0 0 auto;
+}
+
+/* ─── display 标题(Space Grotesk 栈,700 紧字距) ─── */
+.v3-dv-display {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+/* ─── 卡:暖面板 + 1px hairline + paper 阴影 ─── */
+.v3-dv-card {
+  background: var(--v3-panel);
+  border: 1px solid var(--v3-hairline);
+  border-radius: 14px;
+  box-shadow: var(--v3-shadow-1);
+}
+.v3-dv-card--hover {
+  transition: box-shadow 0.16s ease, border-color 0.16s ease;
+}
+.v3-dv-card--hover:hover {
+  box-shadow: var(--v3-shadow-2);
+  border-color: var(--v3-hairline-2);
+}
+/* 表单卡(Models 编辑态):橘边 + 淡橘光晕 = 当前操作焦点 */
+.v3-dv-card--acc {
+  border-color: var(--v3-acc);
+  box-shadow: 0 0 0 3px var(--v3-acc-tint), var(--v3-shadow-1);
+}
+/* 卡内暖底内衬(嵌套层不再用白卡套白卡) */
+.v3-dv-inset {
+  background: var(--v3-warm);
+  border: 1px solid var(--v3-hairline);
+  border-radius: 10px;
+}
+
+/* ─── 卡内小标题:橘方块 + mono 大写(对齐 .v3-tr-hd) ─── */
+.v3-dv-hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--v3-t2);
+}
+.v3-dv-hd::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  background: var(--v3-acc);
+  flex: 0 0 auto;
+}
+/* 右侧副注(计数/签名等,mono 弱化) */
+.v3-dv-hnote {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--v3-t3);
+}
+
+/* ─── 分段控件(设计 .tabs/.tab:hairline 外壳 + 选中白底橘小方) ─── */
+.v3-dv-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--v3-hairline);
+  border-radius: 10px;
+  background: var(--bg);
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+.v3-dv-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--v3-t3);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.v3-dv-seg-btn:hover { color: var(--v3-ink); }
+.v3-dv-seg-btn.on { background: var(--v3-panel); color: var(--v3-ink); }
+.v3-dv-seg-btn.on::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 1px;
+  background: var(--v3-acc);
+  flex: 0 0 auto;
+}
+
+/* ─── 按钮:橘实底 / 描边 ghost / 橘描边 oline / danger ─── */
+.v3-dv-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease, opacity 0.14s ease;
+}
+.v3-dv-btn:disabled { opacity: 0.5; cursor: default; }
+.v3-dv-btn--primary { background: var(--v3-acc); color: #fff; }
+.v3-dv-btn--primary:hover:not(:disabled) { background: var(--v3-acc-deep); }
+.v3-dv-btn--ghost { background: var(--v3-panel); border-color: var(--v3-hairline); color: var(--v3-t2); }
+.v3-dv-btn--ghost:hover:not(:disabled) { color: var(--v3-ink); background: var(--v3-warm); }
+.v3-dv-btn--oline { background: transparent; border-color: var(--v3-acc); color: var(--v3-acc-deep); }
+.v3-dv-btn--oline:hover:not(:disabled) { background: var(--v3-acc-tint); }
+.v3-dv-btn--danger { background: var(--v3-panel); border-color: var(--v3-hairline); color: var(--color-err); }
+.v3-dv-btn--danger:hover:not(:disabled) { background: var(--v3-err-tint); border-color: var(--v3-err-line); }
+.v3-dv-btn--sm { padding: 6px 11px; font-size: 12px; }
+.v3-dv-btn--xs { padding: 4px 9px; font-size: 11px; border-radius: 7px; }
+
+/* 方形小图标钮(刷新/关闭;对齐 .v3-tbtn) */
+.v3-dv-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--v3-hairline);
+  background: var(--v3-panel);
+  color: var(--v3-t3);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.v3-dv-iconbtn:hover { color: var(--v3-ink); background: var(--v3-warm); }
+
+/* ─── chip / pill:mono 大写小徽章,tone 走 data-tone ─── */
+.v3-dv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 2.5px 9px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  background: var(--color-deep);
+  color: var(--v3-t3);
+}
+/* pill:句态 12px 状态丸(活动状态/连接态),tone 与 chip 共用 */
+.v3-dv-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: var(--color-deep);
+  color: var(--v3-t3);
+}
+.v3-dv-chip[data-tone="accent"], .v3-dv-pill[data-tone="accent"] { background: var(--v3-acc-tint); color: var(--v3-acc-deep); }
+.v3-dv-chip[data-tone="ok"], .v3-dv-pill[data-tone="ok"] { background: var(--color-v3-ok-tint); color: var(--color-v3-ok); }
+.v3-dv-chip[data-tone="warn"], .v3-dv-pill[data-tone="warn"] { background: var(--v3-warn-tint); color: var(--color-warn); }
+.v3-dv-chip[data-tone="err"], .v3-dv-pill[data-tone="err"] { background: var(--v3-err-tint); color: var(--color-err); }
+.v3-dv-chip[data-tone="live"], .v3-dv-pill[data-tone="live"] { background: var(--v3-acc-tint); color: var(--v3-acc-deep); }
+.v3-dv-chip[data-tone="live"]::before, .v3-dv-pill[data-tone="live"]::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: v3-livePulse 1.6s ease-in-out infinite;
+  flex: 0 0 auto;
+}
+.v3-dv-chip[data-tone="solid"] { background: var(--v3-acc); color: #fff; }
+/* chip 内联呼吸点(live 之外需要点时用,如 challengeWaiting) */
+.v3-dv-chip i.dot, .v3-dv-pill i.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+.v3-dv-chip i.dot.pulse, .v3-dv-pill i.dot.pulse { animation: v3-livePulse 1.6s ease-in-out infinite; }
+
+/* ─── 横幅(告警/错误/提示):1px 语义描边 + 淡 tint 底 ─── */
+.v3-dv-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--v3-hairline);
+  background: var(--v3-panel);
+  padding: 9px 14px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--v3-ink);
+}
+.v3-dv-banner[data-tone="warn"] { border-color: var(--v3-warn-line); background: var(--v3-warn-tint); }
+.v3-dv-banner[data-tone="err"] { border-color: var(--v3-err-line); background: var(--v3-err-tint); }
+.v3-dv-banner[data-tone="ok"] { border-color: var(--v3-ok-line); background: var(--color-v3-ok-tint); }
+.v3-dv-banner[data-tone="accent"] { border-color: var(--v3-acc-soft); background: var(--v3-acc-tint); }
+
+/* 语义文字色(替代硬编码 tailwind emerald/amber/red) */
+.v3-dv-ok { color: var(--color-v3-ok); }
+.v3-dv-warn { color: var(--color-warn); }
+.v3-dv-err { color: var(--color-err); }
+.v3-dv-acc { color: var(--v3-acc-deep); }
+
+/* 状态小圆点(连接态/胜负) */
+.v3-dv-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--v3-t3);
+}
+.v3-dv-dot--ok { background: var(--color-v3-ok); }
+.v3-dv-dot--warn { background: var(--color-warn); }
+.v3-dv-dot--err { background: var(--color-err); }
+.v3-dv-dot--acc { background: var(--v3-acc); }
+.v3-dv-dot--pulse { animation: v3-livePulse 1.6s ease-in-out infinite; }
+
+/* ─── 表格(设计 .lb:暖表头 + hairline 行线 + mono 大写表头) ─── */
+.v3-dv-tablewrap {
+  background: var(--v3-panel);
+  border: 1px solid var(--v3-hairline);
+  border-radius: 14px;
+  box-shadow: var(--v3-shadow-1);
+  overflow-x: auto;
+}
+.v3-dv-table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.v3-dv-table th {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--v3-t3);
+  text-align: left;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--v3-hairline);
+  background: var(--v3-warm);
+  white-space: nowrap;
+}
+.v3-dv-table td {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--v3-hairline);
+}
+.v3-dv-table tbody tr { transition: background 0.15s ease; }
+.v3-dv-table tbody tr:last-child td { border-bottom: 0; }
+.v3-dv-table tbody tr:hover { background: var(--v3-warm); }
+.v3-dv-table tbody tr.v3-dv-mine,
+.v3-dv-table tbody tr.v3-dv-mine:hover { background: var(--v3-acc-tint); }
+.v3-dv-num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.v3-dv-tableft {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--v3-hairline);
+  padding: 9px 14px;
+}
+
+/* 名次格(设计 .rk + .rb 色条:#1 橘 / #2 墨 / #3 灰) */
+.v3-dv-rk {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--v3-t3);
+  font-variant-numeric: tabular-nums;
+}
+.v3-dv-rb { width: 3px; height: 14px; border-radius: 2px; margin-right: 10px; background: transparent; flex: 0 0 auto; }
+.v3-dv-rk--1 { color: var(--v3-acc-deep); font-weight: 700; font-size: 15px; }
+.v3-dv-rk--1 .v3-dv-rb { background: var(--v3-acc); }
+.v3-dv-rk--2 { color: var(--v3-ink); font-weight: 600; }
+.v3-dv-rk--2 .v3-dv-rb { background: var(--v3-ink); }
+.v3-dv-rk--3 { color: var(--v3-t2); }
+.v3-dv-rk--3 .v3-dv-rb { background: var(--v3-t3); }
+
+/* ─── 列表行(设计 .mlist/.mrow:单卡 + hairline 分隔 + hover 暖底) ─── */
+.v3-dv-list {
+  background: var(--v3-panel);
+  border: 1px solid var(--v3-hairline);
+  border-radius: 14px;
+  box-shadow: var(--v3-shadow-1);
+  overflow: hidden;
+}
+.v3-dv-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 13px 18px;
+  border: 0;
+  border-top: 1px solid var(--v3-hairline);
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.v3-dv-row:first-child { border-top: 0; }
+.v3-dv-row:hover { background: var(--v3-warm); }
+.v3-dv-row:disabled { opacity: 0.6; cursor: default; }
+
+/* ─── KPI 条(仪表盘 6 格:1px 缝 = hairline) ─── */
+.v3-dv-kpis {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--v3-hairline);
+  border-radius: 14px;
+  background: var(--v3-hairline);
+  box-shadow: var(--v3-shadow-1);
+}
+@media (min-width: 640px) { .v3-dv-kpis { grid-template-columns: repeat(3, 1fr); } }
+@media (min-width: 1024px) { .v3-dv-kpis { grid-template-columns: repeat(6, 1fr); } }
+.v3-dv-kpi {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 14px 12px;
+  background: var(--v3-panel);
+}
+.v3-dv-kpi--acc { background: var(--v3-acc-tint); }
+.v3-dv-kpi .k-ic { color: var(--v3-t3); }
+.v3-dv-kpi--acc .k-ic { color: var(--v3-acc-deep); }
+.v3-dv-kpi .k-val {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 19px;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--v3-ink);
+}
+.v3-dv-kpi--acc .k-val { color: var(--v3-acc-deep); }
+.v3-dv-kpi .k-lab {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--v3-t3);
+}
+.v3-dv-kpi .k-sub { font-family: var(--font-mono); font-size: 9.5px; color: var(--v3-t3); }
+
+/* ─── 预设选择卡(setup guide 每日上限;选中 = 橘边橘 tint) ─── */
+.v3-dv-preset {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--v3-hairline);
+  background: var(--v3-panel);
+  border-radius: 12px;
+  padding: 12px 16px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.v3-dv-preset:hover { border-color: var(--v3-hairline-2); }
+.v3-dv-preset.on { border-color: var(--v3-acc); background: var(--v3-acc-tint); }
+
+/* ─── 协议族选择钮(Models 首配;hover 淡橘) ─── */
+.v3-dv-choice {
+  border: 1px solid var(--v3-hairline);
+  background: var(--v3-warm);
+  border-radius: 10px;
+  padding: 10px 14px;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  color: var(--v3-ink);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.v3-dv-choice:hover { border-color: var(--v3-acc-soft); background: var(--v3-acc-tint); }
+
+/* ─── 雷达卡游戏切换小 tab ─── */
+.v3-dv-minitab {
+  border: 1px solid var(--v3-hairline);
+  background: transparent;
+  color: var(--v3-t3);
+  font: inherit;
+  font-size: 11px;
+  border-radius: 7px;
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+.v3-dv-minitab:hover { color: var(--v3-ink); background: var(--v3-warm); }
+.v3-dv-minitab.on { border-color: var(--v3-acc); color: var(--v3-acc-deep); background: var(--v3-acc-tint); }
+
+/* ─── 表单控件 ─── */
+.v3-dv-input {
+  width: 100%;
+  border-radius: 9px;
+  border: 1px solid var(--v3-hairline);
+  background: var(--v3-panel);
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--v3-ink);
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+.v3-dv-input:focus { border-color: var(--v3-acc); }
+.v3-dv-editor {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--v3-hairline);
+  background: var(--v3-panel);
+  padding: 16px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--v3-ink);
+  outline: none;
+  resize: none;
+  transition: border-color 0.15s ease;
+}
+.v3-dv-editor:focus { border-color: var(--v3-acc); }
+
+/* ─── 建议/引文块(复盘建议 = 橘 tint 内衬) ─── */
+.v3-dv-note {
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--v3-acc-tint);
+  border: 1px solid var(--v3-acc-soft);
+}
+
+/* ─── reduced-motion:v3-dv 作用域全部冻结 ─── */
+@media (prefers-reduced-motion: reduce) {
+  [class*="v3-dv-"],
+  [class*="v3-dv-"]::before,
+  [class*="v3-dv-"]::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ─── P4b 追加变体(PlayView 用) ─── */
+/* 语义边框卡(条款同意/认领/确认框:整卡 tint) */
+.v3-dv-card--warn { border-color: var(--v3-warn-line); background: var(--v3-warn-tint); box-shadow: none; }
+.v3-dv-card--err { border-color: var(--v3-err-line); background: var(--v3-err-tint); box-shadow: none; }
+/* 嵌入卡内的行(最近对局:卡已有内边距,行左右收齐) */
+.v3-dv-row--flush { padding: 10px 2px; }
+/* 步骤序号徽(setup guide;完成 = ok 绿) */
+.v3-dv-stepbadge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  background: var(--v3-acc-tint);
+  color: var(--v3-acc-deep);
+  flex: 0 0 auto;
+}
+.v3-dv-stepbadge--done { background: var(--color-v3-ok); color: #fff; }

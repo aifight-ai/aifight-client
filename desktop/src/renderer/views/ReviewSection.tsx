@@ -79,21 +79,14 @@ export function ReviewSection({ sessionId }: { sessionId: string }) {
   };
 
   return (
-    <div className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface)]">
-      <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
+    <div className="v3-dv-card mt-4">
+      <div className="flex items-center justify-between gap-3 border-b border-[var(--v3-hairline)] px-4 py-3">
         <div>
-          <div className="flex items-center gap-1.5 text-[13px] font-medium text-[var(--text)]">
-            <Sparkles size={14} className="text-[var(--accent)]" />
-            {t("review.panel")}
-          </div>
-          <div className="text-[11px] text-[var(--text-muted)]">{t("review.hint")}</div>
+          <div className="v3-dv-hd">{t("review.panel")}</div>
+          <div className="mt-0.5 text-[11px] text-[var(--text-muted)]">{t("review.hint")}</div>
         </div>
         {review !== null && (
-          <button
-            onClick={() => generate(true)}
-            disabled={generating}
-            className="shrink-0 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-[12px] text-[var(--text-muted)] transition-colors hover:text-[var(--text)] disabled:opacity-60"
-          >
+          <button onClick={() => generate(true)} disabled={generating} className="v3-dv-btn v3-dv-btn--ghost v3-dv-btn--xs shrink-0">
             {generating ? t("review.generating") : t("review.regenerate")}
           </button>
         )}
@@ -108,8 +101,8 @@ export function ReviewSection({ sessionId }: { sessionId: string }) {
               {review.report_text}
             </div>
             {review.suggestion !== null && (
-              <div className="rounded-lg border border-[var(--accent-soft)] bg-[var(--accent-soft)] p-3">
-                <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-[var(--accent-text)]">
+              <div className="v3-dv-note">
+                <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-[var(--v3-acc-deep)]">
                   <Lightbulb size={13} />
                   {t("review.suggestion")}
                   <span className="font-mono lowercase text-[var(--text-muted)]">[{review.suggestion.scope}]</span>
@@ -117,17 +110,13 @@ export function ReviewSection({ sessionId }: { sessionId: string }) {
                 <div className="mt-1.5 text-[12.5px] leading-relaxed text-[var(--text)]">{review.suggestion.text}</div>
               </div>
             )}
-            <div className="text-[10.5px] text-[var(--text-faint)]">
+            <div className="font-mono text-[10.5px] text-[var(--text-faint)]">
               {review.model} · tokens in {review.token_usage.input} / out {review.token_usage.output} · {review.trigger}
             </div>
           </div>
         ) : (
           <div className="space-y-2">
-            <button
-              onClick={() => generate(false)}
-              disabled={generating}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3.5 py-2 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60"
-            >
+            <button onClick={() => generate(false)} disabled={generating} className="v3-dv-btn v3-dv-btn--primary">
               <Sparkles size={14} />
               {generating ? t("review.generating") : t("review.generate")}
             </button>
@@ -135,7 +124,7 @@ export function ReviewSection({ sessionId }: { sessionId: string }) {
           </div>
         )}
         {error !== null && error !== "" && (
-          <div className="mt-2 text-[11px] text-[var(--text-muted)]">{error}</div>
+          <div className="v3-dv-err mt-2 text-[11px]">{error}</div>
         )}
       </div>
     </div>

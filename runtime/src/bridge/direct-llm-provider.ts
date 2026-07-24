@@ -33,6 +33,16 @@ import type {
   BridgeRuntimeProvider,
 } from "./provider.js";
 import type { BridgeMatchContext, MatchEventRecord } from "./match-context-tracker.js";
+import {
+  formatTexasHoldemState,
+  formatTexasHoldemEventLine,
+} from "../games/texas_holdem/state-formatter.js";
+import type {
+  Event,
+  PlayerInfo,
+  TexasHoldemRules,
+  TexasHoldemState,
+} from "../protocol/types.js";
 
 /** Minimum turn budget (ms) left before a self-heal retry is worth issuing: a
  *  retry is a full model call, so with less than this we skip it and let the
@@ -451,11 +461,21 @@ function buildDirectPrompt(req: BridgeRuntimeDecisionRequest): {
     timeout_ms: req.timeoutMs,
   });
   const parts: string[] = [];
+  // Texas plays from the same narrated view the platform's house bots decide
+  // on (owner 拍板 2026-07-22: 信息呈现拉平); every other game keeps the
+  // legacy JSON dump, byte-identical.
+  const texas = renderTexasTurn(req);
   // Match history (accumulated player-view events, rendered fresh each turn):
   // completed hands/rounds + this round's step-by-step actions — so the model
   // reasons over the match, not just the current snapshot.
-  const historyBlock = renderHistoryBlock(req.matchContext);
-  if (historyBlock !== "") {
+  const historyBlock = texas !== undefined ? texas.historyText : renderHistoryBlock(req.matchContext);
+  if (texas !== undefined) {
+    if (historyBlock !== "") parts.push(historyBlock);
+    parts.push(
+      `CURRENT TURN — Texas Hold'em, narrated view of the live state:\n${texas.stateText}\n\n` +
+        `Your legal actions — reply with EXACTLY one, using the exact JSON shape listed:\n${JSON.stringify(req.legalActions)}`,
+    );
+  } else if (historyBlock !== "") {
     parts.push(historyBlock);
     parts.push(`CURRENT TURN (state + legal actions):\n${base}`);
   } else {
@@ -511,6 +531,120 @@ function renderEventLine(event: MatchEventRecord): string {
   const actor = event.playerId !== undefined ? ` ${event.playerId}` : "";
   const data = event.data === undefined ? "" : ` ${safeCompactJSON(event.data)}`;
   return hardCap(`#${event.seq}${actor} ${event.type}${data}`, HISTORY_MAX_LINE_CHARS);
+}
+
+// ─── Texas Hold'em narrated turn (2026-07-22) ────────────────────────
+//
+// For texas the raw-JSON state dump is replaced with the same narrated view
+// the platform's house bots decide on (hand X of Y, board, position, stacks,
+// cash running results), and match history renders hand starts / results /
+// match result as sentences instead of compact JSON. legal_actions stay
+// verbatim JSON — they are the response-shape contract. Defensive: any shape
+// surprise falls back to the generic JSON path unchanged.
+
+const TEXAS_SETTLEMENT_TYPES = new Set(["new_hand", "hand_result", "match_result"]);
+
+interface TexasTurnBlocks {
+  stateText: string;
+  historyText: string;
+}
+
+function renderTexasTurn(req: BridgeRuntimeDecisionRequest): TexasTurnBlocks | undefined {
+  if (req.game !== "texas_holdem") return undefined;
+  const raw = req.publicState;
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const publicState = raw as TexasHoldemState;
+  const statePid = (publicState as { your_player_id?: unknown }).your_player_id;
+  const yourPlayerId = req.playerId ?? (typeof statePid === "string" ? statePid : "");
+  const players = synthesizeTexasPlayerInfos(publicState);
+  const { stateBlock } = formatTexasHoldemState({
+    publicState,
+    // stateBlock never reads rules — the platform rules render separately in
+    // the system prompt; the formatter input merely requires the field.
+    rules: undefined as unknown as TexasHoldemRules,
+    players,
+    recentEvents: [],
+    yourPlayerId,
+  });
+  if (stateBlock === "") return undefined;
+  return {
+    stateText: stateBlock,
+    historyText: renderTexasHistoryBlock(req.matchContext, players, yourPlayerId),
+  };
+}
+
+// The per-turn state's players[] entries carry id/status/chips/bet (wire
+// schema); lift them into the PlayerInfo shape the formatter's opponent lines
+// read. Anonymized by construction — only public seat data is present.
+function synthesizeTexasPlayerInfos(state: TexasHoldemState): PlayerInfo[] {
+  const seats = (state as { players?: unknown }).players;
+  if (!Array.isArray(seats)) return [];
+  const out: PlayerInfo[] = [];
+  for (const seat of seats) {
+    if (typeof seat !== "object" || seat === null) continue;
+    const p = seat as { id?: unknown; status?: unknown; chips?: unknown; bet?: unknown };
+    if (typeof p.id !== "string") continue;
+    out.push({
+      id: p.id,
+      status: (typeof p.status === "string" ? p.status : "active") as PlayerInfo["status"],
+      data: { chips: p.chips, bet: p.bet },
+    } as PlayerInfo);
+  }
+  return out;
+}
+
+/**
+ * Texas match history: same budgets as the generic renderer, but settlement
+ * lines (hand starts, hand results, match result) are dropped LAST — the
+ * hand-by-hand ledger is what lets the model reason about the whole match
+ * (who is ahead, how many hands remain), and it is tiny (≤ ~21 lines per
+ * 10-hand match) while per-street actions dominate the event count.
+ */
+function renderTexasHistoryBlock(
+  context: BridgeMatchContext | undefined,
+  players: readonly PlayerInfo[],
+  yourPlayerId: string,
+): string {
+  const events = context?.events ?? [];
+  if (events.length === 0) return "";
+  const entries = events.map((ev) => {
+    const wireEvent = {
+      type: ev.type,
+      seq: ev.seq,
+      ts: 0,
+      ...(ev.playerId !== undefined ? { player: ev.playerId } : {}),
+      ...(ev.data !== undefined ? { data: ev.data } : {}),
+    } as unknown as Event;
+    return {
+      line: hardCap(formatTexasHoldemEventLine(wireEvent, players, yourPlayerId), HISTORY_MAX_LINE_CHARS),
+      settlement: TEXAS_SETTLEMENT_TYPES.has(ev.type),
+    };
+  });
+  // Event-count budget: keep every settlement line, fill the rest of the
+  // budget with the newest non-settlement lines.
+  const settlementCount = entries.reduce((n, e) => (e.settlement ? n + 1 : n), 0);
+  const keep = entries.map((e) => e.settlement);
+  let budget = Math.max(0, HISTORY_MAX_EVENTS - settlementCount);
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (!entries[i]!.settlement && budget > 0) {
+      keep[i] = true;
+      budget--;
+    }
+  }
+  let kept = entries.filter((_, i) => keep[i]);
+  // Char budget: drop oldest non-settlement lines first; only if settlements
+  // alone still bust the budget do they start dropping oldest-first too.
+  const totalChars = () => kept.reduce((n, e) => n + e.line.length + 1, 0);
+  while (kept.length > 1 && totalChars() > HISTORY_MAX_BLOCK_CHARS) {
+    const idx = kept.findIndex((e) => !e.settlement);
+    kept.splice(idx >= 0 ? idx : 0, 1);
+  }
+  const omitted = events.length - kept.length;
+  const header =
+    omitted > 0
+      ? `MATCH HISTORY — your view, oldest first (${omitted} earlier events omitted):`
+      : "MATCH HISTORY — your view, oldest first:";
+  return [header, ...kept.map((e) => e.line)].join("\n");
 }
 
 function safeCompactJSON(value: unknown): string {

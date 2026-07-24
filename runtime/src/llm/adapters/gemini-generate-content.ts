@@ -379,6 +379,11 @@ function extractText(parsed: unknown): string | null {
   const parts = content["parts"];
   if (!Array.isArray(parts)) return null;
   const texts = parts
+    // Thought-summary parts (thought === true) are chain-of-thought, never the
+    // answer. Gemini-protocol gateways/proxies can return them even though
+    // includeThoughts was never requested, and joining them here would surface
+    // the model's reasoning as its reply (2026-07-19). Filter unconditionally.
+    .filter((p) => !(isObject(p) && p["thought"] === true))
     .map((p) => (isObject(p) && typeof p["text"] === "string" ? (p["text"] as string) : ""))
     .filter((t) => t.length > 0);
   return texts.length > 0 ? texts.join("") : null;
@@ -390,12 +395,21 @@ function extractUsage(parsed: unknown): { inputTokens?: number; outputTokens?: n
   if (!isObject(usage)) return {};
   const prompt = usage["promptTokenCount"];
   const candidates = usage["candidatesTokenCount"];
+  // Gemini reports thinking tokens SEPARATELY (thoughtsTokenCount) from the
+  // visible answer (candidatesTokenCount) and bills both as output — fold them
+  // together, or a reasoning model's output usage is massively under-counted
+  // (2026-07-19). Both fields optional: absent on non-thinking models.
+  const thoughts = usage["thoughtsTokenCount"];
+  const candidatesN = typeof candidates === "number" ? candidates : undefined;
+  const thoughtsN = typeof thoughts === "number" ? thoughts : undefined;
+  const outputTotal =
+    candidatesN === undefined && thoughtsN === undefined ? undefined : (candidatesN ?? 0) + (thoughtsN ?? 0);
   // C2: Gemini reports cached (implicit/explicit context cache) tokens under
   // usageMetadata.cachedContentTokenCount.
   const cached = usage["cachedContentTokenCount"];
   return {
     inputTokens: typeof prompt === "number" ? prompt : undefined,
-    outputTokens: typeof candidates === "number" ? candidates : undefined,
+    outputTokens: outputTotal,
     cachedTokens: typeof cached === "number" ? cached : undefined,
   };
 }

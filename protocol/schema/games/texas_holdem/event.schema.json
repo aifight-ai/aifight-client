@@ -82,7 +82,7 @@
     {
       "type": "object",
       "description": "hand_result — emitted at hand end. No `player`; pot distribution and winners listed in `data`.",
-      "required": ["winners", "pot"],
+      "required": ["winners"],
       "additionalProperties": true,
       "properties": {
         "winners": {
@@ -92,15 +92,31 @@
         },
         "pot": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "description": "Total chips on the table this hand. Always emitted by current servers (2026-07+); older recordings omit it on showdown-decided hands."
         },
         "reason": {
           "type": "string",
-          "description": "How the hand was decided (e.g. 'all_others_folded', 'showdown')."
+          "description": "How the hand was decided: 'all_folded' or 'showdown'."
         },
-        "showdown": {
+        "hand": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-based number of the hand this result settles. Servers emit it from 2026-07; absent on older recorded events."
+        },
+        "payouts": {
           "type": "object",
-          "description": "Per-player cards + hand-ranking at showdown (only when reason='showdown'). Key = player_id.",
+          "description": "Map of player_id -> chips taken from the pot this hand (side-pot aware; only winners appear). Servers emit it from 2026-07; absent on older recorded events.",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "net_chips": {
+          "type": "object",
+          "description": "Cash format only: map of player_id -> cumulative net chips across all completed hands INCLUDING this one — the figure the match is ranked on (same semantics as match_result.net_chips). Can be negative. Servers emit it from 2026-07; absent on older recorded events.",
+          "additionalProperties": { "type": "integer" }
+        },
+        "hands": {
+          "type": "object",
+          "description": "Map of player_id -> {cards?: string[], hand?: string, folded?: bool}. cards are subject to real-poker muck rules per viewer: on 'all_folded' nobody reveals; on 'showdown' only non-folded participants' cards are shown, and each player always sees their own. 'hand' is the ranking name for showdown participants.",
           "additionalProperties": true
         }
       }
@@ -108,16 +124,48 @@
     {
       "type": "object",
       "description": "match_result — emitted at match end (after final hand). No `player`.",
-      "required": ["winner", "final_chips"],
+      "required": ["winner"],
       "additionalProperties": true,
       "properties": {
         "winner": {
           "type": "string",
-          "description": "Player ID with most chips at match end. Empty string on tie."
+          "description": "Match winner's player ID — cash format ranks by cumulative net (see net_chips), tournament by final chips. Empty string on a tie (see is_draw / winners)."
+        },
+        "winners": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "All player IDs tied for the best score (length > 1 means a draw). Always emitted by current servers."
+        },
+        "is_draw": {
+          "type": "boolean",
+          "description": "True when more than one player ties for the lead. Always emitted by current servers."
+        },
+        "hand": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of hands actually played. Always emitted by current servers."
+        },
+        "reason": {
+          "type": "string",
+          "description": "'max_hands_reached' or 'opponent_eliminated' (tournament only; cash never eliminates). Always emitted by current servers."
+        },
+        "chips": {
+          "type": "object",
+          "description": "Map of player_id -> final chip stack. Always emitted by current servers. In tournament format (the production default) this IS the ranking basis: the single player with the most chips wins; a tie for the most is a draw. NOTE: in cash format stacks reset every hand, so there it says nothing about who won — rank by net_chips instead.",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "net_chips": {
+          "type": "object",
+          "description": "Cash format only: map of player_id -> cumulative net chips across all hands — the figure the match is ranked on. Can be negative.",
+          "additionalProperties": { "type": "integer" }
+        },
+        "format": {
+          "type": "string",
+          "description": "Present as 'cash' on cash-format matches; absent on tournament matches."
         },
         "final_chips": {
           "type": "object",
-          "description": "Map of player_id -> final chip count.",
+          "description": "Legacy field from pre-2026-06 servers; current servers emit 'chips' instead. Kept for old recordings.",
           "additionalProperties": { "type": "integer", "minimum": 0 }
         }
       }

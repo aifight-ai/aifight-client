@@ -125,10 +125,10 @@ export function PerGameCards({ ratings }: { ratings: readonly AgentRating[] }) {
         const streak = r.best_streak ?? 0;
         const hasDetail = peak > 0 || perf > 0 || streak > 0;
         return (
-          <div key={r.game} className="app-card px-4 py-3">
-            <div className="font-display text-[14px] text-[var(--text)]">{gameLabel(r.game)}</div>
+          <div key={r.game} className="v3-dv-inset px-4 py-3">
+            <div className="v3-dv-display text-[14px] text-[var(--text)]">{gameLabel(r.game)}</div>
             <div className="mt-1 flex items-baseline gap-1.5">
-              <span className="font-mono text-[20px] font-semibold tabular-nums text-[var(--accent-text)]">
+              <span className="font-mono text-[20px] font-semibold tabular-nums text-[var(--v3-acc-deep)]">
                 {Math.round(r.display_rating ?? r.rating ?? 0)}
               </span>
               <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-[var(--text-faint)]">{t("home.rating")}</span>
@@ -141,7 +141,7 @@ export function PerGameCards({ ratings }: { ratings: readonly AgentRating[] }) {
               <span className="tabular-nums">{Math.round((r.win_rate ?? 0) * 100)}%</span>
             </div>
             {hasDetail && (
-              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-[var(--border)] pt-2 font-mono text-[10.5px] text-[var(--text-faint)]">
+              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-[var(--v3-hairline)] pt-2 font-mono text-[10.5px] text-[var(--text-faint)]">
                 {peak > 0 && (
                   <span className="tabular-nums" title={t("home.peakTip")}>
                     {t("home.peakLabel")} {peak}
@@ -189,20 +189,17 @@ export function AchievementShelf({ achievements }: { achievements: readonly Agen
   const { t } = useTranslation();
   const featured = achievements.slice(0, 8);
   return (
-    <div className="app-card px-5 py-4">
+    <div className="v3-dv-card px-5 py-4">
       <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
-          <Award size={13} className="text-[var(--text-muted)]" />
-          {t("achievements.title")}
-        </div>
+        <div className="v3-dv-hd">{t("achievements.title")}</div>
         {achievements.length > 0 && (
-          <span className="font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
+          <span className="v3-dv-hnote">
             {t("achievements.unlocked", { count: achievements.length })}
           </span>
         )}
       </div>
       {featured.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-[var(--border)] px-4 py-5 text-[12px] leading-relaxed text-[var(--text-faint)]">
+        <div className="rounded-lg border border-dashed border-[var(--v3-hairline-2)] px-4 py-5 text-[12px] leading-relaxed text-[var(--text-faint)]">
           {t("achievements.emptyCopy")}
         </div>
       ) : (
@@ -211,7 +208,7 @@ export function AchievementShelf({ achievements }: { achievements: readonly Agen
             const tier = achTier(a.tier);
             const isMoment = a.category === "poker_moment";
             return (
-              <div key={a.id} className="app-card px-3.5 py-3">
+              <div key={a.id} className="v3-dv-inset px-3.5 py-3">
                 <div className="flex items-center justify-between gap-2">
                   <span
                     className="flex h-7 w-7 items-center justify-center rounded-md border"
@@ -223,7 +220,7 @@ export function AchievementShelf({ achievements }: { achievements: readonly Agen
                     {t(tier.labelKey)}
                   </span>
                 </div>
-                <div className="mt-2 font-display text-[13px] font-semibold leading-snug text-[var(--text)]">
+                <div className="v3-dv-display mt-2 text-[13px] leading-snug text-[var(--text)]">
                   {a.title}
                 </div>
                 {a.description && (

@@ -21,7 +21,6 @@
 // the web card keeps numbers hover-only.
 
 import { useEffect, useState } from "react";
-import { Hexagon } from "lucide-react";
 
 import { getOwnRadar } from "../useBridge";
 import { gameLabel } from "../../shared/games";
@@ -241,39 +240,23 @@ export function StyleRadarCard({
   const showVersatilityNote = game !== ""; // single-game view: versatility is cross-game (§6.1)
 
   return (
-    <div className="app-card px-5 py-4">
+    <div className="v3-dv-card px-5 py-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <span className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--text)]">
-          <Hexagon size={13} className="text-[var(--text-muted)]" />
+        <span className="v3-dv-hd">
           {t("radar.title")}
           {view !== "placeholder" && sig !== null && (
-            <span className="ml-1 font-normal text-[var(--text-muted)]">
+            <span className="v3-dv-hnote ml-1 normal-case">
               {t("radar.signature", { dim: t(`radar.dims.${sig.dim}`), value: sig.value })}
             </span>
           )}
         </span>
         {games.length > 0 && (
           <div className="flex flex-wrap gap-1">
-            <button
-              onClick={() => setGame("")}
-              className={`rounded-md border px-2 py-0.5 text-[11px] ${
-                game === ""
-                  ? "border-[var(--accent)] text-[var(--accent)]"
-                  : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--hover)]"
-              }`}
-            >
+            <button onClick={() => setGame("")} className={"v3-dv-minitab" + (game === "" ? " on" : "")}>
               {t("radar.overall")}
             </button>
             {games.map((g) => (
-              <button
-                key={g}
-                onClick={() => setGame(g)}
-                className={`rounded-md border px-2 py-0.5 text-[11px] ${
-                  game === g
-                    ? "border-[var(--accent)] text-[var(--accent)]"
-                    : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--hover)]"
-                }`}
-              >
+              <button key={g} onClick={() => setGame(g)} className={"v3-dv-minitab" + (game === g ? " on" : "")}>
                 {gameLabel(g)}
               </button>
             ))}
@@ -289,10 +272,7 @@ export function StyleRadarCard({
         <div className="mt-1 flex flex-col items-center gap-2 pb-1 text-center">
           <p className="text-[12.5px] text-[var(--text-muted)]">{t("radar.unlockHint")}</p>
           {onPlayCta !== undefined && (
-            <button
-              onClick={onPlayCta}
-              className="rounded-md border border-[var(--accent)] px-3 py-1 text-[12px] font-medium text-[var(--accent)] hover:bg-[var(--hover)]"
-            >
+            <button onClick={onPlayCta} className="v3-dv-btn v3-dv-btn--oline v3-dv-btn--sm">
               {t("radar.playCta")}
             </button>
           )}

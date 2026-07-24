@@ -78,27 +78,14 @@ body {
 
 /* Paper-style raised card — mirrors the website's .card-raised so app surfaces get
    the same soft elevation instead of looking flat. --shadow-paper-1/2 come from the
-   vendored @theme (game-visuals.css) and are already theme-aware. */
+   vendored @theme (game-visuals.css) and are already theme-aware.
+   NOTE (P4b): all view-level cards moved to .v3-dv-card (v3-cockpit.css); .app-card
+   remains only for the Settings cards inlined in App.tsx. */
 .app-card {
   border: 1px solid var(--border);
   background: var(--surface);
   border-radius: 12px;
   box-shadow: var(--shadow-paper-1);
-}
-.app-card-hover {
-  transition: box-shadow 160ms ease, border-color 160ms ease;
-}
-.app-card-hover:hover {
-  box-shadow: var(--shadow-paper-2);
-  border-color: var(--color-border-3);
-}
-
-/* Editorial serif display, matching the website's titles. The font tokens resolve
-   to Source Serif 4 → Georgia / PingFang SC fallbacks (no web fonts bundled yet). */
-.font-display {
-  font-family: var(--font-serif);
-  font-weight: 400;
-  letter-spacing: -0.01em;
 }
 
 /* .btn / .btn-secondary / .btn-sm — the desktop chrome uses bespoke styles, but
@@ -142,3 +129,8 @@ body {
 .btn-secondary:hover:not(:disabled) {
   background: var(--hover);
 }
+
+/* v3 cockpit + 视图样式(feat/ui-v3 · Phase 4a cockpit / 4b 其余视图 v3-dv-)。
+   放在最后导入,保证 .v3-cockpit 作用域内的规则稳定覆盖 vendored
+   game-visuals.css;旧文件不删(game-visuals.css 仍是对局台基底)。 */
+@import "./v3-cockpit.css";

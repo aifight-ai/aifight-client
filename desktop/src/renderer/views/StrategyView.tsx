@@ -134,19 +134,14 @@ export function StrategyView() {
       />
 
       {/* Scope tabs */}
-      <div className="mb-3 inline-flex gap-0.5 self-start rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-0.5">
+      <div className="v3-dv-seg mb-3 self-start">
         {state.scopes.map((scope) => {
           const isDirty = state.docs[scope].content !== state.docs[scope].saved;
           return (
             <button
               key={scope}
               onClick={() => setActive(scope)}
-              className={
-                "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] transition-colors " +
-                (active === scope
-                  ? "bg-[var(--surface)] text-[var(--text)] shadow-sm"
-                  : "text-[var(--text-muted)] hover:text-[var(--text)]")
-              }
+              className={"v3-dv-seg-btn" + (active === scope ? " on" : "")}
             >
               {scope === "global" && <Globe size={13} />}
               {labelFor(scope)}
@@ -162,18 +157,18 @@ export function StrategyView() {
         onChange={(e) => setContent(e.target.value)}
         spellCheck={false}
         placeholder={t("strategy.placeholder")}
-        className="min-h-[320px] flex-1 resize-none rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 font-mono text-[13px] leading-relaxed text-[var(--text)] outline-none focus:border-[var(--accent)]/50"
+        className="v3-dv-editor min-h-[320px] flex-1"
       />
 
       {/* Footer: byte count + empty hint + save */}
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="text-[11px] text-[var(--text-faint)]">
-          <span className={over ? "text-red-400" : ""}>
+        <div className="font-mono text-[11px] text-[var(--text-faint)]">
+          <span className={over ? "v3-dv-err" : ""}>
             {bytes} / {state.maxBytes} {t("strategy.bytes")}
           </span>
           <span className="mx-1.5">·</span>
           {over ? (
-            <span className="text-red-400">{t("strategy.overBy", { n: bytes - state.maxBytes })}</span>
+            <span className="v3-dv-err">{t("strategy.overBy", { n: bytes - state.maxBytes })}</span>
           ) : doc.content.trim() === "" ? (
             t("strategy.emptySkipped")
           ) : (
@@ -182,19 +177,14 @@ export function StrategyView() {
         </div>
         <div className="flex items-center gap-2">
           {flash === active && (
-            <span className="flex items-center gap-1 text-[12px] text-emerald-400">
+            <span className="v3-dv-ok flex items-center gap-1 text-[12px]">
               <Check size={13} /> {t("strategy.saved")}
             </span>
           )}
           <button
             onClick={save}
             disabled={!dirty || over || saving === active}
-            className={
-              "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] transition-colors " +
-              (dirty && !over
-                ? "bg-[var(--accent)] text-white hover:opacity-90"
-                : "cursor-default border border-[var(--border)] bg-[var(--surface)] text-[var(--text-faint)]")
-            }
+            className={dirty && !over ? "v3-dv-btn v3-dv-btn--primary" : "v3-dv-btn v3-dv-btn--ghost"}
           >
             <Save size={14} />
             {saving === active ? t("strategy.saving") : t("strategy.save")}

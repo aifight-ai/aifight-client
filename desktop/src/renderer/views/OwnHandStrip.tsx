@@ -27,12 +27,9 @@ function PlayingCard({ card }: { card: string }) {
   const suit = card.slice(-1).toLowerCase();
   const red = suit === "h" || suit === "d";
   return (
-    <span
-      className="inline-flex h-9 min-w-[28px] items-center justify-center gap-0.5 rounded-md border border-[var(--border)] bg-[var(--surface)] px-1.5 font-mono text-[14px] font-semibold leading-none shadow-sm"
-      style={{ color: red ? "#d6455c" : "var(--text)" }}
-    >
-      {rank}
-      {SUIT_GLYPH[suit] ?? suit}
+    <span className={"v3-big" + (red ? " rd" : "")}>
+      <span className="rk">{rank}</span>
+      <span className="st">{SUIT_GLYPH[suit] ?? suit}</span>
     </span>
   );
 }
@@ -52,17 +49,13 @@ export function OwnHandStrip({ game, owner }: { game: Game; owner: OwnerPrivate 
   const { t } = useTranslation();
 
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--accent)]/40 bg-[var(--surface-2)] px-4 py-2.5">
-      <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--accent)]">
-        {t("cockpit.yourAgent")}
-      </span>
+    <div className="v3-own">
+      <span className="v3-own-label">{t("cockpit.yourAgent")}</span>
 
-      {!hasAny(owner) && (
-        <span className="text-[12px] text-[var(--text-faint)]">{t("cockpit.noPrivateInfo")}</span>
-      )}
+      {!hasAny(owner) && <span className="v3-own-empty">{t("cockpit.noPrivateInfo")}</span>}
 
       {game === "texas_holdem" && owner.holeCards && owner.holeCards.length > 0 && (
-        <span className="flex items-center gap-1.5">
+        <span className="v3-own-cards">
           {owner.holeCards.map((c, i) => (
             <PlayingCard key={`${c}-${i}`} card={c} />
           ))}
@@ -70,7 +63,7 @@ export function OwnHandStrip({ game, owner }: { game: Game; owner: OwnerPrivate 
       )}
 
       {game === "liars_dice" && owner.dice && owner.dice.length > 0 && (
-        <span className="flex items-center gap-1 text-[26px] leading-none text-[var(--text)]">
+        <span className="v3-own-dice">
           {owner.dice.map((d, i) => (
             <span key={i} title={String(d)}>
               {DICE_PIP[d] ?? d}
@@ -80,7 +73,7 @@ export function OwnHandStrip({ game, owner }: { game: Game; owner: OwnerPrivate 
       )}
 
       {game === "coup" && (
-        <span className="flex items-center gap-1.5">
+        <span className="v3-own-roles">
           {(owner.influence ?? []).map((r, i) => (
             <span
               key={`h-${i}`}
@@ -104,13 +97,13 @@ export function OwnHandStrip({ game, owner }: { game: Game; owner: OwnerPrivate 
 
       {/* Numeric chips/coins, shown to the right when present. */}
       {owner.chips !== undefined && (
-        <span className="ml-auto font-mono text-[12px] text-[var(--text-muted)]">
-          {t("cockpit.chips")}: <span className="text-[var(--text)]">{owner.chips}</span>
+        <span className="v3-own-meta">
+          {t("cockpit.chips")} <b>{owner.chips}</b>
         </span>
       )}
       {owner.coins !== undefined && (
-        <span className="ml-auto font-mono text-[12px] text-[var(--text-muted)]">
-          {t("cockpit.coins")}: <span className="text-[var(--text)]">{owner.coins}</span>
+        <span className="v3-own-meta">
+          {t("cockpit.coins")} <b>{owner.coins}</b>
         </span>
       )}
     </div>

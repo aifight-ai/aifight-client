@@ -81,6 +81,7 @@ const api: AifightBridgeApi = {
   onNavigate: (listener) => subscribe<string>(IPC.navigate, listener),
   getUsageOverview: () => ipcRenderer.invoke(IPC.usageGet),
   checkForUpdates: () => ipcRenderer.invoke(IPC.updateCheck),
+  downloadUpdate: () => ipcRenderer.invoke(IPC.updateDownload),
   installUpdate: () => ipcRenderer.invoke(IPC.updateInstall),
   getAutoUpdate: () => ipcRenderer.invoke(IPC.getAutoUpdate),
   setAutoUpdate: (enabled: boolean) => ipcRenderer.invoke(IPC.setAutoUpdate, enabled),

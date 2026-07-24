@@ -609,6 +609,22 @@ function resolvePlayerName(match: MatchDetail, pid: string): string {
 // Anonymous nicknames for live matches (prevent identity-based cheating)
 const ANON_NAMES = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot', 'Golf', 'Hotel']
 
+// One settled hand, harvested from a hand_result event. pot/payouts/netChips
+// only exist on events recorded after the 2026-07 engine change; older replays
+// still get hand/winners/reason (hand inferred from the running counter).
+interface HandSettlement {
+  hand: number
+  winners: string[]
+  reason: string
+  pot?: number
+  payouts?: Record<string, number>
+  netChips?: Record<string, number>
+}
+
+function signedChips(n: number): string {
+  return `${n >= 0 ? '+' : ''}${n.toLocaleString()}`
+}
+
 function PokerVisual({ match, events, allEvents, isLive }: { match: MatchDetail; events: MatchEvent[]; allEvents?: MatchEvent[]; isLive?: boolean }) {
   const players = match.players
 
@@ -658,7 +674,20 @@ function PokerVisual({ match, events, allEvents, isLive }: { match: MatchDetail;
   let showdownHands: Record<string, { cards: string[]; hand?: string; folded?: boolean }> | null = null
   let handWinners: string[] = []
   let handReason = ''
-  let matchResult: { winner: string; reason: string; hand: number } | null = null
+  let matchResult: {
+    winner: string
+    reason: string
+    hand: number
+    winners?: string[]
+    isDraw?: boolean
+  } | null = null
+  let smallBlind = 0
+  let bigBlind = 0
+  // Persistent settlement ledger: unlike the per-hand vars above, these survive
+  // the new_hand reset so viewers keep seeing who won each finished hand.
+  const settledHands: HandSettlement[] = []
+  let lastSettlement: HandSettlement | null = null
+  let latestNetChips: Record<string, number> | null = null
   let hasDealt = false
   let currentTurn = '' // whose turn it is (from last action context)
   let allIn: Record<string, boolean> = {} // track all-in players
@@ -683,6 +712,8 @@ function PokerVisual({ match, events, allEvents, isLive }: { match: MatchDetail;
       hasDealt = true
       if (evt.data.hand_num) handNum = evt.data.hand_num as number
       if (evt.data.max_hands) maxHands = evt.data.max_hands as number
+      if (evt.data.small_blind) smallBlind = evt.data.small_blind as number
+      if (evt.data.big_blind) bigBlind = evt.data.big_blind as number
       if (evt.data.chips) chips = { ...(evt.data.chips as Record<string, number>) }
       // Initialize bets from blind data (includes SB/BB already posted)
       if (evt.data.bets) {
@@ -739,14 +770,32 @@ function PokerVisual({ match, events, allEvents, isLive }: { match: MatchDetail;
       if (evt.data.hands) showdownHands = evt.data.hands as Record<string, { cards: string[]; hand?: string; folded?: boolean }>
       if (evt.data.winners) handWinners = evt.data.winners as string[]
       if (evt.data.reason) handReason = evt.data.reason as string
+      const settlement: HandSettlement = {
+        hand: (evt.data.hand as number | undefined) ?? handNum,
+        winners: (evt.data.winners as string[] | undefined) ?? [],
+        reason: (evt.data.reason as string | undefined) ?? '',
+        pot: evt.data.pot as number | undefined,
+        payouts: evt.data.payouts as Record<string, number> | undefined,
+        netChips: evt.data.net_chips as Record<string, number> | undefined,
+      }
+      // Frame pages can overlap and re-deliver an event; replace rather than
+      // duplicate so each hand settles exactly one ledger row.
+      const existing = settledHands.findIndex(sh => sh.hand === settlement.hand)
+      if (existing >= 0) settledHands[existing] = settlement
+      else settledHands.push(settlement)
+      lastSettlement = settlement
+      if (settlement.netChips) latestNetChips = settlement.netChips
     }
     if (evt.type === 'match_result' && evt.data) {
       matchResult = {
         winner: evt.data.winner as string,
         reason: evt.data.reason as string,
         hand: evt.data.hand as number,
+        winners: evt.data.winners as string[] | undefined,
+        isDraw: evt.data.is_draw as boolean | undefined,
       }
       if (evt.data.chips) chips = { ...(evt.data.chips as Record<string, number>) }
+      if (evt.data.net_chips) latestNetChips = evt.data.net_chips as Record<string, number>
     }
   }
 
@@ -756,7 +805,18 @@ function PokerVisual({ match, events, allEvents, isLive }: { match: MatchDetail;
   const n = players.length
   const isShowdown = !!showdownHands || handWinners.length > 0 || !!matchResult
   const phase = inferPokerPhase(communityCards.length, isShowdown)
-  const blinds = blindsForHand(handNum)
+  // Real blinds come from new_hand events (fixed 50/100 in cash play); the
+  // escalating-level guess is only a fallback for old tournament replays
+  // recorded before the events carried them. Cash matches never show the
+  // legacy guess (wrong fixed levels) — they just omit blinds until known.
+  const isCashMatch = (match.config?.['format'] as string | undefined) === 'cash'
+  const blinds =
+    smallBlind > 0 && bigBlind > 0
+      ? { sb: smallBlind, bb: bigBlind, label: '' }
+      : isCashMatch
+        ? null
+        : blindsForHand(handNum)
+  const nameOf = (pid: string) => (isLive ? findAnonName(match, pid) : resolvePlayerName(match, pid))
   const activeInHand = players.reduce((count, p) => {
     const pid = p.player_id || `p${p.position}`
     const busted = (chips[pid] ?? 0) <= 0 && matchResult?.winner !== pid
@@ -792,8 +852,8 @@ function PokerVisual({ match, events, allEvents, isLive }: { match: MatchDetail;
         pot={displayPot}
         handNum={handNum}
         maxHands={maxHands}
-        levelLabel={blinds.label}
-        blinds={{ sb: blinds.sb, bb: blinds.bb }}
+        levelLabel={blinds?.label || undefined}
+        blinds={blinds ? { sb: blinds.sb, bb: blinds.bb } : undefined}
         currentTurnLabel={turnLabel || undefined}
       />
 
@@ -882,8 +942,9 @@ function PokerVisual({ match, events, allEvents, isLive }: { match: MatchDetail;
           >
             {handReason === 'all_folded' ? 'All folded' : 'Showdown'} &mdash; Winner:{' '}
             <span style={{ color: 'var(--color-terracotta-700)', fontWeight: 500 }}>
-              {handWinners.map(w => isLive ? findAnonName(match, w) : resolvePlayerName(match, w)).join(', ')}
+              {handWinners.map(nameOf).join(', ')}
             </span>
+            {lastSettlement?.pot ? <> &middot; pot {lastSettlement.pot.toLocaleString()}</> : null}
           </div>
         )}
         {matchResult && (
@@ -913,11 +974,130 @@ function PokerVisual({ match, events, allEvents, isLive }: { match: MatchDetail;
                 textTransform: 'uppercase',
               }}
             >
-              Winner:{' '}
-              <span style={{ color: 'var(--color-terracotta-700)', fontWeight: 500 }}>
-                {isLive ? findAnonName(match, matchResult.winner) : resolvePlayerName(match, matchResult.winner)}
+              {matchResult.isDraw && matchResult.winners && matchResult.winners.length > 1 ? (
+                <>
+                  Draw:{' '}
+                  <span style={{ color: 'var(--color-terracotta-700)', fontWeight: 500 }}>
+                    {matchResult.winners.map(nameOf).join(', ')}
+                  </span>
+                </>
+              ) : (
+                <>
+                  Winner:{' '}
+                  <span style={{ color: 'var(--color-terracotta-700)', fontWeight: 500 }}>
+                    {nameOf(matchResult.winner)}
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {settledHands.length > 0 && (
+          <div style={{ marginTop: 16, borderTop: '1px solid var(--color-border-1)', paddingTop: 12 }}>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'baseline',
+                marginBottom: 8,
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 10,
+                  letterSpacing: '0.08em',
+                  textTransform: 'uppercase',
+                  color: 'var(--color-ink-4)',
+                }}
+              >
+                Hand results
+              </span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--color-ink-4)' }}>
+                {settledHands.length}
+                {maxHands > 0 ? ` / ${maxHands}` : ''} settled
               </span>
             </div>
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+                // Bounded: a full 10-hand match must not inflate the stage
+                // beyond the theater cap — older hands scroll inside the ledger.
+                maxHeight: 150,
+                overflowY: 'auto',
+                paddingRight: 4,
+              }}
+            >
+              {[...settledHands].reverse().map(sh => (
+                <div
+                  key={sh.hand}
+                  style={{
+                    display: 'flex',
+                    gap: 10,
+                    alignItems: 'baseline',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 11.5,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  <span style={{ color: 'var(--color-ink-4)', minWidth: 28 }}>H{sh.hand}</span>
+                  <span style={{ color: 'var(--color-ink-2)', flex: 1 }}>
+                    {sh.winners.length === 0
+                      ? '—'
+                      : sh.winners.map((w, wi) => {
+                          const paid = sh.payouts?.[w]
+                          return (
+                            <span key={w}>
+                              {wi > 0 && ', '}
+                              <span style={{ color: 'var(--color-terracotta-700)' }}>{nameOf(w)}</span>
+                              {paid !== undefined && ` +${paid.toLocaleString()}`}
+                            </span>
+                          )
+                        })}
+                    {sh.payouts === undefined && sh.pot ? ` · pot ${sh.pot.toLocaleString()}` : ''}
+                  </span>
+                  <span style={{ color: 'var(--color-ink-4)' }}>
+                    {sh.reason === 'all_folded' ? 'all folded' : sh.reason.replace(/_/g, ' ')}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {latestNetChips && (
+              <div
+                style={{
+                  marginTop: 10,
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 11.5,
+                  color: 'var(--color-ink-3)',
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 10,
+                    letterSpacing: '0.08em',
+                    textTransform: 'uppercase',
+                    color: 'var(--color-ink-4)',
+                    marginRight: 8,
+                  }}
+                >
+                  Net
+                </span>
+                {Object.entries(latestNetChips)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([pid, net], i) => (
+                    <span key={pid}>
+                      {i > 0 && ' · '}
+                      {nameOf(pid)}{' '}
+                      <span style={{ color: net > 0 ? 'var(--color-terracotta-700)' : undefined }}>
+                        {signedChips(net)}
+                      </span>
+                    </span>
+                  ))}
+              </div>
+            )}
           </div>
         )}
       </div>

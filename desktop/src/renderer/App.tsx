@@ -139,7 +139,7 @@ export function App() {
             </g>
           </svg>
           {!collapsed && (
-            <span className="font-display text-[16px] tracking-tight">
+            <span className="v3-wordmark text-[16px]">
               AI<span style={{ color: "var(--accent)" }}>Fight</span>
             </span>
           )}
@@ -159,7 +159,7 @@ export function App() {
                   (collapsed ? "justify-center" : "") +
                   " " +
                   (isActive
-                    ? "bg-[var(--active)] text-[var(--text)]"
+                    ? "bg-[var(--accent-soft)] font-semibold text-[var(--accent-text)]"
                     : "text-[var(--text-muted)] hover:bg-[var(--hover)] hover:text-[var(--text)]")
                 }
               >
@@ -169,7 +169,7 @@ export function App() {
             );
           })}
         </nav>
-        <div className="border-t border-[var(--border)] px-3 py-3 text-[11px] text-[var(--text-faint)]">
+        <div className="border-t border-[var(--border)] px-3 py-3 font-mono text-[10px] tracking-wide text-[var(--text-faint)]">
           {collapsed ? `v${APP_VERSION}` : `v${APP_VERSION} · ${t("app.tagline")}`}
         </div>
       </aside>
@@ -908,6 +908,10 @@ function AboutCard() {
   const { t } = useTranslation();
   const [update, setUpdate] = useState<UpdateStatus>({ state: "idle" });
   const [checking, setChecking] = useState(false);
+  // Set when the user clicks "Update & restart" from the "available" state: the
+  // click already IS the install consent, so when the download lands we restart
+  // straight away instead of parking on a second "Restart & update" button.
+  const installWhenReady = useRef(false);
 
   useEffect(() => {
     const api = window.aifight;
@@ -915,6 +919,11 @@ function AboutCard() {
     return api.onUpdateStatus((s) => {
       setUpdate(s);
       if (s.state !== "checking") setChecking(false);
+      if (s.state === "downloaded" && installWhenReady.current) {
+        installWhenReady.current = false;
+        void api.installUpdate();
+      }
+      if (s.state === "error") installWhenReady.current = false;
     });
   }, []);
 
@@ -924,6 +933,18 @@ function AboutCard() {
     void window.aifight?.checkForUpdates().catch(() => {
       setChecking(false);
       setUpdate({ state: "error", message: "" }); // surface a rejection instead of silently swallowing it
+    });
+  };
+
+  // "Update & restart" from the available state: download now, install on
+  // arrival. With automatic updates OFF this is the ONLY in-app path from
+  // "update available" to installed — without it that state was a dead end
+  // (the check surfaced the version and nothing could act on it).
+  const onUpdateAndRestart = () => {
+    installWhenReady.current = true;
+    void window.aifight?.downloadUpdate().catch(() => {
+      installWhenReady.current = false;
+      setUpdate({ state: "error", message: "" });
     });
   };
 
@@ -961,6 +982,13 @@ function AboutCard() {
             className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3.5 py-2 text-[12px] font-medium text-white transition-opacity hover:opacity-90"
           >
             {t("about.restart")}
+          </button>
+        ) : update.state === "available" ? (
+          <button
+            onClick={onUpdateAndRestart}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3.5 py-2 text-[12px] font-medium text-white transition-opacity hover:opacity-90"
+          >
+            {t("about.updateAndRestart")}
           </button>
         ) : (
           <button

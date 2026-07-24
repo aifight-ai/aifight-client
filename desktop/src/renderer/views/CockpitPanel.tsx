@@ -42,6 +42,8 @@ export interface CockpitPanelProps {
   readonly emptyTraceHint?: string;
   /** Left side of the control row (game switcher / live status / session label). */
   readonly headerLeft: ReactNode;
+  /** Right side of the top bar, before the transport (e.g. the bridge-status chip). */
+  readonly headerRight?: ReactNode;
   /**
    * Initial transport position; defaults to the tip (events.length, the final
    * board). A dashboard-opened replay passes 0 so it waits at the first frame
@@ -52,7 +54,7 @@ export interface CockpitPanelProps {
 
 export function CockpitPanel(props: CockpitPanelProps) {
   const { t } = useTranslation();
-  const { game, match, events, ownerPlayerId, ownerPrivate, traces, isLive, badge, note, emptyTraceHint, headerLeft } = props;
+  const { game, match, events, ownerPlayerId, ownerPrivate, traces, isLive, badge, note, emptyTraceHint, headerLeft, headerRight } = props;
 
   const [step, setStep] = useState(props.initialStep ?? events.length);
   const [playing, setPlaying] = useState(false);
@@ -78,6 +80,17 @@ export function CockpitPanel(props: CockpitPanelProps) {
   const visible = events.slice(0, step);
   const atEnd = step >= events.length;
 
+  // v3: which seat is "your agent" — derived from the same props the board
+  // already gets (no new data). The canvas carries it as data-owner-seat so the
+  // v3 stylesheet can paint the persistent orange edge + YOUR AGENT badge on
+  // that seat card (and only that one).
+  const ownerSeat =
+    ownerPlayerId === ""
+      ? -1
+      : match.players.findIndex(
+          (p) => (p.player_id || `p${p.position}`) === ownerPlayerId || p.agent_id === ownerPlayerId,
+        );
+
   const stepTo = (n: number) => {
     setPlaying(false);
     if (isLive) setFollowing(false);
@@ -93,33 +106,37 @@ export function CockpitPanel(props: CockpitPanelProps) {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        {headerLeft}
-        <div className="flex items-center gap-1.5">
-          {!isLive && (
-            <TransportButton title={t("cockpit.restart")} onClick={() => stepTo(0)}>
-              <RotateCcw size={15} />
+    <div className="v3-cockpit flex h-full min-h-0 flex-col gap-3">
+      {/* ① v3 顶条:对局信息(左) + 桥接芯片/走带(右) */}
+      <div className="v3-cp-top">
+        <div className="v3-cp-left">{headerLeft}</div>
+        <div className="v3-cp-right">
+          {headerRight}
+          <div className="v3-cp-transport">
+            {!isLive && (
+              <TransportButton title={t("cockpit.restart")} onClick={() => stepTo(0)}>
+                <RotateCcw size={15} />
+              </TransportButton>
+            )}
+            <TransportButton title={t("cockpit.prev")} onClick={() => stepTo(step - 1)}>
+              <SkipBack size={15} />
             </TransportButton>
-          )}
-          <TransportButton title={t("cockpit.prev")} onClick={() => stepTo(step - 1)}>
-            <SkipBack size={15} />
-          </TransportButton>
-          {isLive ? (
-            <TransportButton title={t("cockpit.liveMatch")} onClick={goLive} accent={!following}>
-              <Radio size={15} />
+            {isLive ? (
+              <TransportButton title={t("cockpit.liveMatch")} onClick={goLive} accent={!following}>
+                <Radio size={15} />
+              </TransportButton>
+            ) : (
+              <TransportButton title={playing ? t("cockpit.pause") : t("cockpit.play")} onClick={togglePlay} accent>
+                {playing ? <Pause size={15} /> : <Play size={15} />}
+              </TransportButton>
+            )}
+            <TransportButton title={t("cockpit.next")} onClick={() => stepTo(step + 1)}>
+              <SkipForward size={15} />
             </TransportButton>
-          ) : (
-            <TransportButton title={playing ? t("cockpit.pause") : t("cockpit.play")} onClick={togglePlay} accent>
-              {playing ? <Pause size={15} /> : <Play size={15} />}
-            </TransportButton>
-          )}
-          <TransportButton title={t("cockpit.next")} onClick={() => stepTo(step + 1)}>
-            <SkipForward size={15} />
-          </TransportButton>
-          <span className="ml-1 font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
-            {step}/{events.length}
-          </span>
+            <span className="v3-cp-count">
+              {step}/{events.length}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -137,11 +154,16 @@ export function CockpitPanel(props: CockpitPanelProps) {
         <div className="min-w-0 xl:flex-1">
           {/* No isLive flag to the board: the owner's OWN cards (injected upstream)
               show at full fidelity; opponents stay hidden because nothing reveals
-              them. ownerPlayerId is kept for parity with the trace attribution. */}
-          <div className="aifight-game-canvas w-full overflow-hidden rounded-xl border border-[var(--border)]" data-owner={ownerPlayerId}>
+              them. ownerPlayerId is kept for parity with the trace attribution.
+              data-owner-seat drives the v3 "YOUR AGENT" seat styling (CSS only). */}
+          <div
+            className="aifight-game-canvas"
+            data-owner={ownerPlayerId}
+            data-owner-seat={ownerSeat >= 0 ? String(ownerSeat) : undefined}
+          >
             <GameStateVisual match={match} events={visible} />
           </div>
-          <p className="mt-2 text-[12px] text-[var(--text-faint)]">{note}</p>
+          <p className="v3-board-note">{note}</p>
         </div>
         <div className="min-h-[320px] xl:h-auto xl:w-[340px] xl:shrink-0">
           <ReasoningTracePanel traces={traces} badge={badge} emptyHint={emptyTraceHint} />
@@ -166,12 +188,7 @@ function TransportButton({
     <button
       title={title}
       onClick={onClick}
-      className={
-        "flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] transition-colors " +
-        (accent
-          ? "bg-[var(--accent)] text-white hover:opacity-90"
-          : "bg-[var(--surface)] text-[var(--text-muted)] hover:bg-[var(--hover)] hover:text-[var(--text)]")
-      }
+      className={"v3-tbtn" + (accent ? " v3-tbtn--acc" : "")}
     >
       {children}
     </button>

@@ -88,7 +88,7 @@ export function TruncationBanner({ traces, isLive }: { traces: readonly BridgeDe
 
   if (raisedTo !== null) {
     return (
-      <div className="rounded-lg border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-3 py-2 text-[12px] text-[var(--text)]">
+      <div className="v3-dv-banner" data-tone="accent">
         {t("cockpit.truncFixed", { n: raisedTo })}
       </div>
     );
@@ -98,34 +98,24 @@ export function TruncationBanner({ traces, isLive }: { traces: readonly BridgeDe
   // save it permanently?" with the same one-click persist.
   if (count === 0 && healedTo !== undefined) {
     return (
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-3 py-2 text-[12px] text-[var(--text)]">
+      <div className="v3-dv-banner" data-tone="accent">
         <span className="min-w-0 flex-1">{t("cockpit.truncHealed", { n: healedTo })}</span>
-        <button
-          type="button"
-          onClick={raise}
-          disabled={busy}
-          className="shrink-0 rounded-md border border-[var(--accent)] px-2 py-1 text-[12px] font-medium text-[var(--accent)] hover:bg-[var(--accent)]/10 disabled:opacity-50"
-        >
+        <button type="button" onClick={raise} disabled={busy} className="v3-dv-btn v3-dv-btn--oline v3-dv-btn--xs shrink-0">
           {busy ? t("cockpit.truncRaising") : t("cockpit.truncSave")}
         </button>
-        {error && <span className="w-full text-[11px] text-red-500">{error}</span>}
+        {error && <span className="v3-dv-err w-full text-[11px]">{error}</span>}
       </div>
     );
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[12px] text-[var(--text)]">
-      <AlertTriangle size={15} className="shrink-0 text-amber-500" />
+    <div className="v3-dv-banner" data-tone="warn">
+      <AlertTriangle size={15} className="v3-dv-warn shrink-0" />
       <span className="min-w-0 flex-1">{t("cockpit.truncWarn", { n: count })}</span>
-      <button
-        type="button"
-        onClick={raise}
-        disabled={busy}
-        className="shrink-0 rounded-md border border-[var(--accent)] px-2 py-1 text-[12px] font-medium text-[var(--accent)] hover:bg-[var(--accent)]/10 disabled:opacity-50"
-      >
+      <button type="button" onClick={raise} disabled={busy} className="v3-dv-btn v3-dv-btn--oline v3-dv-btn--xs shrink-0">
         {busy ? t("cockpit.truncRaising") : t("cockpit.truncRaise")}
       </button>
-      {error && <span className="w-full text-[11px] text-red-500">{error}</span>}
+      {error && <span className="v3-dv-err w-full text-[11px]">{error}</span>}
     </div>
   );
 }

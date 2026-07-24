@@ -594,6 +594,7 @@ export const IPC = {
   configDeleteProfile: "config:delete-profile",
   usageGet: "usage:get",
   updateCheck: "update:check",
+  updateDownload: "update:download",
   updateInstall: "update:install",
   getAutoUpdate: "update:get-auto",
   setAutoUpdate: "update:set-auto",
@@ -718,6 +719,10 @@ export interface AifightBridgeApi {
   getUsageOverview(): Promise<UsageOverview | null>;
   /** Manually check for an app update (electron-updater). Progress arrives via onUpdateStatus. */
   checkForUpdates(): Promise<void>;
+  /** Download the update the last check surfaced (the "available" state's action).
+   * Exists so a user with automatic updates OFF still has an in-app path from
+   * "update available" to installed — without it that state is a dead end. */
+  downloadUpdate(): Promise<void>;
   /** Quit and install a downloaded update (after onUpdateStatus reports "downloaded"). */
   installUpdate(): Promise<void>;
   /** Whether automatic updates are enabled (default false = fail-closed: nothing

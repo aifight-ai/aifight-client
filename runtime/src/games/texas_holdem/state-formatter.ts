@@ -135,6 +135,34 @@ function buildStateBlock(input: TexasHoldemFormatterInput): string {
       const bb100 = handsDone > 0 ? (netBB / handsDone) * 100 : 0;
       lines.push(`  ${label}: net ${sign(net)} (${sign(netBB, 1)} BB, ${sign(bb100, 0)} bb/100)`);
     }
+  } else if (s.format !== "cash") {
+    // Tournament format (production default; the state carries no format key):
+    // restate the match clock, the blind schedule, and the win condition next
+    // to the live stacks — pure rules + state, no strategy. Mirrors the
+    // server-side house-bot formatter (internal/llmbot/pool.go) line for line,
+    // so personal agents and house bots receive the same information.
+    // Remaining hands derive from hand_num — the same field the "Hand N of M"
+    // header uses — so the two lines can never disagree.
+    const handNum = typeof s.hand_num === "number" ? s.hand_num : 0;
+    const maxHands = typeof s.max_hands === "number" ? s.max_hands : 0;
+    const sb = typeof s.small_blind === "number" ? s.small_blind : 0;
+    const bb = typeof s.big_blind === "number" ? s.big_blind : 0;
+    if (handNum > 0 && maxHands > 0) {
+      const remaining = Math.max(0, maxHands - handNum + 1);
+      lines.push(
+        `Hands left including this one: ${remaining} (the match also ends early if only one player still has chips).`,
+      );
+      if (maxHands >= 6 && sb > 0 && bb > 0) {
+        if (handNum < 6) {
+          lines.push(`Blinds double to ${sb * 2}/${bb * 2} at hand 6.`);
+        } else {
+          lines.push(`Blinds doubled at hand 6; the current level is ${sb}/${bb}.`);
+        }
+      }
+      lines.push(
+        `The match winner is the single player holding the most chips when the match ends; a tie for the most chips is a draw.`,
+      );
+    }
   }
 
   return lines.join("\n");
@@ -252,4 +280,18 @@ function formatEvent(
     default:
       return `(unhandled event: ${event.type})`;
   }
+}
+
+/**
+ * Package-internal export of the single-event narrator, so the shipped
+ * direct-LLM bridge path can render texas match history as sentences (owner
+ * 拍板 2026-07-22: 个人 Agent 与平台自营 bot 的信息呈现拉平). Not re-exported
+ * from runtime/src/index.ts.
+ */
+export function formatTexasHoldemEventLine(
+  event: Event,
+  players: readonly PlayerInfo[],
+  yourPlayerId: string,
+): string {
+  return formatEvent(event, players, yourPlayerId);
 }

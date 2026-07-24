@@ -81,6 +81,53 @@ describe("formatTexasHoldemState", () => {
     expect(out.stateBlock).toContain("-250 bb/100");
   });
 
+  it("tournament (no format key) restates match clock, blind schedule and win condition", () => {
+    // Pre-hand-6: blinds at the starting 100/200 level, doubling announced.
+    const out = formatTexasHoldemState({
+      publicState: baseState({
+        hand_num: 3,
+        max_hands: 10,
+        small_blind: 100,
+        big_blind: 200,
+      }),
+      rules: RULES,
+      players: PLAYERS,
+      recentEvents: [],
+      yourPlayerId: "p1",
+    });
+    expect(out.stateBlock).toContain(
+      "Hands left including this one: 8 (the match also ends early if only one player still has chips).",
+    );
+    expect(out.stateBlock).toContain("Blinds double to 200/400 at hand 6.");
+    expect(out.stateBlock).toContain(
+      "The match winner is the single player holding the most chips when the match ends; a tie for the most chips is a draw.",
+    );
+    // No cash-era lines may leak into a tournament prompt.
+    expect(out.stateBlock).not.toContain("Running results");
+    expect(out.stateBlock).not.toContain("bb/100");
+    expect(out.stateBlock).not.toContain("cumulative net");
+  });
+
+  it("tournament from hand 6 restates the doubled blind level from state", () => {
+    const out = formatTexasHoldemState({
+      publicState: baseState({
+        hand_num: 7,
+        max_hands: 10,
+        small_blind: 200,
+        big_blind: 400,
+      }),
+      rules: RULES,
+      players: PLAYERS,
+      recentEvents: [],
+      yourPlayerId: "p1",
+    });
+    expect(out.stateBlock).toContain(
+      "Hands left including this one: 4 (the match also ends early if only one player still has chips).",
+    );
+    expect(out.stateBlock).toContain("Blinds doubled at hand 6; the current level is 200/400.");
+    expect(out.stateBlock).not.toContain("Blinds double to");
+  });
+
   it("stateBlock contains all core fields", () => {
     const out = formatTexasHoldemState({
       publicState: baseState(),

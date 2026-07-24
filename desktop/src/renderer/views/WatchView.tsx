@@ -139,57 +139,52 @@ export function WatchView() {
     liveMatch.replayPath !== null ? replayOrigin(status?.config?.baseUrl) + liveMatch.replayPath : null;
 
   const headerLeft = isLive ? (
-    <div className="flex items-center gap-2.5">
-      <span className="text-[13px] font-medium text-[var(--text)]">{gameLabel(boardGame)}</span>
+    <div className="v3-cp-info">
+      {liveMatch.sessionId !== null && <span className="mid">{liveMatch.sessionId}</span>}
+      <b>{gameLabel(boardGame)}</b>
       {liveMatch.finished ? (
-        <span className="rounded-md bg-[var(--surface-2)] px-2 py-0.5 text-[11px] text-[var(--text-muted)]">
-          {t("cockpit.finished")}
-        </span>
+        <span className="v3-cp-fin">{t("cockpit.finished")}</span>
       ) : (
-        <span className="flex items-center gap-1.5 rounded-md bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-400">
-          <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
-          {t("cockpit.liveMatch")}
+        <span className="v3-cp-live">
+          <span className="v3-live-dot" />
+          LIVE
         </span>
       )}
-      {outcome !== null && <span className="text-[12px] font-medium text-[var(--accent)]">{outcome}</span>}
+      {outcome !== null && <span className="v3-cp-outcome">{outcome}</span>}
       {replayHref !== null && (
-        <a
-          href={replayHref}
-          target="_blank"
-          rel="noreferrer"
-          className="flex items-center gap-1 text-[12px] text-[var(--text-muted)] hover:text-[var(--text)]"
-        >
+        <a href={replayHref} target="_blank" rel="noreferrer" className="v3-cp-link">
           <ExternalLink size={13} />
           {t("cockpit.openReplay")}
         </a>
       )}
     </div>
   ) : (
-    <div className="inline-flex gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-0.5">
+    <div className="v3-dv-seg">
       {FIXTURE_GAMES.map((g) => (
-        <button
-          key={g}
-          onClick={() => setDemoGame(g)}
-          className={
-            "rounded-md px-3 py-1.5 text-[13px] transition-colors " +
-            (demoGame === g
-              ? "bg-[var(--surface)] text-[var(--text)] shadow-sm"
-              : "text-[var(--text-muted)] hover:text-[var(--text)]")
-          }
-        >
+        <button key={g} onClick={() => setDemoGame(g)} className={"v3-dv-seg-btn" + (demoGame === g ? " on" : "")}>
           {gameLabel(g)}
         </button>
       ))}
-      <span className="ml-1 flex items-center px-1.5 text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
+      <span className="ml-1 flex items-center px-1.5 font-mono text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
         {t("cockpit.demoMatch")}
       </span>
     </div>
   );
 
+  // v3 顶条右侧:桥接状态芯片(真实 bridge phase,running 时附直连标注)。
+  const bridgeOnline = status?.phase === "running";
+  const bridgeChip = (
+    <span className="v3-bridge-chip" data-on={bridgeOnline ? "1" : "0"} title={status?.message ?? undefined}>
+      <i />
+      {t(`bridge.phase.${status?.phase ?? "idle"}`)}
+      {bridgeOnline ? ` · ${t("app.tagline")}` : ""}
+    </span>
+  );
+
   return (
     <div className="flex h-full flex-col gap-3">
       {!isLive && (
-        <div className="shrink-0 rounded-lg border border-[var(--accent)]/25 bg-[var(--accent-soft)] px-3.5 py-2.5 text-[12px] text-[var(--accent-text)]">
+        <div className="v3-dv-banner shrink-0" data-tone="accent">
           {t("watch.demoBanner")}
         </div>
       )}
@@ -207,6 +202,7 @@ export function WatchView() {
           note={isLive ? t("cockpit.liveNote") : t("cockpit.note")}
           emptyTraceHint={isLive ? t("cockpit.waitingTrace") : undefined}
           headerLeft={headerLeft}
+          headerRight={bridgeChip}
         />
       </div>
     </div>
@@ -220,10 +216,7 @@ function ReplayPane({ replay, onClose }: { replay: ReplayState; onClose: () => v
   const intent = replay.intent;
 
   const closeBtn = (
-    <button
-      onClick={onClose}
-      className="flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-[12px] text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
-    >
+    <button onClick={onClose} className="v3-dv-btn v3-dv-btn--ghost v3-dv-btn--sm">
       <X size={14} />
       {t("watch.closeReplay")}
     </button>
@@ -260,17 +253,10 @@ function ReplayPane({ replay, onClose }: { replay: ReplayState; onClose: () => v
       {closeBtn}
       <span className="text-[13px] font-medium text-[var(--text)]">{gameLabel(state.game)}</span>
       {intent.resultLabel !== undefined && intent.resultLabel !== "" && (
-        <span className="rounded-md bg-[var(--surface-2)] px-2 py-0.5 text-[11px] text-[var(--text-muted)]">
-          {intent.resultLabel}
-        </span>
+        <span className="v3-dv-chip">{intent.resultLabel}</span>
       )}
       {intent.replayUrl !== undefined && intent.replayUrl !== "" && (
-        <a
-          href={intent.replayUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="flex items-center gap-1 text-[12px] text-[var(--text-muted)] hover:text-[var(--text)]"
-        >
+        <a href={intent.replayUrl} target="_blank" rel="noreferrer" className="v3-cp-link">
           <ExternalLink size={13} />
           {t("cockpit.openReplay")}
         </a>

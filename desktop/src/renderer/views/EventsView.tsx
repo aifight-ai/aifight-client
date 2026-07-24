@@ -69,11 +69,7 @@ export function EventsView() {
   const events = all.filter((ev) => filter === "all" || ev.status === filter);
 
   const right = (
-    <button
-      onClick={() => setNonce((n) => n + 1)}
-      title={t("common.refresh")}
-      className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
-    >
+    <button onClick={() => setNonce((n) => n + 1)} title={t("common.refresh")} className="v3-dv-iconbtn">
       <RotateCw size={14} className={state.kind === "loading" ? "animate-spin" : ""} />
     </button>
   );
@@ -85,16 +81,9 @@ export function EventsView() {
       <p className="mb-3 text-[12px] text-[var(--text-muted)]">{t("events.regNote")}</p>
 
       {state.kind === "ready" && all.length > 0 && (
-        <div className="mb-3 inline-flex gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-0.5">
+        <div className="v3-dv-seg mb-3">
           {STATUS_FILTERS.map((s) => (
-            <button
-              key={s}
-              onClick={() => setFilter(s)}
-              className={
-                "rounded-md px-2.5 py-1 text-[12px] transition-colors " +
-                (filter === s ? "bg-[var(--surface)] text-[var(--text)] shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text)]")
-              }
-            >
+            <button key={s} onClick={() => setFilter(s)} className={"v3-dv-seg-btn" + (filter === s ? " on" : "")}>
               {filterLabel(s)}
             </button>
           ))}
@@ -112,7 +101,7 @@ export function EventsView() {
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="font-display text-[18px] leading-snug text-[var(--text)]">{ev.title}</h3>
+                    <h3 className="v3-dv-display text-[18px] leading-snug text-[var(--text)]">{ev.title}</h3>
                     {ev.status !== "" && <Chip tone={statusTone(ev.status)}>{statusLabel(ev.status)}</Chip>}
                   </div>
                   {ev.subtitle !== "" && <p className="mt-1 text-[13px] text-[var(--text-muted)]">{ev.subtitle}</p>}
@@ -121,7 +110,7 @@ export function EventsView() {
                   href={`${origin}/events/${encodeURIComponent(ev.slug)}`}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3.5 py-2 text-[12px] font-medium text-white transition-opacity hover:opacity-90"
+                  className="v3-dv-btn v3-dv-btn--primary v3-dv-btn--sm shrink-0"
                 >
                   <ExternalLink size={13} />
                   {t("events.view")}
@@ -158,7 +147,7 @@ export function EventsView() {
       )}
       {state.kind === "ready" && events.length === 0 && (
         <Card className="px-4 py-14 text-center">
-          <div className="font-display text-[40px] italic leading-none text-[var(--border)]">—</div>
+          <div className="v3-dv-display text-[40px] leading-none text-[var(--border)]">—</div>
           <div className="mt-3 text-[13px] text-[var(--text-muted)]">{all.length === 0 ? t("events.empty") : t("events.noMatch")}</div>
         </Card>
       )}

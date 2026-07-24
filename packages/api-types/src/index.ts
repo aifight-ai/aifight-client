@@ -220,41 +220,31 @@ export interface AgentRecentMatch {
   id: string;
   public_replay_id?: string;
   game: string;
+  /**
+   * Match track: one of the public modes — "ranked" (community), "friendly"
+   * (challenge), "benchmark", "tournament", "event_final". Absent on older
+   * servers; render nothing then.
+   */
+  mode?: string;
   result?: GameResult;
   agent_result?: string;  // "win" | "loss" | "draw" — resolved server-side by player_id
   opponent_names?: string[];
   finished_at?: string;
   duration_ms?: number;
+  /** Total seats at the table (this agent included). */
+  player_count?: number;
+  /**
+   * Table strength: average pre-match rating across ALL seats (this agent
+   * included; track-correct — benchmark matches read the benchmark track;
+   * unrated players count at the 1500 baseline). Absent when unknown.
+   */
+  avg_player_rating?: number;
 }
 
 export interface AgentRatingHistory {
   game: string;
   rating: number;
   recorded_at: string;
-}
-
-/** EA4 — one opponent in an Agent's public head-to-head breakdown. */
-export interface AgentOpponent {
-  opponent_id?: string;       // present only when the opponent is linkable
-  name: string;
-  is_mystery: boolean;
-  linkable: boolean;
-  games: number;
-  wins: number;
-  losses: number;
-  draws: number;
-  win_rate: number;
-  games_list: string[];
-  last_played_at?: string;
-}
-
-export interface AgentOpponentsResponse {
-  agent_id: string;
-  opponents: AgentOpponent[];
-  count: number;
-  total_opponents: number;
-  matches_scanned: number;
-  scan_limit: number;
 }
 
 export interface AgentProfileRanking {

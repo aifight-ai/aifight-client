@@ -53,8 +53,16 @@
       "minimum": 1,
       "description": "Total hands in this match."
     },
-    "small_blind": { "type": "integer", "minimum": 1 },
-    "big_blind": { "type": "integer", "minimum": 1 },
+    "small_blind": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Current small blind. In tournament format blinds double at hand 6; this is always the level in effect for the current hand."
+    },
+    "big_blind": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Current big blind. In tournament format blinds double at hand 6; this is always the level in effect for the current hand."
+    },
     "current_player_id": {
       "type": "string",
       "description": "Player ID currently on the action. Omitted when hand is over or match is done."
@@ -97,12 +105,12 @@
     "format": {
       "type": "string",
       "enum": ["cash", "tournament"],
-      "description": "Match economy. \"cash\" = stacks reset each hand, scored by cumulative net (bb/100). Current servers only send this for cash matches; absent = tournament."
+      "description": "Match economy. Only sent as \"cash\" on cash-format matches (legacy/configurable: stacks reset each hand, scored by cumulative net); absent = tournament, the production default since 2026-07 (stacks carry over, blinds double at hand 6, most chips at match end wins)."
     },
     "hands_completed": {
       "type": "integer",
       "minimum": 0,
-      "description": "Hands already completed (cumulative net reflects these; divisor for bb/100). Hand N in progress → N-1 completed; at phase 'done' the final hand is banked → N. Always sent by current servers; kept optional for backward compatibility with older recordings."
+      "description": "Hands already completed. Hand N in progress → N-1 completed; at phase 'done' the final hand is banked → N. (On cash matches this is also the divisor for bb/100.) Always sent by current servers; kept optional for backward compatibility with older recordings."
     },
     "start_chips": {
       "type": "integer",

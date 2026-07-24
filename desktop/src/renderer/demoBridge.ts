@@ -237,6 +237,7 @@ export function installDemoBridge(): void {
     onNavigate: noopOff,
     getUsageOverview: () => Promise.resolve(USAGE),
     checkForUpdates: () => Promise.resolve(),
+    downloadUpdate: () => Promise.resolve(),
     installUpdate: () => Promise.resolve(),
     getAutoUpdate: () => Promise.resolve(false),
     setAutoUpdate: () => Promise.resolve({ ok: true }),

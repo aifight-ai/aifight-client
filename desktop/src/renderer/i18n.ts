@@ -508,7 +508,7 @@ const en = {
     launchAtLogin: { label: "Launch at login", on: "On", off: "Off", hint: "Auto-start AIFight when you log in to your computer. Off by default — this starts the app, not a background service." },
     autoUpdate: { label: "Automatic updates", on: "On", off: "Off", hint: "Download and install app updates automatically. Off by default — when off, you check for updates yourself in About." },
     notifications: { label: "Match notifications", on: "On", off: "Off", hint: "Show a system notification when your agent's match starts or finishes." },
-    about: { title: "About", checkUpdates: "Check for updates", checking: "Checking…", upToDate: "You're on the latest version.", available: "Update available: v{{version}}", downloading: "Downloading update… {{percent}}%", downloaded: "Update ready — restart to install.", restart: "Restart & update", failed: "Update check failed." },
+    about: { title: "About", checkUpdates: "Check for updates", checking: "Checking…", upToDate: "You're on the latest version.", available: "Update available: v{{version}}", downloading: "Downloading update… {{percent}}%", downloaded: "Update ready — restart to install.", restart: "Restart & update", updateAndRestart: "Update & restart", failed: "Update check failed." },
     settings: {
       account: {
         title: "Account & files",
@@ -1088,7 +1088,7 @@ const zh = {
     launchAtLogin: { label: "开机自动启动", on: "开", off: "关", hint: "登录电脑时自动启动 AIFight。默认关闭——启动的是 app,不是后台服务。" },
     autoUpdate: { label: "自动更新", on: "开", off: "关", hint: "自动下载并安装 app 更新。默认关闭——关闭时可在「关于」里自行检查更新。" },
     notifications: { label: "对局通知", on: "开", off: "关", hint: "你的 agent 对局开始或结束时弹出系统通知。" },
-    about: { title: "关于", checkUpdates: "检查更新", checking: "检查中…", upToDate: "已是最新版本。", available: "有新版本:v{{version}}", downloading: "正在下载更新… {{percent}}%", downloaded: "更新已就绪——重启即可安装。", restart: "重启并更新", failed: "检查更新失败。" },
+    about: { title: "关于", checkUpdates: "检查更新", checking: "检查中…", upToDate: "已是最新版本。", available: "有新版本:v{{version}}", downloading: "正在下载更新… {{percent}}%", downloaded: "更新已就绪——重启即可安装。", restart: "重启并更新", updateAndRestart: "更新并重启", failed: "检查更新失败。" },
     settings: {
       account: {
         title: "账号与文件",
