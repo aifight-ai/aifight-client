@@ -165,6 +165,17 @@ export interface WSClientOptions {
    *  frozen). On timeout `ws` emits an error → WSConnectError → retriable →
    *  the backoff loop continues. Defaults to DEFAULT_HANDSHAKE_TIMEOUT_MS. */
   handshakeTimeoutMs?: number;
+  /** Inbound-liveness watchdog: if NOTHING arrives from the server (no
+   *  message, ping or pong frame) for this long while connected, the link is
+   *  presumed half-open (proxy/NAT black hole, server hard-killed mid-deploy —
+   *  the 2026-07-24 zombie-tunnel field failure: a reconnect "succeeded" into
+   *  a local proxy whose upstream was dead, and with no inbound check the
+   *  bridge sat on the corpse forever) and the socket is terminated locally.
+   *  The resulting 1006 close drives the normal reconnect path. Both sides
+   *  heartbeat (client ping default 25s, server ping ~25s), so a healthy link
+   *  sees inbound traffic at least every ~25s. 0 disables the watchdog.
+   *  Defaults to DEFAULT_LIVENESS_TIMEOUT_MS. */
+  livenessTimeoutMs?: number;
 }
 
 const DEFAULT_WELCOME_TIMEOUT_MS = 10_000;
@@ -172,6 +183,9 @@ const DEFAULT_WELCOME_TIMEOUT_MS = 10_000;
 // persistence across a long outage is the reconnect loop's job (unlimited
 // attempts), never a single attempt's.
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 20_000;
+// Liveness ceiling: > 2 heartbeat intervals (25s each side) + slack, so it can
+// only fire when the pipe is genuinely dead — never on a merely slow server.
+const DEFAULT_LIVENESS_TIMEOUT_MS = 60_000;
 const DEFAULT_PING_INTERVAL_MS = 25_000;
 // R13-F03: 2 MiB is comfortably above the largest legitimate AIFight frame — a
 // full-history reconnect action_request (event_history capped at 65536 events by
@@ -263,6 +277,7 @@ function stringifyAbortReason(reason: unknown): string {
 /** @internal — passed from createWSClient to WSClientImpl constructor. */
 interface WSClientInternalOpts {
   pingIntervalMs?: number;
+  livenessTimeoutMs?: number;
   signal?: AbortSignal;
 }
 
@@ -273,6 +288,12 @@ class WSClientImpl {
   #state: "connected" | "closing" | "closed" = "connected";
   // Step 5a fields — also #private, also absent from .d.ts.
   #pingTimer: NodeJS.Timeout | null = null;
+  // Inbound-liveness watchdog (2026-07-24 zombie-tunnel fix): timestamp of the
+  // last frame of ANY kind received from the server, plus the timer that
+  // terminates a half-open socket when it goes stale. See
+  // WSClientOptions.livenessTimeoutMs for the field-failure story.
+  #livenessTimer: NodeJS.Timeout | null = null;
+  #lastInboundAt = 0;
   #abortSignal: AbortSignal | null = null;
   // Stored so close() can detach the listener. AbortSignal exposes
   // no isAborted-after-removal observable, so we track the handler.
@@ -342,6 +363,7 @@ class WSClientImpl {
     // so we own a bare socket and must wire everything we need.
 
     this.#socket.on("message", (data: Buffer | string | ArrayBuffer) => {
+      this.#lastInboundAt = Date.now();
       this.#handleInboundFrame(data);
     });
 
@@ -380,6 +402,38 @@ class WSClientImpl {
           }
         }
       }, pingInterval);
+    }
+
+    // ─── Inbound-liveness watchdog (2026-07-24 zombie-tunnel fix) ───
+    //
+    // The heartbeat above only SENDS pings; nothing ever verified that
+    // anything came BACK. On a half-open link (local proxy alive, upstream
+    // dead — exactly what a server redeploy behind a fake-IP proxy produces)
+    // every ping "succeeds" into the local socket buffer and the connection
+    // looks healthy forever. Track inbound frames of every kind and terminate
+    // the socket when the window goes silent; terminate() (not close()) since
+    // a black-holed link cannot complete a close handshake. The "close"
+    // listener then fires with 1006 → retriable → the reconnect loop takes
+    // over with its usual backoff.
+    const livenessTimeout = opts.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS;
+    if (livenessTimeout > 0) {
+      this.#lastInboundAt = Date.now();
+      this.#socket.on("ping", () => {
+        // `ws` auto-replies with a pong; we only record the inbound sign of life.
+        this.#lastInboundAt = Date.now();
+      });
+      this.#socket.on("pong", () => {
+        this.#lastInboundAt = Date.now();
+      });
+      this.#livenessTimer = setInterval(() => {
+        if (Date.now() - this.#lastInboundAt > livenessTimeout) {
+          try {
+            this.#socket.terminate();
+          } catch {
+            /* the close listener owns state transitions */
+          }
+        }
+      }, Math.min(Math.max(livenessTimeout / 2, 1), 15_000));
     }
 
     // ─── Post-connect abort wiring (Step 5a) ────────────────────────
@@ -602,6 +656,10 @@ class WSClientImpl {
     if (this.#pingTimer) {
       clearInterval(this.#pingTimer);
       this.#pingTimer = null;
+    }
+    if (this.#livenessTimer) {
+      clearInterval(this.#livenessTimer);
+      this.#livenessTimer = null;
     }
     if (this.#abortSignal && this.#abortHandler) {
       this.#abortSignal.removeEventListener("abort", this.#abortHandler);
@@ -1036,6 +1094,7 @@ export async function createWSClient(
       settle(() => {
         const client = new WSClientImpl(socket, welcome, {
           pingIntervalMs: opts.pingIntervalMs,
+          livenessTimeoutMs: opts.livenessTimeoutMs,
           signal: opts.signal,
         });
         resolve(client);

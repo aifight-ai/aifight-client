@@ -1903,3 +1903,76 @@ describe("createWSClient — maxPayload bound (R13-F03)", () => {
     }
   });
 });
+
+describe("createWSClient — inbound-liveness watchdog (2026-07-24 zombie-tunnel fix)", () => {
+  it("terminates a half-open connection when nothing inbound arrives within livenessTimeoutMs", async () => {
+    // The field failure: a reconnect "succeeds" into a local proxy whose
+    // upstream is dead. Reproduce the inbound silence: the server sends a
+    // valid welcome then never sends anything again — no messages, no pings.
+    // Client pings are disabled so outbound traffic can't mask the silence
+    // (outbound writes into a black hole "succeed" anyway).
+    const server = await startTestServer({
+      onConnection: (ws) => {
+        ws.send(validWelcomeFrame());
+      },
+    });
+    try {
+      const client = await createWSClient({
+        url: server.url,
+        apiKey: VALID_API_KEY,
+        expectedProtocolVersion: "1.0.0",
+        pingIntervalMs: 0,
+        livenessTimeoutMs: 250,
+      });
+      const started = Date.now();
+      const closed = await new Promise<WSCloseInfo>((resolve) => {
+        client.onClose(resolve);
+      });
+      // terminate() surfaces as an abnormal close — 1006 is on the reconnect
+      // whitelist, so the reconnect loop takes over from here.
+      expect(closed.code).toBe(1006);
+      expect(client.state).toBe("closed");
+      // Must fire promptly after the ~250ms window — never hang.
+      expect(Date.now() - started).toBeLessThan(5_000);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("stays connected while inbound traffic keeps flowing", async () => {
+    // Server pings every 50ms — well inside the 300ms liveness window. A
+    // healthy link must survive several full windows untouched.
+    const server = await startTestServer({
+      onConnection: (ws) => {
+        ws.send(validWelcomeFrame());
+        const timer = setInterval(() => {
+          try {
+            ws.ping();
+          } catch {
+            clearInterval(timer);
+          }
+        }, 50);
+        ws.once("close", () => clearInterval(timer));
+      },
+    });
+    try {
+      const client = await createWSClient({
+        url: server.url,
+        apiKey: VALID_API_KEY,
+        expectedProtocolVersion: "1.0.0",
+        pingIntervalMs: 0,
+        livenessTimeoutMs: 300,
+      });
+      let closed = false;
+      client.onClose(() => {
+        closed = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      expect(closed).toBe(false);
+      expect(client.state).toBe("connected");
+      await client.close();
+    } finally {
+      await server.close();
+    }
+  });
+});

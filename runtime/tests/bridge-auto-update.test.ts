@@ -71,15 +71,20 @@ describe("bridge idle auto update", () => {
     expect(calls).toEqual([]);
   });
 
-  it("treats connected and queuing as safe idle states only", () => {
+  it("treats only match-arranging/playing phases as busy — closed and not-connected are safe", () => {
+    // 2026-07-24 field failure: the old allow-list called "closed" busy, so a
+    // dead bridge could never self-update ("update available, but agent is
+    // busy (closed)" forever). Only phases an update restart could corrupt
+    // count as busy now.
     expect(isSafeAutoUpdatePhase("connected")).toBe(true);
     expect(isSafeAutoUpdatePhase("queuing")).toBe(true);
+    expect(isSafeAutoUpdatePhase("closed")).toBe(true);
+    expect(isSafeAutoUpdatePhase(null)).toBe(true);
     expect(isSafeAutoUpdatePhase("confirming")).toBe(false);
     expect(isSafeAutoUpdatePhase("matching")).toBe(false);
     expect(isSafeAutoUpdatePhase("in_match")).toBe(false);
     expect(isSafeAutoUpdatePhase("deciding")).toBe(false);
     expect(isSafeAutoUpdatePhase("reporting")).toBe(false);
-    expect(isSafeAutoUpdatePhase(null)).toBe(false);
   });
 
   it("waits for its configured delay and interval instead of checking continuously", async () => {

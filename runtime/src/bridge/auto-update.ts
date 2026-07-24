@@ -204,7 +204,23 @@ export async function performBridgePackageUpdate(opts: {
 }
 
 export function isSafeAutoUpdatePhase(phase: string | null): boolean {
-  return phase === "connected" || phase === "queuing";
+  // Busy = a match is being arranged or played — the only states an update
+  // restart could corrupt. Everything else is safe, INCLUDING "closed" and
+  // null (not connected): a dead agent is exactly when updating helps most.
+  // The old allow-list (connected|queuing) classified "closed" as busy, so a
+  // permanently-disconnected bridge could never self-update — the 2026-07-24
+  // field failure where a beta.14 service logged
+  // "update available, but agent is busy (closed)" forever.
+  switch (phase) {
+    case "confirming":
+    case "matching":
+    case "in_match":
+    case "deciding":
+    case "reporting":
+      return false;
+    default:
+      return true;
+  }
 }
 
 /** R13-F04: an EXACT semver (optional leading "v", optional prerelease) — never a

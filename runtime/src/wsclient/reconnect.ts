@@ -106,6 +106,8 @@ export interface ReconnectingWSClientOptions {
   maxAttempts?: number;
   welcomeTimeoutMs?: number;
   pingIntervalMs?: number;
+  /** Passed through to each inner WSClient — see WSClientOptions.livenessTimeoutMs. */
+  livenessTimeoutMs?: number;
   signal?: AbortSignal;
   /** R13-F08: called after a reconnect attempt failed with a 401 handshake, so
    *  a credential rotated out from under this process (e.g. re-pairing rewrote
@@ -380,6 +382,7 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
           expectedProtocolVersion: this.#opts.expectedProtocolVersion,
           welcomeTimeoutMs: this.#opts.welcomeTimeoutMs,
           pingIntervalMs: this.#opts.pingIntervalMs,
+          livenessTimeoutMs: this.#opts.livenessTimeoutMs,
           signal: this.#opts.signal,
         });
         innerSucceeded = true;
