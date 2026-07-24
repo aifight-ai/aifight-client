@@ -420,6 +420,49 @@ describe("createWSClient — connect errors (TCP/TLS layer)", () => {
     // Message should mention the URL or contain a network-level hint.
     expect(err.message).toMatch(/connect failed|ECONNREFUSED|EADDRNOTAVAIL/i);
   });
+
+  it("case 3b: server accepts TCP but never answers the upgrade → WSConnectError within handshakeTimeoutMs (2026-07-24 wedge fix)", async () => {
+    // The field failure: an edge that accepts the TCP connection while the
+    // upstream is mid-restart. Without a handshake timeout the upgrade waits
+    // forever, `createWSClient` never settles, and the reconnect loop wedges
+    // in "connecting" with its attempt counter frozen. A raw TCP server that
+    // accepts and stays silent reproduces the hang deterministically.
+    const { createServer: createTcpServer } = await import("node:net");
+    const accepted = new Set<import("node:net").Socket>();
+    const silent = createTcpServer((sock) => {
+      // Accept and say nothing — never complete the HTTP upgrade. Track the
+      // socket: a server that never reads leaves the stream paused, so the
+      // client's FIN never surfaces as "end" and server.close()'s callback
+      // would wait forever. Explicit destroy in the finally is required.
+      accepted.add(sock);
+      sock.on("close", () => accepted.delete(sock));
+    });
+    await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve));
+    const port = (silent.address() as AddressInfo).port;
+
+    const started = Date.now();
+    let caught: unknown = null;
+    try {
+      await createWSClient({
+        url: `ws://127.0.0.1:${port}/api/ws`,
+        apiKey: VALID_API_KEY,
+        expectedProtocolVersion: "1.0.0",
+        welcomeTimeoutMs: 5_000,
+        handshakeTimeoutMs: 300,
+      });
+    } catch (e) {
+      caught = e;
+    } finally {
+      for (const sock of accepted) sock.destroy();
+      await new Promise<void>((resolve) => silent.close(() => resolve()));
+    }
+
+    expect(caught).toBeInstanceOf(WSConnectError);
+    // Must settle promptly after the configured ceiling — NOT hang. Generous
+    // upper bound for slow CI, but far below any OS-level TCP timeout.
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect((caught as WSConnectError).message).toMatch(/handshake|timed out|connect failed/i);
+  });
 });
 
 describe("createWSClient — welcome timeout", () => {

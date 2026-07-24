@@ -156,9 +156,22 @@ export interface WSClientOptions {
    *  above any legitimate AIFight frame, so an unbounded default would let a
    *  buggy/hostile server pin ~100 MiB of client memory per frame. */
   maxPayloadBytes?: number;
+  /** Hard ceiling on the pre-open phase — DNS + TCP + TLS + HTTP upgrade
+   *  (`ws` handshakeTimeout). Without it a half-open connect (e.g. the edge
+   *  accepting TCP while the upstream is mid-restart) hangs `createWSClient`
+   *  FOREVER: the welcome timer only arms at WS "open", so the reconnect loop
+   *  sits in "connecting" with no further attempts — the exact 2026-07-24
+   *  field failure (app stuck 2600+s after a server deploy, attempt counter
+   *  frozen). On timeout `ws` emits an error → WSConnectError → retriable →
+   *  the backoff loop continues. Defaults to DEFAULT_HANDSHAKE_TIMEOUT_MS. */
+  handshakeTimeoutMs?: number;
 }
 
 const DEFAULT_WELCOME_TIMEOUT_MS = 10_000;
+// Pre-open ceiling: generous for slow links yet far under the 300s turn clock;
+// persistence across a long outage is the reconnect loop's job (unlimited
+// attempts), never a single attempt's.
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 20_000;
 const DEFAULT_PING_INTERVAL_MS = 25_000;
 // R13-F03: 2 MiB is comfortably above the largest legitimate AIFight frame — a
 // full-history reconnect action_request (event_history capped at 65536 events by
@@ -712,6 +725,10 @@ export async function createWSClient(
       socket = new WebSocket(opts.url, {
         headers,
         maxPayload: opts.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES,
+        // Bound the whole pre-open phase (DNS/TCP/TLS/upgrade). See the
+        // handshakeTimeoutMs option doc — without this a half-open connect
+        // wedges the reconnect loop in "connecting" forever.
+        handshakeTimeout: opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
       });
     } catch (e) {
       // Synchronous construction failure (e.g. invalid URL parse).
