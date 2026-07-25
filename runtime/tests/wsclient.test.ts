@@ -27,6 +27,7 @@ import {
 } from "../src/wsclient/client";
 import {
   WSAbortedError,
+  WSClientMismatchError,
   WSClosedError,
   WSConnectError,
   WSHandshakeError,
@@ -300,6 +301,91 @@ describe("createWSClient — happy path", () => {
     } finally {
       await client.close();
     }
+  });
+
+  // The device id cannot tell the app apart from the CLI — both read the same
+  // device.key out of the shared AIFight home. This header is what lets the
+  // server hold an agent to ONE client, so it has to actually reach the wire.
+  it("sends X-AIFight-Client-Kind when clientKind is provided", async () => {
+    server = await startTestServer({
+      onConnection: (ws) => ws.send(validWelcomeFrame("1.0.0")),
+    });
+    const client = await createWSClient(defaultOpts({ clientKind: "cli" }));
+    try {
+      expect(server.lastHeaders()["x-aifight-client-kind"]).toBe("cli");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("omits X-AIFight-Client-Kind when clientKind is absent", async () => {
+    server = await startTestServer({
+      onConnection: (ws) => ws.send(validWelcomeFrame("1.0.0")),
+    });
+    const client = await createWSClient(defaultOpts());
+    try {
+      expect(server.lastHeaders()["x-aifight-client-kind"]).toBeUndefined();
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("case 2d: HTTP 403 client_mismatch body → WSClientMismatchError naming the incumbent", async () => {
+    server = await startTestServer({
+      reject: {
+        status: 403,
+        body: '{"error":"client_mismatch","reason":"client_mismatch","bound_client":"desktop"}',
+      },
+    });
+
+    let caught: unknown = null;
+    try {
+      await createWSClient(defaultOpts({ clientKind: "cli" }));
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(WSClientMismatchError);
+    // Subclass of WSHandshakeError so the reconnect layer treats it as terminal:
+    // retrying cannot help, only re-pairing from the Dashboard can.
+    expect(caught).toBeInstanceOf(WSHandshakeError);
+    expect((caught as WSClientMismatchError).statusCode).toBe(403);
+    // The incumbent's name is what the user-facing message says out loud.
+    expect((caught as WSClientMismatchError).boundClient).toBe("desktop");
+  });
+
+  it("client_mismatch without a bound_client field still classifies", async () => {
+    server = await startTestServer({
+      reject: { status: 403, body: '{"error":"client_mismatch","reason":"client_mismatch"}' },
+    });
+
+    let caught: unknown = null;
+    try {
+      await createWSClient(defaultOpts({ clientKind: "desktop" }));
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(WSClientMismatchError);
+    // Empty, not "undefined" — the message falls back to generic wording.
+    expect((caught as WSClientMismatchError).boundClient).toBe("");
+  });
+
+  it("device_mismatch is not misread as client_mismatch", async () => {
+    server = await startTestServer({
+      reject: { status: 403, body: '{"error":"device_mismatch","reason":"device_mismatch"}' },
+    });
+
+    let caught: unknown = null;
+    try {
+      await createWSClient(defaultOpts({ clientKind: "cli", deviceId: "a".repeat(64) }));
+    } catch (e) {
+      caught = e;
+    }
+
+    // Different cause, different remedy, different words in front of the user.
+    expect(caught).toBeInstanceOf(WSDeviceMismatchError);
+    expect(caught).not.toBeInstanceOf(WSClientMismatchError);
   });
 
   it("happy path with v-prefixed server version still matches major", async () => {

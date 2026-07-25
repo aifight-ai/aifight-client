@@ -33,6 +33,16 @@ export interface BridgeStatus {
   readonly phase: BridgeHostPhase;
   readonly message?: string;
   readonly config?: BridgeConfigSummary;
+  /**
+   * Optional i18n key suffix for `message`, when main KNOWS the exact condition
+   * (e.g. "lockHeld"). The renderer looks up `bridgeError.<code>` with `message`
+   * as the defaultValue, so an unknown/missing key still renders the English
+   * text instead of a blank banner. Absent for pass-through errors, whose text
+   * comes from the server or a thrown Error and cannot be keyed.
+   */
+  readonly code?: string;
+  /** Interpolation values for `code`'s translation (e.g. { pid: 4211 }). */
+  readonly codeParams?: Readonly<Record<string, string | number>>;
 }
 
 /**

@@ -30,6 +30,7 @@ import {
   type WSMessageHandler,
   type WSErrorHandler,
 } from "./client";
+import { CLOSE_CODE_REPLACED } from "./capabilities";
 // rev 2 Codex C3: deliberately NOT importing WSCloseHandler — facade.onClose
 // uses local ReconnectCloseHandler. WSCloseInfo is imported only for the
 // internal close-code dispatch path; it is never exposed via facade.onClose.
@@ -96,18 +97,31 @@ export interface ReconnectingWSClientOptions {
   apiKey: string;
   /** Per-device id sent as X-Device-Id (single-device binding / anti-theft). */
   deviceId?: string;
+  /** Which program is running this agent — see WSClientOptions.clientKind. */
+  clientKind?: string;
   expectedProtocolVersion: string;
   initialBackoffMs?: number;
   backoffFactor?: number;
   maxBackoffMs?: number;
   jitter?: JitterStrategy;
   /** Default: undefined → no cap (Roy 拍板 #3). Caller controls termination
-   *  via signal + AbortController.abort(timeoutMs). */
+   *  via signal + AbortController.abort(timeoutMs).
+   *
+   *  Counts CONSECUTIVE failures. Since 2026-07-24 a connect that succeeds but
+   *  dies again within `stabilityWindowMs` counts as a continuation rather than
+   *  a reset, so a link that flaps fast enough can now exhaust this cap even
+   *  though every attempt technically connected. The bridge sets no cap — it
+   *  must never give up — so this only affects direct callers of the facade. */
   maxAttempts?: number;
   welcomeTimeoutMs?: number;
   pingIntervalMs?: number;
   /** Passed through to each inner WSClient — see WSClientOptions.livenessTimeoutMs. */
   livenessTimeoutMs?: number;
+  /** How long a session must survive after welcome before its eventual close
+   *  counts as a fresh disconnect cycle (backoff restarts at 1s). Sessions
+   *  shorter than this are treated as flaps and keep escalating the existing
+   *  curve. Default DEFAULT_STABILITY_WINDOW_MS (30s). */
+  stabilityWindowMs?: number;
   signal?: AbortSignal;
   /** R13-F08: called after a reconnect attempt failed with a 401 handshake, so
    *  a credential rotated out from under this process (e.g. re-pairing rewrote
@@ -162,17 +176,69 @@ const DEFAULT_MAX_BACKOFF_MS = 30_000;
 const AUTH_MAX_BACKOFF_MS = 60_000;
 const DEFAULT_JITTER: JitterStrategy = "full";
 
+/** A session that dies sooner than this after a successful welcome is a FLAP,
+ *  not the start of a fresh disconnect cycle — so it must NOT reset the backoff
+ *  curve. Without this the curve is pinned at ~1s forever whenever the server
+ *  drops us immediately every time (2026-07-24: two local clients sharing one
+ *  agent identity evicted each other ~30×/min indefinitely). 30s is far longer
+ *  than any storm's session (~1s) yet short enough that a real session — even a
+ *  brief one — still counts as "connected once" and restarts from 1s. */
+const DEFAULT_STABILITY_WINDOW_MS = 30_000;
+
+/** Yield curve for CLOSE_CODE_REPLACED (imported from ./capabilities, which also
+ *  declares the handshake capability that lets the server send it at all).
+ *
+ *  Equal jitter, NOT the default full jitter: full draws from [0, base) and
+ *  would happily pick 0.4s, which is exactly the thrash we are yielding to
+ *  avoid. So the real delay is [base/2, base) — 30-60s on the first eviction,
+ *  rising to 5-10 minutes at the ceiling.
+ *
+ *  The ceiling is a deliberate trade. Two clients that share one agent are a
+ *  MISCONFIGURATION, and the useful outcome is that one of them plainly wins:
+ *  a hold has to outlast a match, and a single decision alone can take minutes
+ *  (llm_call_timeout_seconds defaults to 270s). A shorter ceiling looked safer —
+ *  it kept a yield under the server's 180s disconnect grace — but that safety
+ *  was illusory (one failed attempt inside a yield already doubles the gap past
+ *  it) and it bought a standoff where the seat changes hands every minute or two
+ *  and NEITHER side ever completes a game. The residual risk is narrow: being
+ *  offline through a long yield only forfeits a match if the peer that took the
+ *  seat ALSO dies during it.
+ *
+ *  What this curve is FOR has narrowed since it was written. The server now
+ *  settles the fight outright: an agent is bound to one device AND one client
+ *  kind, and the loser is refused at the handshake (403 client_mismatch) instead
+ *  of being let in to evict the winner. Two CURRENT clients can no longer storm.
+ *
+ *  It stays because of the mixed-version window, which is not hypothetical: a
+ *  client too old to send X-AIFight-Client-Kind is deliberately waved through and
+ *  binds nothing (the compatibility rule that keeps un-updated installs alive).
+ *  So an updated app beside a not-yet-updated CLI service — the exact shape of the
+ *  2026-07-24 report — can still trade the seat, and only the updated side is
+ *  capable of standing down. Damping one side is enough to stop the thrash there;
+ *  it just means the older client wins, which is the right outcome anyway since it
+ *  is the one that cannot be told anything.
+ *
+ *  Never terminal: the peer may stop at any moment and we must recover with no
+ *  user action (2026-06-28 never-give-up directive). */
+const REPLACED_INITIAL_BACKOFF_MS = 60_000;
+const REPLACED_MAX_BACKOFF_MS = 600_000;
+
 const SEVERITY_WARN_THRESHOLD_MS = 5 * 60 * 1_000;
 const SEVERITY_ERROR_THRESHOLD_MS = 15 * 60 * 1_000;
 
 /** Whitelist of WS close codes that trigger reconnect (Roy 拍板 #5).
- *  4xxx application-defined codes are always terminal. Anything else not
- *  in this set is also terminal. */
+ *  4xxx application-defined codes are terminal EXCEPT CLOSE_CODE_REPLACED.
+ *  Anything else not in this set is also terminal. */
 const RETRIABLE_CLOSE_CODES: ReadonlySet<number> = new Set([
   1001, // going away
+  1005, // no status received — the peer sent an EMPTY close payload. Our own
+  //       server does this on any hard close that loses the race with its
+  //       write pump, so treating it as terminal made every server restart a
+  //       coin flip between "reconnects" and "bridge dead until relaunch".
   1006, // abnormal closure (most common transient)
   1011, // server error
   1012, // service restart
+  1013, // try again later
 ]);
 
 // ─── Private helpers ────────────────────────────────────────────────
@@ -183,7 +249,13 @@ function computeBackoff(
   factor: number,
   cap: number,
 ): number {
+  // A zero/negative base is a hot retry loop: every delay is 0 no matter how far
+  // the curve has escalated, and 0 * Infinity is NaN, which setTimeout treats as
+  // "fire now". Only reachable through an explicit initialBackoffMs, but there is
+  // no useful reading of "retry with no delay at all".
+  if (!(initial > 0)) return Math.min(1, cap);
   const raw = initial * Math.pow(factor, Math.max(0, attempt - 1));
+  if (!Number.isFinite(raw)) return cap;
   return Math.min(raw, cap);
 }
 
@@ -199,6 +271,7 @@ function computeJitter(cappedBase: number, strategy: JitterStrategy): number {
 }
 
 function isRetriableClose(info: WSCloseInfo): boolean {
+  if (info.code === CLOSE_CODE_REPLACED) return true;
   if (info.code >= 4000 && info.code < 5000) return false;
   return RETRIABLE_CLOSE_CODES.has(info.code);
 }
@@ -212,10 +285,11 @@ function isRetriableClose(info: WSCloseInfo): boolean {
  *  briefly 404-routing during a deploy, both of which self-heal. A bridge that
  *  worked a moment ago must never permanently give up over a transient server
  *  blip (2026-06-28 owner directive: keep retrying through multi-hour outages,
- *  even at a longer interval). 403 stays terminal both ways — it signals a
- *  device-binding takeover (WSDeviceMismatchError, statusCode 403), where
- *  retrying would thrash with the device that displaced us; the user must
- *  re-pair on this machine. */
+ *  even at a longer interval). 403 stays terminal both ways — it is one of the two
+ *  binding refusals (WSDeviceMismatchError: another MACHINE holds this agent;
+ *  WSClientMismatchError: the other AIFight client on THIS machine holds it), and
+ *  neither can be retried into success. Only redeeming a Dashboard pairing code
+ *  changes the answer, so retrying would just thrash against whoever displaced us. */
 function isRetriableError(err: unknown, connectedBefore: boolean): boolean {
   if (err instanceof WSAbortedError) return false;
   if (err instanceof WSWelcomeInvalidError) return false;
@@ -263,6 +337,31 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
    *  Decoupled from `attempt` (which serves caller telemetry and resets
    *  to 0 per TED rev 4). Drives `computeBackoff(#failures, ...)`. */
   #failures = 0;
+  /** Wall-clock ms when the current/last session reached "connected".
+   *  Together with stabilityWindowMs this distinguishes a real session
+   *  (its close starts a fresh cycle) from a FLAP (its close must keep
+   *  escalating the existing curve). 0 = never connected. */
+  #connectedAt = 0;
+  /** Consecutive sessions that died INSIDE the stability window. Drives the
+   *  curve for a flapping link, so "connect → dropped instantly → reconnect"
+   *  escalates 1s → 2s → 4s instead of retrying at ~1s forever.
+   *
+   *  Deliberately separate from #failures: a run of failed CONNECTS (the user's
+   *  wi-fi was down) must not make the first short session that follows start
+   *  from the top of the curve. Reset by any session that outlives the window. */
+  #flapStreak = 0;
+  /** Consecutive "a newer connection replaced me" evictions. Drives the yield
+   *  curve on its own, because the reconnect BETWEEN two evictions succeeds and
+   *  would otherwise reset #failures — leaving two competitors trading the slot
+   *  at a fixed 60s forever. Escalating instead makes the loser yield longer
+   *  each round until the winner simply keeps the slot.
+   *
+   *  Cleared only by a session that outlives the stability window — i.e. by
+   *  evidence that we are no longer competing. NOT by a mere successful connect
+   *  (the winner-for-a-moment always connects, that is what an eviction is), and
+   *  NOT by a failed attempt in between: a single flaky connect used to collapse
+   *  a 60s yield back to the 2s curve and restart the fight. */
+  #replacedStreak = 0;
   #firstConnectResolve: (() => void) | null = null;
   #firstConnectReject: ((err: unknown) => void) | null = null;
   #firstConnectSettled = false;
@@ -379,6 +478,7 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
           url: this.#opts.url,
           apiKey: this.#apiKey,
           deviceId: this.#opts.deviceId,
+          clientKind: this.#opts.clientKind,
           expectedProtocolVersion: this.#opts.expectedProtocolVersion,
           welcomeTimeoutMs: this.#opts.welcomeTimeoutMs,
           pingIntervalMs: this.#opts.pingIntervalMs,
@@ -397,6 +497,7 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
         //     next disconnect cycle
         this.attempt = 0;
         this.#failures = 0;
+        this.#connectedAt = Date.now();
         this.#emit("attempt-success", succeededAttempt);
 
         // Resolve first-connect facade (idempotent)
@@ -436,10 +537,47 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
           });
           return;
         }
-        // Retriable server-initiated close — count as 1st failure of the new
-        // disconnect cycle so backoff curve starts at 1s (rev 5 lock; Roy
-        // 拍板 #1 + plan §5.9 字面曲线 1s → 2s → ...).
-        this.#failures = 1;
+        // Retriable server-initiated close. A session that LASTED counts as the
+        // 1st failure of a new disconnect cycle, so the curve starts at 1s
+        // (rev 5 lock; Roy 拍板 #1 + plan §5.9 字面曲线 1s → 2s → ...).
+        // A session that died inside stabilityWindowMs is a FLAP: resetting to
+        // 1 there would pin the curve at ~1s forever (2026-07-24: two local
+        // clients sharing one agent id evicted each other ~30×/min without end),
+        // so a flap keeps escalating its own streak.
+        //
+        const sessionMs = Date.now() - this.#connectedAt;
+        const stabilityWindowMs =
+          this.#opts.stabilityWindowMs ?? DEFAULT_STABILITY_WINDOW_MS;
+        if (sessionMs >= stabilityWindowMs) {
+          this.#flapStreak = 0;
+          this.#failures = 1;
+        } else {
+          this.#flapStreak += 1;
+          this.#failures = this.#flapStreak;
+        }
+        // The eviction ladder answers only to evictions. It deliberately does
+        // NOT reset on a long session: the yield itself is longer than the
+        // stability window, so the session between two evictions always looks
+        // "stable" and clearing it here made the ladder unreachable — two
+        // clients then traded the seat ~80×/hour forever, in turns too short to
+        // finish a match. Any close that is NOT an eviction is evidence the
+        // contention is over, and clears it.
+        if (closeInfo.code === CLOSE_CODE_REPLACED) {
+          this.#replacedStreak += 1;
+        } else {
+          this.#replacedStreak = 0;
+        }
+        // Give the backoff/telemetry path an actual cause. WSClosedError is NOT
+        // a WSHandshakeError, so the refreshApiKey and isAuthFailure branches
+        // below are unaffected — this only fills in the previously-empty
+        // `lastErr` so logs state WHY we are reconnecting.
+        lastErr = new WSClosedError(
+          closeInfo.code === CLOSE_CODE_REPLACED
+            ? "another connection claimed this agent — only one connection per agent stays live, so this one is standing down for a few minutes (check for this agent running on another machine, or a background service alongside the app)"
+            : `server closed the connection (code ${closeInfo.code}${
+                closeInfo.reason ? `: ${closeInfo.reason}` : ""
+              })`,
+        );
         this.state = "backoff";
         this.#cycleStartTime = Date.now();
       } catch (err) {
@@ -494,32 +632,61 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
       // 2026-06-28: auth-class reconnect failures (401/404) use a gentler 60s
       // cap so a permanently-revoked credential isn't retried every 30s, while
       // network/server failures keep the fast 30s cap for prompt recovery.
-      const baseCap = this.#opts.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
+      // 2026-07-24: while we owe another connection the seat, a MUCH slower
+      // curve applies. It stays in force until a session outlives the stability
+      // window — not just for the one iteration that saw the eviction — because
+      // a single failed attempt in between would otherwise collapse a 60s yield
+      // back to ~2s and restart the fight.
+      const yieldToPeer = this.#replacedStreak > 0;
+      const baseCap = yieldToPeer
+        ? REPLACED_MAX_BACKOFF_MS
+        : (this.#opts.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS);
       const isAuthFailure =
         lastErr instanceof WSHandshakeError &&
         (lastErr.statusCode === 401 || lastErr.statusCode === 404);
       const cappedBase = computeBackoff(
-        this.#failures,
-        this.#opts.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS,
+        yieldToPeer ? this.#replacedStreak : this.#failures,
+        yieldToPeer
+          ? REPLACED_INITIAL_BACKOFF_MS
+          : (this.#opts.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS),
         this.#opts.backoffFactor ?? DEFAULT_BACKOFF_FACTOR,
         isAuthFailure ? Math.max(baseCap, AUTH_MAX_BACKOFF_MS) : baseCap,
       );
-      const delay = computeJitter(
-        cappedBase,
-        this.#opts.jitter ?? DEFAULT_JITTER,
-      );
+      // Full jitter draws from [0, base), so on its own an escalating flap keeps
+      // firing sub-second retries and the escalation buys nothing. Once the
+      // curve has escalated, put a floor under it. Full jitter stays for the
+      // FIRST retry, where spreading a herd of clients after a server restart is
+      // what matters. "none" and "equal" are honoured as asked — a caller that
+      // named an exact strategy (the tests do) gets it — but "full" is treated
+      // the same whether it was passed explicitly or defaulted, because
+      // otherwise passing the documented default silently weakens the curve.
+      const requested = this.#opts.jitter ?? DEFAULT_JITTER;
+      const escalated = requested === "full" && this.#failures > 1 ? "equal" : requested;
+      const delay = computeJitter(cappedBase, yieldToPeer ? "equal" : escalated);
       // Emit `attempt-failure` with the ATTEMPT NUMBER associated with
       // this failure event:
       //   - catch path: `this.attempt` is the just-failed attempt number
-      //   - close path: `this.attempt` was reset to 0 on success; the
-      //     upcoming next attempt will be 1, so report 1 to keep
-      //     caller telemetry monotonic and never expose attempt=0.
-      const eventAttempt = this.attempt === 0 ? 1 : this.attempt;
+      //   - close path: `this.attempt` was reset to 0 on success, so report
+      //     the consecutive-failure count instead. During a flap storm that
+      //     climbs 1,2,3,… (matching the escalating delay) rather than being
+      //     pinned at "attempt 1" forever, which read as "stuck" in the logs.
+      //   - while yielding: #failures resets to 1 every round (each eviction is
+      //     preceded by a connect that SUCCEEDED), so report the eviction streak
+      //     or a two-machine standoff reads as "attempt 1" forever.
+      const eventAttempt = yieldToPeer
+        ? Math.max(1, this.#replacedStreak)
+        : this.attempt === 0
+          ? Math.max(1, this.#failures)
+          : this.attempt;
       this.#emit("attempt-failure", eventAttempt, delay, lastErr);
 
-      // maxAttempts caps CONSECUTIVE failures (#failures), not attempt
-      // counter — success resets the cap so a long-running session
-      // doesn't accumulate failures across cycles (rev 5 lock).
+      // maxAttempts caps CONSECUTIVE failures (#failures), not the attempt
+      // counter. A session that outlives the stability window resets it, so a
+      // long-running connection never accumulates failures across cycles
+      // (rev 5 lock). A session that dies inside the window does NOT: repeated
+      // instant drops are one continuous failure, and counting them is the
+      // point. The bridge sets no maxAttempts — it must never give up — so this
+      // only affects callers of the exported facade.
       if (
         this.#opts.maxAttempts !== undefined &&
         this.#failures >= this.#opts.maxAttempts

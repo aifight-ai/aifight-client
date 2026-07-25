@@ -13,14 +13,17 @@
 //            no trailing newline, atomic rename-into-place.
 //   - pid:   getRuntimeHome()/pid,   mode 0644, content = String(pid),
 //            no trailing newline, atomic rename-into-place.
-//   - lock:  getRuntimeHome()/lock,  mode 0600, empty file (existence is
-//            the advisory lock; pid file is consulted to detect stale).
+//   - lock:  getRuntimeHome()/lock,  mode 0600. Existence IS the advisory
+//            lock. Since 2026-07-24 it also carries a one-line JSON owner
+//            stamp {"pid":N,"boot":M}; the pid file stays the fallback for
+//            locks written by older bridges, which left this file empty.
 //
 // Internal-only — not re-exported to the package root (mirrors M1-17
 // read-side which is also internal-only; CLI / lifecycle consume both).
 
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 import crypto from "node:crypto";
 
 import { getRuntimeHome } from "../store/paths";
@@ -277,6 +280,60 @@ type PidProbeResult =
   | { kind: "invalid"; raw: string }
   | { kind: "read_error"; cause: NodeJS.ErrnoException };
 
+/**
+ * Owner stamp written INSIDE the lock file when we create it.
+ *
+ * The lock used to be an empty file whose owner could only be learned from the
+ * separate `pid` file — and anything that deleted that file (a bridge older than
+ * 2026-07-24 does exactly this when it loses the race for the lock) left a lock
+ * nobody could prove was dead. Every later acquire then read "ambiguous" and
+ * refused, forever, for BOTH the app and the service: an unrecoverable state that
+ * needed a terminal to escape. Keeping the owner inside the lock itself means the
+ * two can never disagree.
+ *
+ * `boot` is only ever used as positive corroboration ("same boot, live pid ⇒
+ * definitely held"). It is deliberately NOT used to declare a live pid stale:
+ * `os.uptime()` can jump across a laptop suspend, and mistaking a live owner for
+ * a dead one would put two bridges on one agent — the exact failure this whole
+ * mechanism exists to prevent.
+ */
+interface LockOwnerStamp {
+  readonly pid: number;
+  readonly boot: number;
+}
+
+/** Approximate boot time in epoch ms. Coarse by construction — see LockOwnerStamp. */
+function bootTimeMs(): number {
+  return Date.now() - Math.round(os.uptime() * 1000);
+}
+
+/** Same boot if the two stamps agree to within this much. Generous: os.uptime()
+ *  has second granularity and the wall clock can be stepped by NTP. */
+const SAME_BOOT_TOLERANCE_MS = 120_000;
+
+function readLockOwner(lockPath: string): LockOwnerStamp | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(lockPath, "utf8");
+  } catch {
+    return null;
+  }
+  const trimmed = raw.trim();
+  // Empty: a lock written before this stamp existed. Callers fall back to the
+  // pid file, which is exactly how those older bridges expect to be treated.
+  if (trimmed.length === 0) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as Partial<LockOwnerStamp>;
+    const pid = parsed?.pid;
+    const boot = parsed?.boot;
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid < 1) return null;
+    if (typeof boot !== "number" || !Number.isFinite(boot)) return null;
+    return { pid, boot };
+  } catch {
+    return null;
+  }
+}
+
 function inspectHeldPid(pidPath: string): PidProbeResult {
   let raw: string;
   try {
@@ -335,13 +392,7 @@ export function acquireDaemonLock(
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const fd = fs.openSync(
-        lockPath,
-        // eslint-disable-next-line no-bitwise -- standard POSIX flag combo
-        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
-        0o600,
-      );
-      fs.closeSync(fd);
+      createStampedLock(lockPath);
       // Belt-and-suspenders chmod: openSync's mode is umask-masked, and
       // the lock file MUST be 0600 so a different user can't read it
       // (mode is the only place we leak liveness signal).
@@ -365,9 +416,38 @@ export function acquireDaemonLock(
         );
       }
 
-      // Lock file exists — inspect pid file to decide stale vs held vs
-      // ambiguous. Only `valid` + dead may auto-clean (TED rev8
-      // review-fix); every other state must fail safe so we never
+      // Lock file exists. Prefer the owner stamp INSIDE it: it is written
+      // under the same O_EXCL create, so it cannot disagree with the lock, and
+      // it survives anything that removes the separate pid file — including a
+      // pre-2026-07-24 bridge, which unlinks token/port/pid on the very path it
+      // takes when it loses this race. Without this, that one unlink left every
+      // later acquire reading "ambiguous" and refusing forever.
+      const owner = readLockOwner(lockPath);
+      if (owner !== null) {
+        if (probe(owner.pid)) {
+          // Live pid, but stamped in a DIFFERENT boot: almost certainly a lock
+          // that outlived a crash whose pid has since been handed to an
+          // unrelated process. We still refuse — os.uptime() can jump across a
+          // suspend, and stealing from a live owner would put two bridges on one
+          // agent — but we say so, because "delete the lock" is then the answer.
+          const sameBoot = Math.abs(owner.boot - bootTimeMs()) <= SAME_BOOT_TOLERANCE_MS;
+          throw new RuntimeFilesWriteError(
+            "lock_held_by_other",
+            lockPath,
+            sameBoot
+              ? `lock at ${lockPath} held by live PID ${owner.pid}`
+              : `lock at ${lockPath} claims PID ${owner.pid}, which was recorded before the last restart — if no other AIFight bridge is running, delete ${lockPath} and try again`,
+            { heldByPid: owner.pid },
+          );
+        }
+        // Owner is gone: a true stale lock. Same cleanup as the pid-file path.
+        cleanStaleLockFiles(lockPath, pidPath);
+        continue;
+      }
+
+      // No stamp — a lock written by an older bridge. Inspect the pid file to
+      // decide stale vs held vs ambiguous. Only `valid` + dead may auto-clean
+      // (TED rev8 review-fix); every other state must fail safe so we never
       // steal a freshly-started daemon's lock while it is still in the
       // window between acquireDaemonLock() and writePid().
       const probed = inspectHeldPid(pidPath);
@@ -407,16 +487,7 @@ export function acquireDaemonLock(
 
       // Valid pid + dead — true stale lock from a prior crash. Clean
       // lock + pid + retry once.
-      try {
-        fs.unlinkSync(lockPath);
-      } catch {
-        // may have been cleaned by another startup raced with us
-      }
-      try {
-        fs.unlinkSync(pidPath);
-      } catch {
-        // pid file may not exist
-      }
+      cleanStaleLockFiles(lockPath, pidPath);
     }
   }
 
@@ -427,6 +498,79 @@ export function acquireDaemonLock(
     lockPath,
     `failed to acquire lock at ${lockPath} after stale-cleanup retry; another daemon may be racing`,
   );
+}
+
+/**
+ * Create the lock, already carrying its owner stamp, in one atomic step.
+ *
+ * Writing the stamp into an O_EXCL fd after the fact is NOT atomic: the lock is
+ * observably empty in between, and a process killed in that window leaves an
+ * unstamped lock — which, if its pid file is also gone, is the unrecoverable
+ * "ambiguous" state the stamp exists to eliminate. So the stamp is written to a
+ * private temp file first and hard-linked into place: link() fails with EEXIST if
+ * the lock already exists, giving the same mutual exclusion as O_EXCL, and the
+ * lock is fully formed the instant it becomes visible.
+ *
+ * Throws the same EEXIST-shaped error as the O_EXCL path so the caller's
+ * contention handling is unchanged. Falls back to O_EXCL where link() is not
+ * supported (some network filesystems), accepting the narrow window there.
+ */
+function createStampedLock(lockPath: string): void {
+  const stamp: LockOwnerStamp = { pid: process.pid, boot: bootTimeMs() };
+  const tmpPath = `${lockPath}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(stamp), { mode: 0o600 });
+  } catch {
+    // Cannot stage the stamp — fall back to an unstamped lock rather than
+    // failing to lock at all.
+    fs.closeSync(openLockExclusive(lockPath));
+    return;
+  }
+  try {
+    fs.linkSync(tmpPath, lockPath);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") throw e; // contention — caller inspects the holder
+    // link() unsupported/refused: keep the lock semantics, lose the atomicity.
+    const fd = openLockExclusive(lockPath);
+    try {
+      fs.writeSync(fd, JSON.stringify(stamp));
+    } catch {
+      // best effort — existence is what makes this a lock
+    }
+    fs.closeSync(fd);
+  } finally {
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {
+      // best effort — the link (or the fallback) already owns the content
+    }
+  }
+}
+
+function openLockExclusive(lockPath: string): number {
+  return fs.openSync(
+    lockPath,
+    // eslint-disable-next-line no-bitwise -- standard POSIX flag combo
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+    0o600,
+  );
+}
+
+/** Remove a lock whose owner is provably gone, plus its pid file, so the retry
+ *  below can create a fresh one. Both unlinks are best effort: a racing startup
+ *  may have cleaned them already. */
+function cleanStaleLockFiles(lockPath: string, pidPath: string): void {
+  try {
+    fs.unlinkSync(lockPath);
+  } catch {
+    // may have been cleaned by another startup raced with us
+  }
+  try {
+    fs.unlinkSync(pidPath);
+  } catch {
+    // pid file may not exist
+  }
 }
 
 function makeLockHandle(lockPath: string): LockHandle {

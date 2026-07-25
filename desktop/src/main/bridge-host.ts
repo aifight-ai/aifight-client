@@ -15,9 +15,10 @@
 // start() — never at module load. The static surface here is readBridgeConfig
 // (config.ts → store/paths → node builtins, plus — since F10 — the runtime's
 // account/credentials, whose @napi-rs/keyring is an N-API prebuilt that loads
-// under Electron without a rebuild). Reading the shared config on launch still
-// never opens a connection; it touches the OS keychain only to decrypt the
-// stored credentials.
+// under Electron without a rebuild), plus the runtime's daemon/runtime-files-write
+// (node builtins only — see the single-instance guard below). Reading the shared
+// config on launch still never opens a connection; it touches the OS keychain
+// only to decrypt the stored credentials.
 
 import {
   archiveReplacedBridgeConfig,
@@ -28,6 +29,14 @@ import {
   writeBridgeConfig,
   type BridgeConfig,
 } from "@aifight/aifight/bridge/config";
+import {
+  acquireDaemonLock,
+  RuntimeFilesWriteError,
+  unlinkRuntimeFiles,
+  writePid,
+  type LockHandle,
+} from "@aifight/aifight/daemon/runtime-files-write";
+import { ensureRuntimeHome } from "@aifight/aifight/store/paths";
 import fs from "node:fs";
 import path from "node:path";
 import type { BridgeRunner as BridgeRunnerInstance } from "@aifight/aifight/bridge/runner";
@@ -75,6 +84,10 @@ export interface BridgeHostCallbacks {
  *  condition only — transient network/auth blips retry forever; see
  *  reconnect.ts isRetriableError). Supplements the banner's localized error
  *  label + 重连 button (App.tsx BridgeErrorBanner). */
+/** How often the app re-checks a seat held by another bridge. Slow enough to be
+ *  free (two syscalls), fast enough that `aifight service stop` feels instant. */
+const SEAT_RETRY_INTERVAL_MS = 5_000;
+
 const RECONNECT_GAVE_UP_MESSAGE =
   "Connection stopped and could not reconnect automatically. Retry below; if it keeps failing, re-pair this agent from the Dashboard.";
 
@@ -93,6 +106,19 @@ export class BridgeHost {
   // local fallback is never cached, so a later answer always wins.
   #liveGames: readonly string[] | null = null;
   #liveGamesFetch: Promise<readonly string[]> | null = null;
+  // Cross-process single-instance guard — see #acquireAgentSeat. Invariant:
+  // #lock !== null  ⟺  this host owns the local agent seat (#runner !== null,
+  // or a start() in flight). Released on stop, on a failed start, when the
+  // reconnect loop gives up, and synchronously on app quit (main.ts).
+  #lock: LockHandle | null = null;
+  // In-flight start(), so two callers cannot both get past the "#runner is null"
+  // check and race into two runners on one seat (#runner is only assigned after
+  // an await). The renderer can trigger start() from several places at once —
+  // launch, the Retry button, the seat retry below.
+  #starting: Promise<BridgeStatus> | null = null;
+  // Set while we are refusing because another bridge holds the seat: re-checks
+  // until it is free, so stopping the other one is enough to recover.
+  #seatRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(callbacks: BridgeHostCallbacks = {}) {
     this.#callbacks = callbacks;
@@ -387,6 +413,16 @@ export class BridgeHost {
   readConfigSummary(): BridgeStatus {
     try {
       const config = readBridgeConfig();
+      if (this.#status.phase === "error") {
+        // NEVER downgrade an error to "idle". This is only a config read, but the
+        // renderer calls it on EVERY view mount — and main.ts start()s the bridge
+        // before the first mount, so a failure raised at launch (the agent seat is
+        // taken, the engine failed to load) would be wiped before anyone saw it:
+        // grey dot, no banner, no reason, no Retry button. Refresh the config
+        // fields and keep the explanation.
+        this.#setStatus({ ...this.#status, config: toSummary(config) });
+        return this.#status;
+      }
       const phase: BridgeHostPhase = this.#runner === null ? "idle" : this.#status.phase;
       this.#setStatus({ phase, config: toSummary(config), message: undefined });
     } catch (cause) {
@@ -396,12 +432,138 @@ export class BridgeHost {
   }
 
   /**
+   * Claim the local agent seat before opening any connection.
+   *
+   * The desktop app and the `aifight` CLI service share ONE agent identity under
+   * ~/.aifight. The server keeps a single connection per agent and evicts the
+   * older one, so two local bridges do not coexist — they take turns kicking each
+   * other off, forever (2026-07-24: ~160 connect/evict cycles in 40 minutes, and
+   * every flip can interrupt a live match). The fix has two halves: the server now
+   * says WHY it evicted you (close code 4409) so the loser backs off instead of
+   * racing straight back, and this guard stops the second bridge on this machine
+   * from ever entering the fight.
+   *
+   * The guard is the same advisory lockfile `aifight bridge run` takes, so it is
+   * symmetric and first-come-first-served: whoever starts second refuses, loudly
+   * and with instructions. We deliberately never kill the other process — the pid
+   * in that file may be stale and PIDs get reused.
+   *
+   * Returns null on success, or the status fields describing the refusal.
+   */
+  #acquireAgentSeat(): Pick<BridgeStatus, "message" | "code" | "codeParams"> | null {
+    // acquireDaemonLock is not reentrant: a second call from this process throws
+    // even though we already own the seat (e.g. 重连 after the loop gave up).
+    if (this.#lock !== null) return null;
+    try {
+      ensureRuntimeHome();
+      const lock = acquireDaemonLock();
+      try {
+        // The pid is what lets the NEXT launch tell "app crashed, lock is stale"
+        // from "another bridge is alive". Without it a hard kill would leave a
+        // lock nobody can prove is dead, and every later start would refuse.
+        writePid(process.pid);
+      } catch (cause) {
+        lock.release();
+        throw cause;
+      }
+      this.#lock = lock;
+      return null;
+    } catch (cause) {
+      if (cause instanceof RuntimeFilesWriteError && cause.kind === "lock_held_by_other") {
+        const pid = cause.heldByPid;
+        // Two codes rather than one with an optional param: i18next renders a
+        // missing {{pid}} as the raw placeholder, which would be worse than a
+        // sentence that simply doesn't name the process.
+        //
+        // `detail` carries the runtime's own sentence verbatim. It is not
+        // decoration: for a lock left behind by a crash whose pid the OS has
+        // since reused, it is the ONLY text that says what actually helps
+        // (delete the lock file) — every message we could compose from
+        // heldByPid alone tells the user to stop a process that isn't there.
+        return {
+          code: pid !== undefined ? "lockHeld" : "lockHeldUnknown",
+          codeParams: pid !== undefined ? { pid, detail: cause.message } : { detail: cause.message },
+          message:
+            (pid !== undefined
+              ? `Another AIFight bridge (PID ${pid}) is already running this agent on this computer.`
+              : "Another AIFight bridge is already running this agent on this computer.") +
+            `\n${cause.message}`,
+        };
+      }
+      const detail = cause instanceof Error ? cause.message : describeError(cause);
+      return {
+        code: "lockFailed",
+        codeParams: { detail },
+        message: `Could not claim the local agent lock.\n${detail}`,
+      };
+    }
+  }
+
+  /** Re-attempt the seat while another bridge holds it. Silent: the banner is
+   *  already up and says what to do, so a successful retry simply replaces it
+   *  with a running bridge. */
+  #scheduleSeatRetry(): void {
+    this.#cancelSeatRetry();
+    this.#seatRetryTimer = setTimeout(() => {
+      this.#seatRetryTimer = null;
+      if (this.#runner !== null || this.#lock !== null) return;
+      void this.start().catch(() => undefined);
+    }, SEAT_RETRY_INTERVAL_MS);
+    // Never hold the app open just to poll for a lock.
+    this.#seatRetryTimer.unref?.();
+  }
+
+  #cancelSeatRetry(): void {
+    if (this.#seatRetryTimer === null) return;
+    clearTimeout(this.#seatRetryTimer);
+    this.#seatRetryTimer = null;
+  }
+
+  /**
+   * Release the local agent seat so a standby CLI service (or the next start)
+   * can take it. Safe to call when we hold nothing.
+   *
+   * Holding the lock proves no other bridge is running, so any token/port left in
+   * the runtime home is a crashed predecessor's litter — clearing it matches what
+   * `aifight bridge run` does on its own shutdown.
+   */
+  #releaseAgentSeat(): void {
+    const lock = this.#lock;
+    if (lock === null) return;
+    this.#lock = null;
+    try {
+      unlinkRuntimeFiles({ onLog: () => undefined });
+    } catch {
+      // Best-effort: never let cleanup failure block a stop/quit path.
+    }
+    try {
+      lock.release();
+    } catch {
+      // Ditto — release() is already idempotent and swallows ENOENT.
+    }
+  }
+
+  /**
    * Start the bridge against the shared config. Lazily loads the engine on first
    * call. Returns the resulting status instead of throwing; failures surface as
    * phase "error" / "unconfigured" so the UI can render them.
    */
   async start(): Promise<BridgeStatus> {
     if (this.#runner !== null) return this.#status;
+    // Join an in-flight start instead of beginning a second one.
+    if (this.#starting !== null) return this.#starting;
+    const run = this.#startOnce();
+    this.#starting = run;
+    try {
+      return await run;
+    } finally {
+      this.#starting = null;
+    }
+  }
+
+  async #startOnce(): Promise<BridgeStatus> {
+    // A manual start supersedes any pending seat retry.
+    this.#cancelSeatRetry();
 
     let config: BridgeConfig;
     try {
@@ -418,63 +580,95 @@ export class BridgeHost {
     this.#lastActivityAt = null;
     this.#setStatus({ phase: "starting", config: summary, message: undefined });
 
-    // Lazy: pulls the engine (and its native deps) only now, never at app load.
-    const { BridgeRunner } = await import("@aifight/aifight/bridge/runner");
-    const runner = new BridgeRunner({
-      config,
-      onLog: (event) => {
-        this.#noteActivity();
-        // The FSM surfaces every reconnect attempt as this log code
-        // (state-machine.ts reconnectEvent → notify "reconnect.attempt_start").
-        // Reflect a post-connect drop in the host phase so the renderer's status
-        // pill stops showing a stale "online" while we're actually reconnecting —
-        // it flips back to running on the next welcome frame below.
-        if (event.code === "reconnect.attempt_start") {
-          this.#reconnects += 1;
-          if (this.#status.phase === "running") {
+    // One agent, one bridge per machine — claim the seat BEFORE we can connect.
+    const conflict = this.#acquireAgentSeat();
+    if (conflict !== null) {
+      this.#setStatus({ phase: "error", config: summary, ...conflict });
+      // Keep checking. The user's fix is to stop the other bridge, and having
+      // to come back and press Reconnect after doing so is a step they should
+      // not need — especially since the holder is usually a background service
+      // they cannot see.
+      this.#scheduleSeatRetry();
+      return this.#status;
+    }
+
+    let runner: BridgeRunnerInstance;
+    try {
+      // Lazy: pulls the engine (and its native deps) only now, never at app load.
+      const { BridgeRunner } = await import("@aifight/aifight/bridge/runner");
+      runner = new BridgeRunner({
+        config,
+        clientKind: "desktop",
+        onLog: (event) => {
+          this.#noteActivity();
+          // The FSM surfaces every reconnect attempt as this log code
+          // (state-machine.ts reconnectEvent → notify "reconnect.attempt_start").
+          // Reflect a post-connect drop in the host phase so the renderer's status
+          // pill stops showing a stale "online" while we're actually reconnecting —
+          // it flips back to running on the next welcome frame below.
+          if (
+            event.code === "reconnect.attempt_start" ||
+            event.code === "reconnect.attempt_failure"
+          ) {
+            // attempt_failure fires FIRST — attempt_start only comes after the
+            // backoff sleep, which is now minutes long when another connection
+            // took the seat. Leaving the pill on "online" for that whole window
+            // (uptime still ticking, Play still enabled) would be a lie.
+            if (event.code === "reconnect.attempt_start") this.#reconnects += 1;
+            if (this.#status.phase === "running") {
+              this.#connectedAt = null;
+              this.#setStatus({ phase: "starting", config: this.#status.config, message: undefined });
+            }
+          } else if (event.code === "reconnect.give_up" || event.code === "reconnect.closed") {
+            // The reconnect loop has permanently stopped. With the 2026-06-28
+            // runtime change this only fires on a TRULY terminal condition (a
+            // protocol-version mismatch needing a client update, a 403 device
+            // takeover, or an aborted/closed transport) — transient network/auth
+            // (401/404) blips retry forever and never reach here. Surface it as an
+            // error with the 重连 button instead of leaving the host frozen on
+            // "starting"/"连接中", and RELEASE the runner so 重连 (→ start()) truly
+            // restarts rather than no-opping on a non-null runner.
+            const runner = this.#runner;
+            this.#runner = null;
             this.#connectedAt = null;
-            this.#setStatus({ phase: "starting", config: this.#status.config, message: undefined });
+            if (runner !== null) void runner.stop().catch(() => {});
+            // We are no longer using the agent — hand the seat back so a standby
+            // CLI service can take over (and so 重连 can re-acquire it cleanly).
+            this.#releaseAgentSeat();
+            this.#setStatus({
+              phase: "error",
+              config: this.#status.config,
+              message: RECONNECT_GAVE_UP_MESSAGE,
+            });
           }
-        } else if (event.code === "reconnect.give_up" || event.code === "reconnect.closed") {
-          // The reconnect loop has permanently stopped. With the 2026-06-28
-          // runtime change this only fires on a TRULY terminal condition (a
-          // protocol-version mismatch needing a client update, a 403 device
-          // takeover, or an aborted/closed transport) — transient network/auth
-          // (401/404) blips retry forever and never reach here. Surface it as an
-          // error with the 重连 button instead of leaving the host frozen on
-          // "starting"/"连接中", and RELEASE the runner so 重连 (→ start()) truly
-          // restarts rather than no-opping on a non-null runner.
-          const runner = this.#runner;
-          this.#runner = null;
-          this.#connectedAt = null;
-          if (runner !== null) void runner.stop().catch(() => {});
-          this.#setStatus({
-            phase: "error",
-            config: this.#status.config,
-            message: RECONNECT_GAVE_UP_MESSAGE,
-          });
-        }
-        this.#callbacks.onLog?.(event);
-      },
-      onTrace: (trace) => this.#callbacks.onTrace?.(trace),
-      onServerMessage: (message) => {
-        this.#noteActivity();
-        // The welcome frame advertises the platform's CURRENT live games
-        // (engine.LiveNames()) — refresh the allow-list on every (re)connect.
-        if (message.type === "welcome") {
-          const games = parseWelcomeGames(message.data);
-          if (games !== null) this.#liveGames = games;
-          // A welcome after a reconnect-induced "starting" means we're back
-          // online — restore the running phase + fresh connectedAt so the pill,
-          // the diagnostics card, and the connected-gated buttons all recover.
-          if (this.#status.phase === "starting" && this.#runner !== null) {
-            this.#connectedAt = Date.now();
-            this.#setStatus({ phase: "running", config: this.#status.config, message: undefined });
+          this.#callbacks.onLog?.(event);
+        },
+        onTrace: (trace) => this.#callbacks.onTrace?.(trace),
+        onServerMessage: (message) => {
+          this.#noteActivity();
+          // The welcome frame advertises the platform's CURRENT live games
+          // (engine.LiveNames()) — refresh the allow-list on every (re)connect.
+          if (message.type === "welcome") {
+            const games = parseWelcomeGames(message.data);
+            if (games !== null) this.#liveGames = games;
+            // A welcome after a reconnect-induced "starting" means we're back
+            // online — restore the running phase + fresh connectedAt so the pill,
+            // the diagnostics card, and the connected-gated buttons all recover.
+            if (this.#status.phase === "starting" && this.#runner !== null) {
+              this.#connectedAt = Date.now();
+              this.#setStatus({ phase: "running", config: this.#status.config, message: undefined });
+            }
           }
-        }
-        this.#callbacks.onServerMessage?.(message);
-      },
-    });
+          this.#callbacks.onServerMessage?.(message);
+        },
+      });
+    } catch (cause) {
+      // Loading or constructing the engine failed: give the seat back, or the
+      // CLI service can never take over and our own next start() would refuse.
+      this.#releaseAgentSeat();
+      this.#setStatus({ phase: "error", config: summary, message: describeError(cause) });
+      return this.#status;
+    }
     this.#runner = runner;
 
     try {
@@ -486,15 +680,31 @@ export class BridgeHost {
       this.#runner = null;
       this.#connectedAt = null;
       await runner.stop().catch(() => {});
+      this.#releaseAgentSeat();
       this.#setStatus({ phase: "error", config: summary, message: describeError(cause) });
     }
     return this.#status;
   }
 
   async stop(): Promise<BridgeStatus> {
+    // Stop means stop: a pending seat retry would quietly bring us back.
+    this.#cancelSeatRetry();
+    // Let an in-flight start finish first. Without this, a stop landing while
+    // start() is awaiting the engine import sees #runner === null, takes the
+    // branch below, and hands back a seat the resuming start is about to put a
+    // live connection on — leaving a running bridge holding no lock, which is
+    // precisely how a standby CLI service ends up connecting alongside us.
+    // Failures are the starting caller's to report, not ours.
+    if (this.#starting !== null) await this.#starting.catch(() => undefined);
     const runner = this.#runner;
     if (runner === null) {
-      this.#setStatus({ phase: this.#status.config !== undefined ? "stopped" : "idle" });
+      // Belt and braces: normally the seat is already free here, but a release
+      // that got skipped would silently lock the user out of their own agent.
+      this.#releaseAgentSeat();
+      this.#setStatus({
+        phase: this.#status.config !== undefined ? "stopped" : "idle",
+        message: undefined,
+      });
       return this.#status;
     }
     this.#runner = null;
@@ -508,8 +718,27 @@ export class BridgeHost {
         message: describeError(cause),
       });
     }
+    // Release only after the socket is really down, so a CLI service waking up
+    // the instant we let go cannot overlap with our last frames.
+    this.#releaseAgentSeat();
     this.#setStatus({ phase: "stopped", message: undefined });
     return this.#status;
+  }
+
+  /**
+   * Synchronous seat release for app quit (`before-quit`), where Electron gives
+   * us no chance to await stop(). Dropping the lockfile is a couple of unlink
+   * syscalls; the socket dies with the process a moment later.
+   *
+   * Without this, a quit would leave the lock behind with our (now dead) pid —
+   * recoverable on the next launch via the pid liveness probe, but it would make
+   * a standby CLI service wait for its next restart instead of taking over now.
+   */
+  releaseAgentSeatSync(): void {
+    // Cancel first: a retry firing between here and process death would re-take
+    // the seat on the way out and leave the lock behind for a dying process.
+    this.#cancelSeatRetry();
+    this.#releaseAgentSeat();
   }
 
   /**
@@ -891,7 +1120,11 @@ export class BridgeHost {
   }
 
   #setStatus(patch: Partial<BridgeStatus> & Pick<BridgeStatus, "phase">): void {
-    this.#status = { ...this.#status, ...patch };
+    // `code`/`codeParams` label THIS patch's message and nothing else. Drop them
+    // unless the patch re-supplies them: an inherited code would relabel a later,
+    // unrelated failure with the wrong translated text (every other call site
+    // clears `message` explicitly but knows nothing about codes).
+    this.#status = { ...this.#status, code: undefined, codeParams: undefined, ...patch };
     this.#callbacks.onStatus?.(this.#status);
   }
 }

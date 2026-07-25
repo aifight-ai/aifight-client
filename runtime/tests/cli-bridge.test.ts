@@ -91,6 +91,48 @@ describe("bridge CLI commands", () => {
     expect(status.stdout).not.toContain("sk-super-secret-agent-key");
   });
 
+  // End-to-end through argv parsing → connect → pairing.ts, because that whole
+  // path is the thing that has to carry the declaration. The server hands the
+  // agent to the kind this request names, so a `cli` here from the desktop app
+  // (which redeems codes through this very command) would move the agent onto
+  // the background service and lock the app out of its own pairing.
+  it("connect declares the claiming client kind, defaulting to cli", async () => {
+    const okPairResponse = () => new Response(JSON.stringify({
+      agent: { id: "agent-1", name: "alpha", api_key: "sk-k", runtime_type: "direct" },
+      ws_url: "wss://aifight.ai/api/ws",
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+
+    const declaredBy = async (argv: readonly string[]): Promise<string | undefined> => {
+      useTempHome();
+      let seen: Record<string, string> = {};
+      const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        seen = (init?.headers ?? {}) as Record<string, string>;
+        return okPairResponse();
+      }) as unknown as typeof fetch;
+      expect((await runCapture(argv, fetchImpl)).code).toBe(0);
+      return seen["X-AIFight-Client-Kind"];
+    };
+
+    expect(await declaredBy(["connect", "aifp_test"])).toBe("cli");
+    expect(await declaredBy(["connect", "aifp_test", "--client-kind", "desktop"])).toBe("desktop");
+    expect(await declaredBy(["connect", "aifp_test", "--client-kind", "CLI"])).toBe("cli");
+  });
+
+  it("connect refuses an unrecognized --client-kind instead of guessing", async () => {
+    useTempHome();
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("pairing endpoint should not be called");
+    }) as unknown as typeof fetch;
+
+    const r = await runCapture(["connect", "aifp_test", "--client-kind", "phone"], fetchImpl);
+
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain("--client-kind");
+    // Guessing would burn the one-time code AND move the agent to the wrong
+    // program, so the request must not go out at all.
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("connect blocks before consuming a pairing code when local identity exists", async () => {
     useTempHome();
     writeBridgeConfig(testBridgeConfig());
@@ -187,8 +229,8 @@ describe("bridge CLI commands", () => {
       if (textUrl.endsWith("/api/bridge/version")) {
         return new Response(JSON.stringify({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-beta.24",
-          latest_version: "0.1.0-beta.24",
+          recommended_version: "0.1.0-beta.25",
+          latest_version: "0.1.0-beta.25",
           update_command: "npm install -g @aifight/aifight",
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }

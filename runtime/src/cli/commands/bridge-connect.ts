@@ -5,7 +5,12 @@ import {
   type BridgeConfig,
 } from "../../bridge/config";
 import { exchangePairingCode } from "../../bridge/pairing";
-import { getDeviceId } from "../../account/device-id";
+import {
+  DEFAULT_BRIDGE_CLIENT_KIND,
+  parseBridgeClientKind,
+  type BridgeClientKind,
+} from "../../bridge/client-kind";
+import { getDeviceId, stampLocalDeviceIdentity } from "../../account/device-id";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, expectArity } from "../shared";
 
@@ -15,12 +20,31 @@ const USAGE = [
   "  --replace-local-identity confirms that an existing local bridge identity may be replaced.",
 ].join("\n");
 
+/** Resolve which program is claiming the agent. The desktop app runs this same
+ *  command to redeem a code, so it declares itself with --client-kind desktop;
+ *  a person typing `aifight connect` is the CLI. An unrecognized value is a
+ *  usage error, never a silent fallback: connecting as the wrong program would
+ *  hand the agent to the other client and lock this one out. */
+function resolveClientKind(args: HandlerArgs): BridgeClientKind {
+  const raw = args.flags["client-kind"];
+  if (raw === undefined) return DEFAULT_BRIDGE_CLIENT_KIND;
+  const kind = parseBridgeClientKind(raw);
+  if (kind === undefined) {
+    throw new CommandError(
+      "invalid_client_kind",
+      `--client-kind must be "desktop" or "cli" (got ${JSON.stringify(String(raw))}).`,
+    );
+  }
+  return kind;
+}
+
 export async function runBridgeConnect(
   args: HandlerArgs,
   env: HandlerEnv,
 ): Promise<number> {
   expectArity(args, 1, 1, USAGE);
   const pairingCode = args.positional[0]!;
+  const clientKind = resolveClientKind(args);
   const existing = readOptionalBridgeConfig();
   const replaceLocalIdentity = args.flags["replace-local-identity"] === true;
   if (existing !== undefined && !replaceLocalIdentity) {
@@ -41,6 +65,7 @@ export async function runBridgeConnect(
       pairingCode,
       fetchImpl: env.fetchImpl,
       deviceId: getDeviceId(),
+      clientKind,
     });
   } catch (e) {
     const raw = e instanceof Error ? e.message : String(e);
@@ -48,6 +73,10 @@ export async function runBridgeConnect(
     throw new CommandError(code, message);
   }
   writeBridgeConfig(config);
+  // The owner just said, from the Dashboard, that the agent belongs on this
+  // machine. Whatever the local stamp claimed before is answered — re-stamp it,
+  // or the next start would keep refusing an install the owner has authorized.
+  stampLocalDeviceIdentity();
 
   if (args.jsonMode) {
     env.stdout(JSON.stringify({ status: "configured", config: redactBridgeConfig(config) }) + "\n");

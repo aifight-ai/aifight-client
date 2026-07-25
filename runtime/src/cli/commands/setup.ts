@@ -17,7 +17,7 @@
 
 import { generateSuggestedName } from "../../account/suggested-name";
 import { registerAgent } from "../../account/registration";
-import { getDeviceId } from "../../account/device-id";
+import { getDeviceId, stampLocalDeviceIdentity } from "../../account/device-id";
 import { RegisterHttpError, RegisterNetworkError } from "../../account/errors";
 import {
   archiveReplacedBridgeConfig,
@@ -293,6 +293,11 @@ async function performRegistration(
       updatedAt: new Date().toISOString(),
     };
     writeBridgeConfig(config);
+    // A brand-new agent registered from here is by definition this machine's.
+    // Re-stamping matters most on a copied home directory: "register a new
+    // agent" is one of the offered ways out of that, and leaving the previous
+    // machine's stamp in place would refuse the fresh agent too.
+    stampLocalDeviceIdentity();
     return config;
   } catch (e) {
     if (e instanceof RegisterHttpError) {

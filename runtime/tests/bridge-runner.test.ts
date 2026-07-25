@@ -2,11 +2,19 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { BridgeRunner } from "../src/bridge/runner";
+import {
+  BridgeClientMismatchError,
+  BridgeCredentialRejectedError,
+  BridgeDeviceMismatchError,
+  BridgeRunner,
+} from "../src/bridge/runner";
+import { resetDeviceIdCacheForTests, stampLocalDeviceIdentity } from "../src/account/device-id";
+import { resetMachineIdCacheForTests } from "../src/account/machine-id";
 import { createMockRuntimeProvider } from "../src/bridge/provider";
 import { LocalMatchSessionStore } from "../src/session/local-match-session-store";
+import { WSClientMismatchError, WSHandshakeError } from "../src/wsclient/errors";
 import type { BridgeConfig } from "../src/bridge/config";
 import type { MsgActionRequest, MsgGameOver, MsgGameStart } from "../src/protocol/types";
 import type { ServerMessageEnvelope } from "../src/wsclient/frame-handler";
@@ -90,6 +98,36 @@ function tempHome(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "aifight-bridge-runner-"));
 }
 
+// start() reads the device secret and stamps the shared AIFight home with this
+// machine's device id. Point the home at a temp dir for EVERY case in this file
+// so that write lands there and never in the real one — a test suite must not
+// leave files in the developer's own account.
+let suiteHome: string;
+let prevSuiteHome: string | undefined;
+let prevMachineId: string | undefined;
+
+beforeEach(() => {
+  suiteHome = tempHome();
+  prevSuiteHome = process.env.AIFIGHT_HOME;
+  prevMachineId = process.env.AIFIGHT_MACHINE_ID_OVERRIDE;
+  process.env.AIFIGHT_HOME = suiteHome;
+  // Pin the machine so the identity check is deterministic instead of asking
+  // whatever host the suite happens to run on.
+  process.env.AIFIGHT_MACHINE_ID_OVERRIDE = "11111111-2222-3333-4444-555555555555";
+  resetDeviceIdCacheForTests();
+  resetMachineIdCacheForTests();
+});
+
+afterEach(() => {
+  if (prevSuiteHome === undefined) delete process.env.AIFIGHT_HOME;
+  else process.env.AIFIGHT_HOME = prevSuiteHome;
+  if (prevMachineId === undefined) delete process.env.AIFIGHT_MACHINE_ID_OVERRIDE;
+  else process.env.AIFIGHT_MACHINE_ID_OVERRIDE = prevMachineId;
+  resetDeviceIdCacheForTests();
+  resetMachineIdCacheForTests();
+  fs.rmSync(suiteHome, { recursive: true, force: true });
+});
+
 function gameStart(matchId = "match-1"): MsgGameStart {
   return {
     type: "game_start",
@@ -166,6 +204,7 @@ describe("BridgeRunner", () => {
     const connect = vi.fn(async (_opts: ReconnectingWSClientOptions) => client);
     const logs: Array<{ code: string; message: string }> = [];
     const runner = new BridgeRunner({
+      clientKind: "cli",
       config: bridgeConfig(),
       runtimeProvider: createMockRuntimeProvider(),
       autoJoinGame: "liars_dice",
@@ -221,6 +260,7 @@ describe("BridgeRunner", () => {
     const connect = vi.fn(async (_opts: ReconnectingWSClientOptions) => client);
     const logs: Array<{ code: string; message: string }> = [];
     const runner = new BridgeRunner({
+      clientKind: "cli",
       config: { ...bridgeConfig(), autoDailyLimit: 2 },
       runtimeProvider: createMockRuntimeProvider(),
       autoJoinGame: "liars_dice",
@@ -248,6 +288,7 @@ describe("BridgeRunner", () => {
     const client = new FakeReconnectClient();
     const forwarded: ServerMessageEnvelope[] = [];
     const runner = new BridgeRunner({
+      clientKind: "cli",
       config: bridgeConfig(),
       runtimeProvider: createMockRuntimeProvider(),
       connect: vi.fn(async () => client),
@@ -266,6 +307,7 @@ describe("BridgeRunner", () => {
   it("requeues manual match batches one at a time after game_over", async () => {
     const client = new FakeReconnectClient();
     const runner = new BridgeRunner({
+      clientKind: "cli",
       config: bridgeConfig(),
       runtimeProvider: createMockRuntimeProvider(),
       connect: vi.fn(async () => client),
@@ -295,6 +337,7 @@ describe("BridgeRunner", () => {
     const client = new FakeReconnectClient();
     const healthCheck = vi.fn(async () => true);
     const runner = new BridgeRunner({
+      clientKind: "cli",
       config: bridgeConfig(),
       runtimeProvider: {
         name: "mock",
@@ -337,6 +380,7 @@ describe("BridgeRunner", () => {
     const client = new FakeReconnectClient();
     const store = new LocalMatchSessionStore({ runtimeHome: tempHome() });
     const runner = new BridgeRunner({
+      clientKind: "cli",
       config: bridgeConfig(),
       runtimeProvider: createMockRuntimeProvider(),
       connect: vi.fn(async () => client),
@@ -362,5 +406,190 @@ describe("BridgeRunner", () => {
     });
     const exported = store.exportSession("match-1");
     expect(exported?.decisions).toHaveLength(1);
+  });
+
+  // One agent, one client. The runner must declare WHICH client it is, and it must
+  // turn the server's refusal into a terminal error with instructions — never into
+  // another reconnect attempt, because retrying can never succeed.
+  it("declares its client kind to the connection layer", async () => {
+    const client = new FakeReconnectClient();
+    const connect = vi.fn(async (_opts: ReconnectingWSClientOptions) => client);
+    const runner = new BridgeRunner({
+      clientKind: "desktop",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      connect,
+      sessionStore: new LocalMatchSessionStore({ runtimeHome: tempHome() }),
+    });
+
+    await runner.start();
+    expect(connect.mock.calls[0]?.[0]?.clientKind).toBe("desktop");
+    await runner.stop();
+  });
+
+  it("turns a client_mismatch rejection into a terminal BridgeClientMismatchError", async () => {
+    const rejection = new WSClientMismatchError(
+      '{"error":"client_mismatch","reason":"client_mismatch","bound_client":"desktop"}',
+      "desktop",
+      "client mismatch",
+    );
+    const logs: Array<{ code: string; message: string }> = [];
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      connect: vi.fn(async () => {
+        throw rejection;
+      }),
+      sessionStore: new LocalMatchSessionStore({ runtimeHome: tempHome() }),
+      onLog: (e) => logs.push({ code: e.code, message: e.message }),
+    });
+
+    await expect(runner.start()).rejects.toBeInstanceOf(BridgeClientMismatchError);
+
+    const logged = logs.find((l) => l.code === "bridge.client_mismatch");
+    expect(logged).toBeDefined();
+    // The message has to name the incumbent and the way out; a bare "refused"
+    // leaves the user with a dead client and nothing to do about it.
+    expect(logged?.message).toContain("desktop app");
+    expect(logged?.message).toContain("aifight connect");
+  });
+
+  it("recognises client_mismatch through a wrapped cause chain", async () => {
+    // Across a bundle boundary `instanceof` can fail, so the 403 body is the
+    // fallback signal — same reasoning as the device-mismatch path.
+    const inner = { responseBody: '{"error":"client_mismatch","bound_client":"cli"}' };
+    const wrapped = new Error("connect failed", { cause: new Error("upgrade failed", { cause: inner }) });
+    let caught: unknown = null;
+    const runner = new BridgeRunner({
+      clientKind: "desktop",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      connect: vi.fn(async () => {
+        throw wrapped;
+      }),
+      sessionStore: new LocalMatchSessionStore({ runtimeHome: tempHome() }),
+    });
+
+    await runner.start().catch((e: unknown) => {
+      caught = e;
+    });
+
+    expect(caught).toBeInstanceOf(BridgeClientMismatchError);
+    expect((caught as BridgeClientMismatchError).boundClient).toBe("cli");
+    expect((caught as BridgeClientMismatchError).message).toContain("background service");
+  });
+
+  // A home directory copied from another computer is refused HERE, offline,
+  // before a socket is opened. The server refuses it too, but only after a
+  // connect that reads to the user like the network is broken.
+  it("refuses a home copied from another machine without connecting", async () => {
+    // Stamp as machine A (an install that lived there), then come back as B —
+    // exactly what carrying the folder to a second laptop looks like.
+    stampLocalDeviceIdentity();
+    process.env.AIFIGHT_MACHINE_ID_OVERRIDE = "99999999-8888-7777-6666-555555555555";
+    resetDeviceIdCacheForTests();
+    resetMachineIdCacheForTests();
+
+    const connect = vi.fn(async () => {
+      throw new Error("must not reach the network");
+    });
+    const logs: Array<{ code: string; message: string }> = [];
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      connect,
+      sessionStore: false,
+      onLog: (e) => logs.push({ code: e.code, message: e.message }),
+    });
+
+    await expect(runner.start()).rejects.toBeInstanceOf(BridgeDeviceMismatchError);
+
+    expect(connect).not.toHaveBeenCalled();
+    // The desktop keys its takeover card off this log code, so the card has to
+    // appear for the local verdict as well as the server's.
+    const logged = logs.find((l) => l.code === "bridge.device_mismatch");
+    expect(logged?.message).toContain("set up on a different computer");
+    expect(logged?.message).toContain("aifight connect");
+  });
+
+  // The state every machine an agent was moved AWAY from ends up in: the pairing
+  // rotated the api key, so the config left behind holds a key that no longer
+  // exists. On the FIRST connect of a new process that is a hard 401 — the
+  // reconnect loop's self-healing key refresh only applies after a connection has
+  // once succeeded. Left unclassified it escapes as a generic start failure, the
+  // process exits, and the supervisor restarts it every few seconds forever.
+  it("classifies a first-connect 401 as a terminal credential rejection", async () => {
+    const logs: Array<{ code: string; message: string }> = [];
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      connect: vi.fn(async () => {
+        throw new Error("connect failed", {
+          cause: new WSHandshakeError(401, "invalid api key", "handshake failed with 401"),
+        });
+      }),
+      sessionStore: false,
+      onLog: (e) => logs.push({ code: e.code, message: e.message }),
+    });
+
+    await expect(runner.start()).rejects.toBeInstanceOf(BridgeCredentialRejectedError);
+
+    const logged = logs.find((l) => l.code === "bridge.credential_rejected");
+    expect(logged?.message).toContain("no longer recognizes");
+    // Name the likely cause and the way out, or the user is left with a dead
+    // service and a status code.
+    expect(logged?.message).toContain("moved to another computer");
+    expect(logged?.message).toContain("--replace-local-identity");
+  });
+
+  it("classifies a 404 (agent gone) the same way", async () => {
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      connect: vi.fn(async () => {
+        throw new WSHandshakeError(404, "no such agent", "handshake failed with 404");
+      }),
+      sessionStore: false,
+    });
+
+    await expect(runner.start()).rejects.toBeInstanceOf(BridgeCredentialRejectedError);
+  });
+
+  // A transient failure must NOT be mistaken for a dead credential, or a service
+  // would park itself in standby every time the network hiccups on startup.
+  it("leaves a transient connect failure unclassified", async () => {
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      connect: vi.fn(async () => {
+        throw new WSHandshakeError(503, "upstream down", "handshake failed with 503");
+      }),
+      sessionStore: false,
+    });
+
+    const caught = await runner.start().catch((e: unknown) => e);
+    expect(caught).not.toBeInstanceOf(BridgeCredentialRejectedError);
+  });
+
+  it("connects normally on the machine that set the home up", async () => {
+    stampLocalDeviceIdentity();
+    const client = new FakeReconnectClient();
+    const connect = vi.fn(async (_opts: ReconnectingWSClientOptions) => client);
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      connect,
+      sessionStore: false,
+    });
+
+    await runner.start();
+
+    expect(connect).toHaveBeenCalled();
   });
 });

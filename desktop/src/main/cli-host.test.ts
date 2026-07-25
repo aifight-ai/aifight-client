@@ -30,14 +30,36 @@ describe("argvForCliOp — fixed argv templates", () => {
     expect(argvForCliOp({ kind: "connect", code: "  ABCD-1234_ef  " })).toEqual([
       "connect",
       "ABCD-1234_ef",
+      "--client-kind",
+      "desktop",
       "--json",
     ]);
     expect(argvForCliOp({ kind: "connect", code: "abc123", replaceLocalIdentity: true })).toEqual([
       "connect",
       "abc123",
+      "--client-kind",
+      "desktop",
       "--replace-local-identity",
       "--json",
     ]);
+  });
+
+  // Redeeming a pairing code is what decides which program owns the agent, and
+  // `aifight connect` defaults to "cli" because that is who normally runs it.
+  // Drop this flag and the app hands every agent it pairs to the background
+  // service, then cannot connect to it — from inside the app's own pairing
+  // screen, with nothing on screen to explain why.
+  it("connect: always declares the desktop as the client claiming the agent", () => {
+    for (const op of [
+      { kind: "connect", code: "aifp_abc" },
+      { kind: "connect", code: "aifp_abc", replaceLocalIdentity: true },
+    ] as const satisfies readonly CliOp[]) {
+      const argv = argvForCliOp(op);
+      expect(argv).not.toBeNull();
+      const at = argv!.indexOf("--client-kind");
+      expect(at).toBeGreaterThan(0);
+      expect(argv![at + 1]).toBe("desktop");
+    }
   });
 
   it("connect: rejects empty, over-long, and codes with argv-splitting characters", () => {

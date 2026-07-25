@@ -67,8 +67,12 @@ export async function runCli(op: CliOp): Promise<CliRunResult> {
   return api.runCli(op);
 }
 
-export async function bridgeStart(): Promise<void> {
-  await window.aifight?.start();
+/** Start the bridge and hand back the resulting status. Callers that recover from
+ *  a takeover card need the phase: a start that lands on "error" means the fix
+ *  did not take, and closing the card on it would leave the user staring at a
+ *  disconnected agent with no explanation and no way back to the form. */
+export async function bridgeStart(): Promise<BridgeStatus | undefined> {
+  return window.aifight?.start();
 }
 export async function bridgeStop(): Promise<void> {
   await window.aifight?.stop();

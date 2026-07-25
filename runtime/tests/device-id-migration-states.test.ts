@@ -58,15 +58,20 @@ import {
   getOrCreateDeviceSecret,
   resetDeviceIdCacheForTests,
 } from "../src/account/device-id";
+import { resetMachineIdCacheForTests } from "../src/account/machine-id";
 import { resetCredentialsBackendCacheForTests } from "../src/account/credentials";
 
 const DEVICE_KEY = "device.key";
 const ACCOUNT = "device-secret";
+/** Pinned so the device id is a pure function of the secret under test, rather
+ *  than of whatever machine the suite runs on. */
+const MACHINE_ID = "11111111-2222-3333-4444-555555555555";
 
 let home: string;
 let prevHome: string | undefined;
 let prevForce: string | undefined;
 let prevService: string | undefined;
+let prevMachine: string | undefined;
 let stderrLines: string[];
 let stderrSpy: { mockRestore: () => void };
 const realPlatform = process.platform;
@@ -92,6 +97,9 @@ beforeEach(() => {
   // paths (mocked) actually run.
   delete process.env.AIFIGHT_FORCE_FALLBACK;
   process.env.AIFIGHT_KEYCHAIN_SERVICE = "aifight-test-states";
+  prevMachine = process.env.AIFIGHT_MACHINE_ID_OVERRIDE;
+  process.env.AIFIGHT_MACHINE_ID_OVERRIDE = MACHINE_ID;
+  resetMachineIdCacheForTests();
   kc.probeSucceeds = true;
   kc.deviceSecret = null;
   kc.deviceSecretThrows = false;
@@ -114,8 +122,11 @@ afterEach(() => {
   else process.env.AIFIGHT_FORCE_FALLBACK = prevForce;
   if (prevService === undefined) delete process.env.AIFIGHT_KEYCHAIN_SERVICE;
   else process.env.AIFIGHT_KEYCHAIN_SERVICE = prevService;
+  if (prevMachine === undefined) delete process.env.AIFIGHT_MACHINE_ID_OVERRIDE;
+  else process.env.AIFIGHT_MACHINE_ID_OVERRIDE = prevMachine;
   resetCredentialsBackendCacheForTests();
   resetDeviceIdCacheForTests();
+  resetMachineIdCacheForTests();
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -141,7 +152,7 @@ describe("device-id migration — three-state keychain probe (G1/F1)", () => {
     kc.deviceSecret = legacy;
 
     expect(getOrCreateDeviceSecret()).toBe(legacy);
-    expect(getDeviceId()).toBe(createHash("sha256").update(legacy).digest("hex"));
+    expect(getDeviceId()).toBe(createHash("sha256").update(`${legacy}:${MACHINE_ID}`).digest("hex"));
     expect(readFileSync(join(home, DEVICE_KEY), "utf8").trim()).toBe(legacy);
     // The old entry is released ONLY after the adopted secret is read back.
     expect(kc.deleted).toContain(ACCOUNT);

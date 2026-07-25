@@ -199,6 +199,21 @@ export class AgentInstance {
       );
     }
 
+    // stop() may have run while we were connecting. It could not close this
+    // client — #client was still null when it looked — so honouring the stop is
+    // our job, and skipping it would leave a LIVE connection nobody holds a
+    // reference to. That is the exact state the machine-wide seat lock exists to
+    // prevent: the caller that gave up has already handed the seat to another
+    // client, and this socket would sit underneath it, reconnecting forever.
+    if (this.#stopped) {
+      try {
+        await client.close(1000, "agent stopped while connecting");
+      } catch {
+        // The connection is being abandoned either way.
+      }
+      throw new AgentInstanceStoppedError(`agent '${this.#opts.name}' has been stopped`);
+    }
+
     this.#client = client;
     this.#state = createInitialAgentFSM({
       welcome: client.welcome,

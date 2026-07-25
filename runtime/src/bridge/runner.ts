@@ -1,7 +1,7 @@
 import { AgentInstance, type AgentInstanceSnapshot } from "../agents/agent";
 import { MAX_CONCURRENT_MATCHES } from "../agents/limits";
-import { getDeviceId } from "../account/device-id";
-import { WSDeviceMismatchError } from "../wsclient/errors";
+import { checkLocalDeviceIdentity, getDeviceId } from "../account/device-id";
+import { WSClientMismatchError, WSDeviceMismatchError, WSHandshakeError } from "../wsclient/errors";
 import type { ReconnectingWSClientOptions } from "../wsclient/reconnect";
 import type { ServerMessageEnvelope } from "../wsclient/frame-handler";
 import { PROTOCOL_VERSION } from "../index";
@@ -29,6 +29,17 @@ import type { LLMConfig } from "../profile/config-schema";
 
 export interface BridgeRunnerOptions {
   readonly config: BridgeConfig;
+  /**
+   * Which program this is: "desktop" or "cli".
+   *
+   * REQUIRED, and deliberately not defaulted. The server binds an agent to one
+   * client on its device and refuses any other — but a connection that declares
+   * no kind binds nothing and is always let through, so a caller that silently
+   * inherited a default would reopen the very hole this closes (the app and the
+   * CLI share ~/.aifight/device.key, so the device check cannot separate them).
+   * Making it required means a new embedder has to answer the question.
+   */
+  readonly clientKind: "desktop" | "cli";
   readonly runtimeProvider?: BridgeRuntimeProvider;
   readonly autoJoinGame?: "texas_holdem" | "liars_dice" | "coup";
   readonly autoJoinMode?: string;
@@ -65,8 +76,8 @@ export class BridgeDeviceMismatchError extends Error {
 const DEVICE_MISMATCH_MESSAGE = [
   "This device's identity doesn't match this agent.",
   "For your security, an AIFight agent is tied to one device identity. This can happen if you",
-  "reinstalled, cleared AIFight's data, or switched to another computer or user account —",
-  "not only when you move to a genuinely different machine.",
+  "updated AIFight, reinstalled, cleared AIFight's data, or switched to another computer or",
+  "user account — not only when you move to a genuinely different machine.",
   "Your agent, its match record, and its rating are safe on the server.",
   "",
   'To control it from this device: open the Dashboard, go to your agent → "Connect Bridge",',
@@ -77,6 +88,135 @@ const DEVICE_MISMATCH_MESSAGE = [
   "This moves the agent here and signs the old device out.",
   "(If this agent isn't claimed yet, claim it from its claim link first, then pair.)",
 ].join("\n");
+
+const FOREIGN_HOME_MESSAGE = [
+  "This AIFight identity was set up on a different computer.",
+  "The local files were copied here, but the identity itself belongs to the machine that",
+  "created them, so this agent cannot connect from here — the server would refuse it.",
+  "Your agent, its match record, and its rating are safe.",
+  "",
+  'To move it to this computer: open the Dashboard, go to your agent → "Connect Bridge",',
+  "copy the pairing code, then run:",
+  "  aifight connect <PAIRING_CODE> --replace-local-identity",
+  "(--replace-local-identity is required because this computer already has local files.)",
+  "",
+  "This moves the agent here and signs the old computer out.",
+].join("\n");
+
+/** Thrown by BridgeRunner.start() when the server accepts the machine but not
+ *  this PROGRAM: the agent is bound to the other AIFight client on it. */
+export class BridgeClientMismatchError extends Error {
+  readonly code = "client_mismatch" as const;
+  /** Which client the server says owns the agent ("desktop" | "cli" | ""). */
+  readonly boundClient: string;
+  constructor(message: string, boundClient: string, options?: { cause?: unknown }) {
+    super(message);
+    this.name = "BridgeClientMismatchError";
+    this.boundClient = boundClient;
+    if (options?.cause !== undefined) {
+      (this as { cause?: unknown }).cause = options.cause;
+    }
+  }
+}
+
+function clientMismatchMessage(boundClient: string): string {
+  const owner =
+    boundClient === "desktop"
+      ? "the AIFight desktop app"
+      : boundClient === "cli"
+        ? "the aifight background service / command line"
+        : "another AIFight client";
+  return [
+    `This agent is bound to ${owner} on this computer.`,
+    "An agent keeps ONE connection, so it belongs to one client at a time — this is what",
+    "stops two of them fighting over it. Nothing is lost: your agent, its match record and",
+    "its rating are safe. It plays whenever the client it is bound to is running; if that",
+    "one is stopped, the agent is simply offline until it starts again — or until you move",
+    "the agent here.",
+    "",
+    'To move it here: open the Dashboard, go to your agent → "Connect Bridge", copy the',
+    "pairing code, and give it to THIS client:",
+    "  aifight connect <PAIRING_CODE> --replace-local-identity",
+    "(--replace-local-identity is required because this computer already has local",
+    "credentials — the app and the background service share them.)",
+    "(In the desktop app, use the same code on its pairing screen.)",
+    "",
+    "Pairing hands the agent to whichever client redeems the code; the other one steps",
+    "aside on its own, with nothing to stop by hand.",
+  ].join("\n");
+}
+
+/** Thrown by BridgeRunner.start() when the server rejects this machine's SAVED
+ *  CREDENTIAL outright — the very first connect answers 401/404.
+ *
+ *  This is the normal state of the machine an agent has been moved AWAY from:
+ *  redeeming a pairing code rotates the api key, so the config left behind holds
+ *  a key that no longer exists. It is terminal for the attempt (replaying a dead
+ *  key cannot start working) but recoverable by re-pairing, which is exactly the
+ *  shape of the two mismatch errors — so callers treat all three alike.
+ *
+ *  Note it can ONLY surface on a first connect. Once a connection has succeeded,
+ *  a later 401 is retried forever and self-heals via refreshApiKey. */
+export class BridgeCredentialRejectedError extends Error {
+  readonly code = "credential_rejected" as const;
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message);
+    this.name = "BridgeCredentialRejectedError";
+    if (options?.cause !== undefined) {
+      (this as { cause?: unknown }).cause = options.cause;
+    }
+  }
+}
+
+const CREDENTIAL_REJECTED_MESSAGE = [
+  "AIFight no longer recognizes this computer's saved credential.",
+  "The usual reason is that the agent was moved to another computer (or another client):",
+  "pairing there issues a new key and retires this one. It can also mean the key was",
+  "rotated from the Dashboard. Your agent, its match record, and its rating are safe.",
+  "",
+  'To run it here again: open the Dashboard, go to your agent → "Connect Bridge", copy',
+  "the pairing code, then run:",
+  "  aifight connect <PAIRING_CODE> --replace-local-identity",
+  "(--replace-local-identity is required because this computer already has local",
+  "credentials — the retired ones.)",
+].join("\n");
+
+/** Walk an error's `cause` chain looking for a rejected credential: a handshake
+ *  answered 401 (bad/retired key) or 404 (agent gone). Mirrors the two mismatch
+ *  detectors, including their tolerance for a duplicated error class across
+ *  bundles, where `instanceof` silently fails. */
+function isCredentialRejected(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 8 && cur != null; depth++) {
+    if (cur instanceof WSHandshakeError && (cur.statusCode === 401 || cur.statusCode === 404)) {
+      return true;
+    }
+    if (typeof cur === "object" && cur !== null && "statusCode" in cur && "responseBody" in cur) {
+      const sc = (cur as { readonly statusCode?: unknown }).statusCode;
+      if (sc === 401 || sc === 404) return true;
+    }
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/** Walk an error's `cause` chain looking for a client-mismatch (403) rejection. */
+function findClientMismatch(err: unknown): { boundClient: string } | null {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 8 && cur != null; depth++) {
+    if (cur instanceof WSClientMismatchError) return { boundClient: cur.boundClient };
+    // Fallback for a duplicated error class across bundles (same reasoning as
+    // isDeviceMismatchError): recognise the server token in the 403 body.
+    if (typeof cur === "object" && cur !== null && "responseBody" in cur) {
+      const body = (cur as { readonly responseBody?: unknown }).responseBody;
+      if (typeof body === "string" && body.includes("client_mismatch")) {
+        return { boundClient: /"bound_client"\s*:\s*"([a-z]{1,32})"/.exec(body)?.[1] ?? "" };
+      }
+    }
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return null;
+}
 
 /** Walk an error's `cause` chain looking for a device-mismatch (403) rejection. */
 function isDeviceMismatchError(err: unknown): boolean {
@@ -117,12 +257,25 @@ export class BridgeRunner {
   async start(): Promise<AgentInstanceSnapshot> {
     if (this.#agent !== null) return this.#agent.snapshot();
 
+    // Answer the copied-home case here, before opening a socket. The server
+    // refuses it either way, but a 403 four seconds into a connect reads as a
+    // network fault; this says what actually happened, in the first moment, and
+    // works with no connection at all. A machine that will not identify itself
+    // reports "unverifiable" and is waved through — the check never invents a
+    // reason to keep someone off their own computer.
+    const identity = checkLocalDeviceIdentity();
+    if (identity.status === "foreign") {
+      this.#log("error", "bridge.device_mismatch", FOREIGN_HOME_MESSAGE);
+      throw new BridgeDeviceMismatchError(FOREIGN_HOME_MESSAGE);
+    }
+
     const provider = this.#opts.runtimeProvider ?? providerForConfig(this.#opts.config);
     const sessionStore = this.#createSessionStore();
     const ws: ReconnectingWSClientOptions = {
       url: this.#opts.config.wsUrl,
       apiKey: this.#opts.config.apiKey,
       deviceId: getDeviceId(),
+      clientKind: this.#opts.clientKind,
       expectedProtocolVersion: PROTOCOL_VERSION,
       // R13-F08: after a 401 on reconnect, re-read the bridge config so a
       // credential rotated by re-pairing is picked up without a restart.
@@ -188,6 +341,22 @@ export class BridgeRunner {
         this.#agent = null;
         this.#log("error", "bridge.device_mismatch", DEVICE_MISMATCH_MESSAGE);
         throw new BridgeDeviceMismatchError(DEVICE_MISMATCH_MESSAGE, { cause: err });
+      }
+      const clientMismatch = findClientMismatch(err);
+      if (clientMismatch !== null) {
+        // Same reset: pairing from this client is the recovery, and it must be
+        // able to start cleanly afterwards.
+        this.#agent = null;
+        const message = clientMismatchMessage(clientMismatch.boundClient);
+        this.#log("error", "bridge.client_mismatch", message);
+        throw new BridgeClientMismatchError(message, clientMismatch.boundClient, { cause: err });
+      }
+      if (isCredentialRejected(err)) {
+        // Same reset + same shape as the two mismatches: re-pairing from this
+        // client is the recovery, and it has to be able to start cleanly after.
+        this.#agent = null;
+        this.#log("error", "bridge.credential_rejected", CREDENTIAL_REJECTED_MESSAGE);
+        throw new BridgeCredentialRejectedError(CREDENTIAL_REJECTED_MESSAGE, { cause: err });
       }
       throw err;
     }

@@ -191,8 +191,38 @@ disconnect-specific timer.
 
 ## 8. Close codes
 
-The server does not send rich WebSocket close codes; most closes are
-a plain "going away" (code 1001) or an abrupt TCP reset.
+Most closes carry no diagnostic detail: a plain "going away" (1001) or
+an abrupt TCP reset (which the client observes as 1006). There is one
+exception.
+
+### 8.1 `4409` — replaced by a newer connection
+
+An agent keeps **one** live connection. When a second one authenticates
+as the same agent, the server registers it and evicts the older one.
+A client that reads that eviction as an ordinary drop reconnects within
+a second and evicts the winner in turn, and the two trade the seat
+indefinitely without either playing a match.
+
+So the eviction is announced: close code **4409**, reason
+`replaced_by_new_connection`. A runtime that receives it MUST treat it
+as **retriable but slow** — back off for minutes, not seconds — and
+MUST NOT treat it as terminal. The likely causes are the same agent
+running on a second machine, or a background service alongside a
+desktop app on one machine.
+
+**Capability-gated.** The server sends 4409 only to clients that
+declared support at handshake:
+
+```
+X-AIFight-Bridge-Capabilities: replaced-close-code
+```
+
+Clients that declare nothing get the old abrupt close, because a
+runtime that treats the whole 4000-4999 range as terminal would stop
+reconnecting for good. New runtimes SHOULD declare the capability;
+runtimes that do not implement the slow back-off MUST NOT.
+
+### 8.2 Everything else
 
 Two failure classes, handled at different layers:
 
@@ -206,6 +236,6 @@ Two failure classes, handled at different layers:
   [`03-error-handling.md`](./03-error-handling.md). The connection
   stays open unless the server subsequently closes it.
 
-Runtime SHOULD NOT rely on WebSocket close codes for diagnostic
-detail; for auth issues inspect the HTTP status/body, for mid-session
-issues inspect any preceding `server_error` messages.
+Apart from 4409, runtime SHOULD NOT rely on WebSocket close codes for
+diagnostic detail; for auth issues inspect the HTTP status/body, for
+mid-session issues inspect any preceding `server_error` messages.

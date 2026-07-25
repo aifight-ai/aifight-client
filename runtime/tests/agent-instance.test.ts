@@ -629,6 +629,44 @@ describe("AgentInstance", () => {
     await expect(agent.start()).rejects.toBeInstanceOf(AgentInstanceStartError);
   });
 
+  // A stop that lands WHILE we are connecting has nothing to close yet — the
+  // client does not exist until connect() resolves. If the late-arriving client
+  // were then adopted, the caller that already gave up (and, in the CLI service,
+  // already handed the machine's agent seat to somebody else) would be sitting
+  // on top of a live connection nobody holds a reference to: two bridges, one
+  // agent, which is the exact state the seat lock exists to prevent.
+  it("closes and refuses a connection that lands after stop()", async () => {
+    const client = new FakeReconnectClient();
+    let releaseConnect: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => {
+      releaseConnect = resolve;
+    });
+    const agent = new AgentInstance({
+      name: "slow-to-connect",
+      ws: {
+        url: "ws://127.0.0.1:1/api/ws",
+        apiKey: "sk-test",
+        expectedProtocolVersion: "v1.0.0",
+      },
+      connect: async () => {
+        await pending;
+        return client;
+      },
+      decisionProvider: { decide: vi.fn(async () => ({ type: "fold" })) },
+      now: () => 42,
+    });
+
+    const starting = agent.start();
+    // The caller gives up before the connection lands.
+    await agent.stop("gave up waiting");
+    releaseConnect?.();
+
+    await expect(starting).rejects.toBeInstanceOf(AgentInstanceStoppedError);
+    // The socket that arrived late must be closed, not left running.
+    expect(client.state).toBe("closed");
+    expect(agent.snapshot().stopped).toBe(true);
+  });
+
   it("start wraps connect failure in AgentInstanceStartError", async () => {
     const { agent } = makeHarness();
     const failing = new AgentInstance({

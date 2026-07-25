@@ -121,6 +121,25 @@ export class WSDeviceMismatchError extends WSHandshakeError {
   }
 }
 
+/** Specialization of WSHandshakeError for the 403 the server returns when the
+ *  RIGHT machine but the WRONG program presents the credential: the desktop app
+ *  where the background service is bound, or the reverse.
+ *
+ *  Separate from WSDeviceMismatchError because the two need different words in
+ *  front of a user — "this agent runs on another computer" versus "this agent
+ *  runs through your background service on this computer" — even though both are
+ *  terminal (403, never retried) and both are resolved the same way: take a
+ *  pairing code from the Dashboard and give it to the client that should have
+ *  the agent. `boundClient` is the kind the server says currently owns it. */
+export class WSClientMismatchError extends WSHandshakeError {
+  readonly boundClient: string;
+  constructor(responseBody: string, boundClient: string, message: string, cause?: unknown) {
+    super(403, responseBody, message, cause);
+    this.name = "WSClientMismatchError";
+    this.boundClient = boundClient;
+  }
+}
+
 // ─── Welcome / protocol negotiation ─────────────────────────────────
 
 /** WS open succeeded but no frame arrived within

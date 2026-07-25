@@ -583,8 +583,20 @@ function reconnectEvent(state: AgentFSMState, event: ReconnectEvent): AgentFSMTr
     ]);
   }
   if (event.type === "attempt-failure") {
+    // Always state WHY. A bare "attempt N failed" is what made the 2026-07-24
+    // eviction storm unreadable: the log looked identical whether the network
+    // was down or another local client had taken over the same agent.
+    const cause = event.cause?.message ? `: ${event.cause.message}` : "";
+    const retryIn =
+      typeof event.nextDelayMs === "number"
+        ? ` (retrying in ${Math.round(event.nextDelayMs / 1000)}s)`
+        : "";
     return ok({ ...state, transport: "backoff" }, [
-      notify(event.severity, "reconnect.attempt_failure", `Reconnect attempt ${event.attempt} failed`),
+      notify(
+        event.severity,
+        "reconnect.attempt_failure",
+        `Reconnect attempt ${event.attempt} failed${cause}${retryIn}`,
+      ),
     ]);
   }
   return ok(

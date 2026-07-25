@@ -3,7 +3,9 @@
 // Forces the file backend (AIFIGHT_FORCE_FALLBACK=1) so the test never touches
 // the real OS keychain, and isolates the home to a temp dir. Verifies the device
 // secret lives in the AIFight home's device.key (0600) — NOT in bridge.json — and
-// that the id sent to the server is sha256(secret), stable across "restarts".
+// that the id sent to the server is sha256(secret + ":" + machine id), stable
+// across "restarts". The machine id is pinned via AIFIGHT_MACHINE_ID_OVERRIDE so
+// these cases do not depend on what the host will say about itself.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -26,7 +28,13 @@ import {
   getOrCreateDeviceSecret,
   resetDeviceIdCacheForTests,
 } from "../src/account/device-id";
+import { resetMachineIdCacheForTests } from "../src/account/machine-id";
 import { resetCredentialsBackendCacheForTests } from "../src/account/credentials";
+
+/** Two stand-in machines. Real values are OS-supplied UUIDs; only their being
+ *  different matters here. */
+const MACHINE_A = "11111111-2222-3333-4444-555555555555";
+const MACHINE_B = "99999999-8888-7777-6666-555555555555";
 
 /** Is the OS keychain usable here? Gates the migration cases below. */
 const keychainAvailable: boolean = (() => {
@@ -49,15 +57,19 @@ describe("device-id (file fallback)", () => {
   let home: string;
   let prevHome: string | undefined;
   let prevForce: string | undefined;
+  let prevMachine: string | undefined;
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "aifight-deviceid-"));
     prevHome = process.env.AIFIGHT_HOME;
     prevForce = process.env.AIFIGHT_FORCE_FALLBACK;
+    prevMachine = process.env.AIFIGHT_MACHINE_ID_OVERRIDE;
     process.env.AIFIGHT_HOME = home;
     process.env.AIFIGHT_FORCE_FALLBACK = "1"; // force file backend (no keychain)
+    process.env.AIFIGHT_MACHINE_ID_OVERRIDE = MACHINE_A;
     resetCredentialsBackendCacheForTests();
     resetDeviceIdCacheForTests();
+    resetMachineIdCacheForTests();
   });
 
   afterEach(() => {
@@ -65,8 +77,11 @@ describe("device-id (file fallback)", () => {
     else process.env.AIFIGHT_HOME = prevHome;
     if (prevForce === undefined) delete process.env.AIFIGHT_FORCE_FALLBACK;
     else process.env.AIFIGHT_FORCE_FALLBACK = prevForce;
+    if (prevMachine === undefined) delete process.env.AIFIGHT_MACHINE_ID_OVERRIDE;
+    else process.env.AIFIGHT_MACHINE_ID_OVERRIDE = prevMachine;
     resetCredentialsBackendCacheForTests();
     resetDeviceIdCacheForTests();
+    resetMachineIdCacheForTests();
     rmSync(home, { recursive: true, force: true });
   });
 
@@ -80,14 +95,45 @@ describe("device-id (file fallback)", () => {
     }
   });
 
-  it("device id is sha256(secret), 64-char hex, and != the secret", () => {
+  it("device id is sha256(secret + machine id), 64-char hex, and != the secret", () => {
     const secret = getOrCreateDeviceSecret();
     expect(secret).toMatch(/^[0-9a-f]{64}$/);
     const id = getDeviceId();
     expect(id).toMatch(/^[0-9a-f]{64}$/);
-    expect(id).toBe(createHash("sha256").update(secret).digest("hex"));
+    expect(id).toBe(createHash("sha256").update(`${secret}:${MACHINE_A}`).digest("hex"));
     // The id is sent to the server; the secret stays local — they must differ.
     expect(id).not.toBe(secret);
+  });
+
+  // The whole point of mixing the machine in: carrying this directory to another
+  // computer must not carry its identity. Same secret file, different machine,
+  // different id — which is what lets the server refuse the copy.
+  it("the same secret on another machine yields a different device id", () => {
+    const secret = getOrCreateDeviceSecret();
+    const here = getDeviceId();
+
+    process.env.AIFIGHT_MACHINE_ID_OVERRIDE = MACHINE_B;
+    resetMachineIdCacheForTests();
+    const elsewhere = getDeviceId();
+
+    expect(getOrCreateDeviceSecret()).toBe(secret); // the copied file is identical
+    expect(elsewhere).not.toBe(here);
+  });
+
+  // A machine that will not name itself (containers, a locked-down host) must
+  // still be able to play — but it identifies itself as nothing, not as
+  // something. Hashing the empty machine id would hand the server a confident
+  // fingerprint built from the secret alone: precisely the copy-the-folder value
+  // this input exists to retire, and one that silently "changes machine" the
+  // moment the read starts working. "" omits the header, and an unidentified
+  // client is a state the server already handles (admitted while lenient).
+  it("sends no id at all when the machine has none", () => {
+    process.env.AIFIGHT_MACHINE_ID_OVERRIDE = "";
+    resetMachineIdCacheForTests();
+    expect(getDeviceId()).toBe("");
+    expect(getDeviceId()).not.toBe(
+      createHash("sha256").update(`${getOrCreateDeviceSecret()}:`).digest("hex"),
+    );
   });
 
   it("is stable across a simulated process restart (same key file)", () => {
@@ -112,6 +158,7 @@ describe("device-id (keychain → file migration, D1)", () => {
   let prevHome: string | undefined;
   let prevForce: string | undefined;
   let prevService: string | undefined;
+  let prevMachine: string | undefined;
   let service: string;
   const ACCOUNT = "device-secret"; // DEVICE_KEYCHAIN_ACCOUNT in device-id.ts
 
@@ -121,11 +168,14 @@ describe("device-id (keychain → file migration, D1)", () => {
     prevHome = process.env.AIFIGHT_HOME;
     prevForce = process.env.AIFIGHT_FORCE_FALLBACK;
     prevService = process.env.AIFIGHT_KEYCHAIN_SERVICE;
+    prevMachine = process.env.AIFIGHT_MACHINE_ID_OVERRIDE;
     process.env.AIFIGHT_HOME = home;
     delete process.env.AIFIGHT_FORCE_FALLBACK; // allow keychain adoption
     process.env.AIFIGHT_KEYCHAIN_SERVICE = service; // isolate from production
+    process.env.AIFIGHT_MACHINE_ID_OVERRIDE = MACHINE_A;
     resetCredentialsBackendCacheForTests();
     resetDeviceIdCacheForTests();
+    resetMachineIdCacheForTests();
   });
 
   afterEach(() => {
@@ -140,8 +190,11 @@ describe("device-id (keychain → file migration, D1)", () => {
     else process.env.AIFIGHT_FORCE_FALLBACK = prevForce;
     if (prevService === undefined) delete process.env.AIFIGHT_KEYCHAIN_SERVICE;
     else process.env.AIFIGHT_KEYCHAIN_SERVICE = prevService;
+    if (prevMachine === undefined) delete process.env.AIFIGHT_MACHINE_ID_OVERRIDE;
+    else process.env.AIFIGHT_MACHINE_ID_OVERRIDE = prevMachine;
     resetCredentialsBackendCacheForTests();
     resetDeviceIdCacheForTests();
+    resetMachineIdCacheForTests();
     rmSync(home, { recursive: true, force: true });
   });
 
@@ -156,7 +209,7 @@ describe("device-id (keychain → file migration, D1)", () => {
 
       const secret = getOrCreateDeviceSecret();
       expect(secret).toBe(legacy); // adopted → the deviceId stays stable
-      expect(getDeviceId()).toBe(createHash("sha256").update(legacy).digest("hex"));
+      expect(getDeviceId()).toBe(createHash("sha256").update(`${legacy}:${MACHINE_A}`).digest("hex"));
 
       // Now on the file backend, with the legacy keychain entry cleaned up.
       expect(getDeviceIdBackend().backend).toBe("file");

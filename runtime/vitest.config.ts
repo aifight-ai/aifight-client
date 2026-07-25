@@ -6,6 +6,9 @@ export default defineConfig({
     environment: "node",
     include: ["tests/**/*.test.ts"],
     testTimeout: 30_000,
+    // Give every test file its own AIFight home unless it sets one itself, so
+    // no test can write into the developer's real ~ directory. See the file.
+    setupFiles: ["./tests/_setup/isolated-home.ts"],
     // F10: bridge config writes encrypt credentials via account/credentials.
     // Force the AES file fallback suite-wide so no test can ever touch the
     // REAL OS keychain (service "aifight-runtime"). account-credentials.test.ts

@@ -63,7 +63,20 @@ export function argvForCliOp(op: CliOp): string[] | null {
     case "connect": {
       const code = isString(op.code) ? op.code.trim() : "";
       if (code === "" || code.length > 128 || !PAIRING_CODE_RE.test(code)) return null;
-      return ["connect", code, ...(op.replaceLocalIdentity ? ["--replace-local-identity"] : []), "--json"];
+      // --client-kind desktop is NOT optional here. Redeeming a pairing code is
+      // what decides which program owns the agent from then on, and the CLI's
+      // connect defaults to "cli" because that is who normally types it. Leaving
+      // it off would make the app award the agent to the background service —
+      // locking itself out of the very pairing the user started from the app,
+      // with no error to explain it.
+      return [
+        "connect",
+        code,
+        "--client-kind",
+        "desktop",
+        ...(op.replaceLocalIdentity ? ["--replace-local-identity"] : []),
+        "--json",
+      ];
     }
     case "status":
       return ["status", "--json"];

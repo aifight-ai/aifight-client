@@ -107,6 +107,11 @@ const ITEMS: readonly MenuItem[] = [
   },
   {
     key: "8",
+    label: "Update — get the latest CLI and restart the service",
+    run: ({ dispatch }) => dispatch("update", []).then(() => undefined),
+  },
+  {
+    key: "9",
     label: "Full command list",
     run: async ({ showHelp }) => {
       showHelp();

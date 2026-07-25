@@ -99,6 +99,17 @@ const bridgeHost = new BridgeHost({
 
 registerBridgeIpc(bridgeHost);
 
+// Hand back the local agent seat on the way out. The desktop app and the CLI
+// service share one agent identity under ~/.aifight and hold the same advisory
+// lockfile so they can never both connect (the server would otherwise evict them
+// in turn, forever). before-quit gives us no chance to await bridgeHost.stop(),
+// so this is the synchronous half: two unlink syscalls, no I/O worth waiting on.
+// Registered as its OWN listener — the isQuitting one above is declared before
+// bridgeHost exists, and quit-time cleanup should not ride on window bookkeeping.
+app.on("before-quit", () => {
+  bridgeHost.releaseAgentSeatSync();
+});
+
 // Bring the window forward when an OS match notification is clicked. The renderer
 // owns the notification (it has i18n + the live store); this just raises the app.
 // Renderer→main, no payload — nothing sensitive crosses.

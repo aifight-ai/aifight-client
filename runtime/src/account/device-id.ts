@@ -4,13 +4,22 @@
 // binds an agent's credential to a deviceId on first authenticated connect and
 // rejects that credential presented from any other device.
 //
-// deviceId = sha256(deviceSecret). The secret is a random 32-byte value kept in
-// a 0600 file at ~/.aifight/device.key (D1 unified local-file backend). A prior
-// install that stored it in the OS keychain is migrated to the file ONCE, on
-// first read, preserving the deviceId. It is NEVER written into bridge.json, so
-// copying the agent credential file — or even all of ~/.aifight/runtime — does
-// not carry the secret to another machine; a copied credential presented
-// elsewhere yields a different (or no) deviceId and is rejected by the server.
+// deviceId = sha256(deviceSecret + ":" + machineId). The secret is a random
+// 32-byte value kept in a 0600 file at ~/.aifight/device.key (D1 unified
+// local-file backend). A prior install that stored it in the OS keychain is
+// migrated to the file ONCE, on first read. It is NEVER written into
+// bridge.json, so copying the agent credential file does not carry it.
+//
+// The machine id (see machine-id.ts) is the second half and closes the case the
+// secret alone cannot: copying the ENTIRE home directory to another laptop
+// carries the secret too, and a secret-only hash would present that copy as the
+// same device. Mixing in a value the OS holds rather than the directory makes
+// the copy hash differently, so the server refuses it. Neither input leaves the
+// machine — the server only ever sees the hash.
+//
+// Keeping the random per-install secret in the formula (rather than hashing the
+// machine id alone) preserves the privacy property that a reinstall is a fresh,
+// uncorrelatable identity.
 //
 // The OS keychain is only READ (once) to adopt a legacy secret, then dropped —
 // never written for new secrets, so it raises no macOS authorization popup.
@@ -37,8 +46,10 @@ import { join } from "node:path";
 import { getBridgeConfigPath } from "../bridge/config";
 import { getAifightHome } from "../store/paths";
 import { AIFIGHT_RUNTIME_SERVICE, isKeychainAvailable } from "./credentials";
+import { getMachineId } from "./machine-id";
 
 const DEVICE_KEY_FILENAME = "device.key";
+const DEVICE_ID_FILENAME = "device.id";
 const DEVICE_KEYCHAIN_ACCOUNT = "device-secret";
 const DEVICE_SECRET_BYTES = 32;
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -337,12 +348,116 @@ function warnKeychainDeferredOnce(): void {
   );
 }
 
-/** The device id sent to the server (X-Device-Id): sha256(secret), 64-char hex.
- *  Returns "" (→ header omitted) when the secret is unavailable this run. */
+/** The device id sent to the server (X-Device-Id): sha256(secret + ":" +
+ *  machineId), 64-char hex. Returns "" (→ header omitted) when EITHER input is
+ *  unavailable this run — a deferred keychain migration, or a machine that will
+ *  not name itself.
+ *
+ *  Both halves are required, and the machine half is the one that is easy to get
+ *  wrong. Hashing an empty machine id would yield a perfectly well-formed
+ *  fingerprint that means "I don't know which machine this is" while looking
+ *  exactly like "I am certain which machine this is" — and the server, which
+ *  cannot see the inputs, would trust-on-first-use bind it. The moment the read
+ *  recovered, the same laptop would present a different id and be refused as a
+ *  different computer. Sending nothing is honest and the server already has a
+ *  meaning for it: unidentified, admitted under the lenient default, refused
+ *  under strict.
+ *
+ *  The separator is what keeps the two inputs from running together: without it
+ *  a secret ending in some prefix of the machine id would collide with another
+ *  pair, and the secret is fixed-width hex so a literal ":" cannot appear in it. */
 export function getDeviceId(): string {
   const secret = getOrCreateDeviceSecret();
   if (secret === "") return "";
-  return createHash("sha256").update(secret).digest("hex");
+  const machineId = getMachineId();
+  if (machineId === "") return "";
+  return createHash("sha256").update(`${secret}:${machineId}`).digest("hex");
+}
+
+function deviceIdPath(): string {
+  return join(getAifightHome(), DEVICE_ID_FILENAME);
+}
+
+/**
+ * The verdict of the local identity self-check.
+ *
+ *  - `ok`             this home was set up on this machine (or has just been
+ *                     stamped for the first time, which every upgrade does).
+ *  - `unverifiable`   nothing to compare against this run — no device secret, or
+ *                     a machine that will not name itself. Never an alarm: the
+ *                     degraded read is exactly what a container looks like.
+ *  - `foreign`        the stamp was written by a DIFFERENT machine. Somebody
+ *                     copied the home directory here.
+ */
+export type LocalDeviceIdentity =
+  | { readonly status: "ok" }
+  | { readonly status: "unverifiable" }
+  | { readonly status: "foreign"; readonly stamped: string; readonly current: string };
+
+/**
+ * Compare this machine against the stamp left in the home directory, and stamp
+ * it on the way past if there is none yet.
+ *
+ * This exists purely so a copied home fails in the first second, offline, with
+ * words that say what happened — rather than connecting, getting a 403, and
+ * looking like a network fault. It is NOT a security boundary: the file is the
+ * user's own and trivially editable, and forging it changes nothing, because
+ * the server's record is what actually decides. So a mismatch is never
+ * overwritten (that would erase the only local evidence) and a missing stamp is
+ * never treated as suspicious (that is just an install that predates the file).
+ */
+export function checkLocalDeviceIdentity(): LocalDeviceIdentity {
+  const current = getDeviceId();
+  // No secret this run (deferred keychain migration), or a machine that gave no
+  // id: in both cases the id we would compare is not stable enough to accuse
+  // anyone with. A transient failure to read the machine id must not tell a user
+  // their own laptop is someone else's.
+  if (current === "" || getMachineId() === "") return { status: "unverifiable" };
+
+  const path = deviceIdPath();
+  const stamped = readStampedDeviceId(path);
+  if (stamped === undefined) {
+    writeStampedDeviceId(path, current);
+    return { status: "ok" };
+  }
+  if (stamped === current) return { status: "ok" };
+  return { status: "foreign", stamped, current };
+}
+
+/**
+ * Re-stamp the home directory with this machine's device id.
+ *
+ * Called after a successful pairing: the owner has just said, from the
+ * Dashboard, that this machine is where the agent belongs, so the old stamp is
+ * answered and this is now legitimately a local identity.
+ */
+export function stampLocalDeviceIdentity(): void {
+  const current = getDeviceId();
+  if (current === "" || getMachineId() === "") return;
+  writeStampedDeviceId(deviceIdPath(), current);
+}
+
+function readStampedDeviceId(path: string): string | undefined {
+  if (!existsSync(path)) return undefined;
+  try {
+    const v = readFileSync(path, "utf8").trim();
+    return HEX64.test(v) ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Best effort by design: a home directory that cannot be written is a problem
+ *  for the parts that store real state, not for a diagnostic stamp. Failing to
+ *  write it must never keep an agent from playing. */
+function writeStampedDeviceId(path: string, deviceID: string): void {
+  try {
+    mkdirSync(getAifightHome(), { recursive: true });
+    writeFileSync(path, `${deviceID}\n`, { mode: 0o600 });
+    if (process.platform !== "win32") chmodSync(path, 0o600);
+  } catch {
+    // Diagnostics only.
+  }
 }
 
 /** Which backend stored the device secret (diagnostics / `aifight status`). */

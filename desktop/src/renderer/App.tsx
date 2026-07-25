@@ -243,14 +243,202 @@ function useDeviceMismatch(): { active: boolean; dismiss: () => void } {
   return { active, dismiss: () => setActive(false) };
 }
 
+// Tracks "right machine, wrong program": the agent is bound to the OTHER AIFight
+// client on this computer. Since the app is always the "desktop" client, the
+// incumbent can only be the CLI / background service — that is why the copy names
+// it outright instead of plumbing the server's bound_client through. (Revisit if a
+// third client kind is ever added.) Cleared on the same signals as the device one.
+function useClientMismatch(): { active: boolean; dismiss: () => void } {
+  const [active, setActive] = useState(false);
+  useEffect(() => {
+    const api = window.aifight;
+    if (api === undefined) return;
+    const offLog = api.onLog((e) => {
+      if (e.code === "bridge.client_mismatch") setActive(true);
+    });
+    const offStatus = api.onStatus((s) => {
+      if (s.phase === "running" || s.phase === "starting" || s.config === undefined) setActive(false);
+    });
+    return () => {
+      offLog();
+      offStatus();
+    };
+  }, []);
+  return { active, dismiss: () => setActive(false) };
+}
+
 // F2 — a device mismatch used to stack TWO red banners (this takeover's ancestor +
 // the generic BridgeErrorBanner, the latter truncating the same multi-line message
 // mid-sentence). Now exactly one shows: the takeover while a mismatch is active,
-// else the generic error banner.
+// else the generic error banner. Device beats client: a device mismatch means the
+// credential is rejected outright, so re-pairing is the only move either way.
 function ConnectionBanners() {
-  const { active, dismiss } = useDeviceMismatch();
-  if (active) return <DeviceMismatchTakeover onDismiss={dismiss} />;
+  const device = useDeviceMismatch();
+  const client = useClientMismatch();
+  if (device.active) return <DeviceMismatchTakeover onDismiss={device.dismiss} />;
+  if (client.active) return <ClientMismatchTakeover onDismiss={client.dismiss} />;
   return <BridgeErrorBanner />;
+}
+
+// The "one agent, one client" card. Deliberately calmer than the device takeover:
+// nothing is broken and nothing is at risk — the agent is playing, just not here.
+// So this offers exactly one action (move it here with a pairing code) and says
+// plainly that leaving it alone is a fine choice.
+function ClientMismatchTakeover({ onDismiss }: { onDismiss: () => void }) {
+  const { t } = useTranslation();
+  const status = useBridgeStatus();
+  const origin = webOrigin(status?.config?.baseUrl);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState<"move" | "new" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const moveHere = async () => {
+    const c = code.trim();
+    if (c === "" || busy !== null) return;
+    setBusy("move");
+    setError(null);
+    // --replace-local-identity is required: the app and the background service
+    // share one bridge.json, so local credentials always exist here.
+    const r = await runCli({ kind: "connect", code: c, replaceLocalIdentity: true });
+    if (r.exitCode !== 0) {
+      setError(localizeServerError(resultText(r)));
+      setBusy(null);
+      return;
+    }
+    // The code was spent, but that is only half the move. Check what the start
+    // actually did before declaring victory: dismissing on an "error" phase used
+    // to leave the user looking at a disconnected agent with the explanation
+    // gone and no way back to this form.
+    const started = await bridgeStart();
+    if (started?.phase === "running" || started?.phase === "starting") {
+      onDismiss();
+      return;
+    }
+    // The code was redeemed, so the agent HAS moved — whatever went wrong now is
+    // a local start problem, most often the background service holding the
+    // machine's seat for the few seconds before it notices and lets go. Echoing
+    // the host's raw message here would be worse than useless: it is English
+    // regardless of locale, and its most likely value ("another bridge is
+    // running your agent") reads as though the move failed, when it succeeded.
+    setError(t("clientMismatch.movedButOffline"));
+    setBusy(null);
+  };
+
+  // Mirrors the device card's third option. Someone who does not want to move an
+  // existing agent (or cannot reach the Dashboard) still needs a way forward,
+  // and registering a fresh agent here is it.
+  const newAgent = async () => {
+    if (busy !== null) return;
+    // Its own confirm, not the device card's: there the current agent is gone
+    // for this machine, here it is alive and playing next door. Telling the user
+    // "use this if the current agent no longer exists" would be false.
+    if (!window.confirm(t("clientMismatch.newConfirm"))) return;
+    setBusy("new");
+    setError(null);
+    const r = await runCli({ kind: "setup", replaceLocalIdentity: true });
+    if (r.exitCode !== 0) {
+      setError(t("play.status.newAgentFailed"));
+      setBusy(null);
+      return;
+    }
+    armFirstRunGuide((r.json as { config?: { agentId?: string } } | undefined)?.config?.agentId);
+    await bridgeStart();
+    onDismiss();
+  };
+
+  return (
+    <div className="border-b border-[var(--border)] bg-[var(--accent-soft)]">
+      <div className="mx-auto max-w-3xl space-y-3 px-4 py-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 items-start gap-2.5">
+            <Link2 size={18} className="mt-0.5 shrink-0 text-[var(--accent-text)]" />
+            <div className="min-w-0">
+              <div className="text-[13px] font-medium text-[var(--text)]">{t("clientMismatch.title")}</div>
+              <div className="mt-1 text-[12px] leading-relaxed text-[var(--text-muted)]">{t("clientMismatch.body")}</div>
+            </div>
+          </div>
+          <button
+            onClick={onDismiss}
+            className="shrink-0 rounded-md px-2.5 py-1 text-[12px] text-[var(--text-muted)] transition-colors hover:bg-[var(--hover)]"
+          >
+            {t("match.dismiss")}
+          </button>
+        </div>
+
+        <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+          <div>
+            <div className="flex items-center gap-1.5 text-[12.5px] font-medium text-[var(--text)]">
+              <Link2 size={14} className="text-[var(--accent-text)]" />
+              {t("clientMismatch.moveTitle")}
+            </div>
+            <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--text-muted)]">
+              {t("clientMismatch.moveDesc")}
+            </p>
+            <div className="mt-2.5 flex flex-wrap gap-2">
+              <input
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void moveHere();
+                }}
+                placeholder={t("play.onboard.codePlaceholder")}
+                className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-[13px] text-[var(--text)] outline-none focus:border-[var(--accent)]"
+              />
+              <button
+                onClick={() => void moveHere()}
+                disabled={code.trim() === "" || busy !== null}
+                className="flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3.5 py-2 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                {busy === "move" ? <Loader2 size={13} className="animate-spin" /> : <Link2 size={13} />}
+                {busy === "move" ? t("clientMismatch.moving") : t("clientMismatch.moveBtn")}
+              </button>
+            </div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--text-faint)]">
+              <span>{t("deviceMismatch.takeover.codeHowTo")}</span>
+              {origin !== undefined && (
+                <a
+                  href={`${origin}/dashboard`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-[var(--accent)] hover:underline"
+                >
+                  <ExternalLink size={11} />
+                  {t("deviceMismatch.openDashboard")}
+                </a>
+              )}
+            </div>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--text-faint)]">
+              {t("clientMismatch.afterNote")}
+            </p>
+          </div>
+
+          {error !== null && <div className="text-[12px] text-red-400">{error}</div>}
+
+          <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3.5 py-3">
+            <div className="text-[12.5px] font-medium text-[var(--text)]">{t("clientMismatch.keepTitle")}</div>
+            <div className="mt-0.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
+              {t("clientMismatch.keepDesc")}
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3.5 py-3">
+            <div className="text-[12.5px] font-medium text-[var(--text)]">{t("clientMismatch.newTitle")}</div>
+            <div className="mt-0.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
+              {t("clientMismatch.newDesc")}
+            </div>
+            <button
+              onClick={() => void newAgent()}
+              disabled={busy !== null}
+              className="mt-2 flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-[12px] text-[var(--text)] transition-colors hover:bg-[var(--hover)] disabled:opacity-50"
+            >
+              {busy === "new" ? <Loader2 size={13} className="animate-spin" /> : <UserPlus size={13} className="text-[var(--text-muted)]" />}
+              {busy === "new" ? t("play.status.newAgentBusy") : t("clientMismatch.newBtn")}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // F1 — the in-app takeover card for a device mismatch (owner-approved 3-button
@@ -562,9 +750,22 @@ function BridgeErrorBanner() {
   const busy = retrying || reRegistering;
   // F2 — show a single-line summary (first line), with a details toggle for the
   // rest instead of truncating a multi-line message mid-sentence.
-  const message = typeof status.message === "string" ? status.message.trim() : "";
+  //
+  // The main process writes status.message in English. When it also tags the
+  // status with a `code` (e.g. the local agent lock is held by the CLI service),
+  // prefer the translated text; the English stays the defaultValue, so a code we
+  // haven't translated yet degrades to the original sentence rather than a key.
+  const raw = typeof status.message === "string" ? status.message.trim() : "";
+  const message =
+    status.code !== undefined && status.code !== ""
+      ? t(`bridgeError.${status.code}`, { ...status.codeParams, defaultValue: raw }).trim()
+      : raw;
   const firstLine = message.split("\n", 1)[0] ?? "";
   const hasMore = message.length > firstLine.length;
+  // "Another bridge on this machine holds the agent seat" — recoverable by
+  // stopping that one, and NOT by anything that changes this agent's identity.
+  const seatConflict =
+    status.code === "lockHeld" || status.code === "lockHeldUnknown" || status.code === "lockFailed";
   const retry = () => {
     setRetrying(true);
     void window.aifight?.start().finally(() => setRetrying(false));
@@ -609,13 +810,19 @@ function BridgeErrorBanner() {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <button
-            onClick={newAgent}
-            disabled={busy}
-            className="text-[12px] text-[var(--text-muted)] underline-offset-2 hover:underline disabled:opacity-60"
-          >
-            {t("play.status.newAgent")}
-          </button>
+          {/* Hidden when the seat is simply taken by another bridge on this
+              machine: registering a fresh agent would archive the user's real
+              one, lose its rating history, and STILL not connect — the seat
+              would remain held. Retry is the only correct action there. */}
+          {!seatConflict && (
+            <button
+              onClick={newAgent}
+              disabled={busy}
+              className="text-[12px] text-[var(--text-muted)] underline-offset-2 hover:underline disabled:opacity-60"
+            >
+              {t("play.status.newAgent")}
+            </button>
+          )}
           <button
             onClick={retry}
             disabled={busy}

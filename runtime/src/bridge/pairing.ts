@@ -6,6 +6,7 @@ import {
   type BridgeConfig,
   type BridgeRuntimeType,
 } from "./config";
+import type { BridgeClientKind } from "./client-kind";
 
 export interface BridgePairExchangeResponse {
   readonly agent: {
@@ -26,6 +27,11 @@ export interface ExchangePairingCodeOptions {
   /** Per-device id; sent as X-Device-Id so the server rebinds the agent to THIS
    *  machine on a successful exchange. Omitted from the request when absent. */
   readonly deviceId?: string;
+  /** Which program is claiming the agent; sent as X-AIFight-Client-Kind. The
+   *  exchange awards the seat to this kind, so the incumbent on the machine the
+   *  agent is leaving cannot reconnect and take it back. Omitted when absent,
+   *  which leaves the server's binding unset for the next connect to claim. */
+  readonly clientKind?: BridgeClientKind;
 }
 
 const DEFAULT_BASE_URL = "https://aifight.ai";
@@ -49,6 +55,7 @@ export async function exchangePairingCode(
     headers: {
       "Content-Type": "application/json",
       ...(opts.deviceId ? { "X-Device-Id": opts.deviceId } : {}),
+      ...(opts.clientKind ? { "X-AIFight-Client-Kind": opts.clientKind } : {}),
     },
     body: JSON.stringify({ pairing_code: pairingCode }),
   });

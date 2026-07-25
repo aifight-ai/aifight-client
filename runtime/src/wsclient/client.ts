@@ -22,6 +22,15 @@
 
 import { WebSocket } from "ws";
 
+import { BRIDGE_CAPABILITIES } from "./capabilities";
+
+/** Which client the server says currently owns the agent, from a client_mismatch
+ *  403 body. Best effort: the message reads fine without it. */
+function parseBoundClient(body: string): string {
+  const m = /"bound_client"\s*:\s*"([a-z]{1,32})"/.exec(body);
+  return m?.[1] ?? "";
+}
+
 import {
   WSAbortedError,
   type WSClientError,
@@ -29,6 +38,7 @@ import {
   WSConnectError,
   WSHandshakeError,
   WSDeviceMismatchError,
+  WSClientMismatchError,
   WSProtocolVersionError,
   WSSchemaError,
   WSUnknownMessageError,
@@ -119,11 +129,17 @@ export interface WSClientOptions {
   /** In-memory plaintext API key. Caller resolves from credentials.ts
    *  (M1-05) before this call; transport never touches keychain. */
   apiKey: string;
-  /** Per-device id (sha256 of the device secret), sent as the X-Device-Id
-   *  header so the server can enforce single-device binding (anti-theft).
-   *  Optional: when absent the header is omitted (a lenient server treats a
-   *  missing header as a legacy client). */
+  /** Per-device id (sha256 of the device secret and this machine's own id),
+   *  sent as the X-Device-Id header so the server can enforce single-device
+   *  binding (anti-theft). Optional: when absent the header is omitted, which a
+   *  lenient server treats as a client that cannot identify its machine. */
   deviceId?: string;
+  /** Which program is running this agent: "desktop" | "cli". The server binds an
+   *  agent to ONE client on its device — the device id cannot distinguish them,
+   *  because the app and the CLI share ~/.aifight/device.key — and 403s any
+   *  other kind. Omitted when unknown, which the server treats as "binds
+   *  nothing" so an older client keeps working. */
+  clientKind?: string;
   /** Runtime's compiled-in protocol version, SemVer (e.g. "1.0.0"
    *  or "v1.0.0"). The optional "v" prefix is stripped before
    *  comparison. Major component must match server's
@@ -770,6 +786,7 @@ export async function createWSClient(
     try {
       const headers: Record<string, string> = { "X-API-Key": opts.apiKey };
       if (opts.deviceId) headers["X-Device-Id"] = opts.deviceId;
+      if (opts.clientKind) headers["X-AIFight-Client-Kind"] = opts.clientKind;
       // Declare the protocol version our bundled schemas speak (F07,
       // protocol v1.2). Since the 2026-07-16 enforcement the server REFUSES
       // handshakes below v1.2.0 (readable error frame + close): every
@@ -777,6 +794,12 @@ export async function createWSClient(
       // must echo it, and a pre-v1.2 bundle would reject those frames
       // (additionalProperties: false) and silently lose every turn.
       headers["X-AIFight-Protocol-Version"] = opts.expectedProtocolVersion;
+      // Capabilities the server may only use once we say we understand them.
+      // `replaced-close-code`: send us 4409 instead of hanging up when another
+      // connection takes this agent's seat, so we can yield rather than race
+      // back in. Every bridge before this one treats any 4xxx as "never
+      // reconnect", which is why the server has to ask rather than assume.
+      headers["X-AIFight-Bridge-Capabilities"] = BRIDGE_CAPABILITIES.join(",");
       // R13-F03: bound the inbound frame size. An oversize frame makes `ws`
       // close with 1009 ("message too big"), which flows through the normal
       // close → reconnect path rather than pinning ~100 MiB (the ws default).
@@ -918,6 +941,12 @@ export async function createWSClient(
               ? new WSDeviceMismatchError(
                   body,
                   "device mismatch: this agent is bound to another machine",
+                )
+              : status === 403 && body.includes("client_mismatch")
+              ? new WSClientMismatchError(
+                  body,
+                  parseBoundClient(body),
+                  "client mismatch: this agent runs through a different AIFight client on this computer",
                 )
               : new WSHandshakeError(
                   status,

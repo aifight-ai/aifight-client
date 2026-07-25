@@ -109,6 +109,12 @@ export async function run(
     { name: "aifight-path", type: "string" },
     { name: "yes", type: "boolean" },
     { name: "replace-local-identity", type: "boolean" },
+    // `aifight connect --client-kind <desktop|cli>`. Internal: the desktop app
+    // redeems pairing codes through this CLI's connect path, and the server
+    // awards the agent to the kind the request declares — so the app has to say
+    // "desktop" or it would hand the agent to the CLI and lock itself out. A
+    // person running `aifight connect` never passes it; the default is cli.
+    { name: "client-kind", type: "string" },
     // `aifight config <...>` flags (direct-LLM configuration). --env/--file
     // carry an indirection only; the raw API key never appears in argv.
     { name: "profile", type: "string" },
@@ -333,7 +339,7 @@ function globalUsage(): string {
     "Manage this machine:",
     "  aifight service <command>         Install or manage aifight.service (persistent / VPS)",
     "  aifight sessions <command>        Inspect local match session records",
-    "  aifight update                    Update the CLI package and restart service if installed",
+    "  aifight update                    Update the CLI package, then restart the service unless a match is in progress",
     "  aifight uninstall                 Remove local AIFight setup from this machine",
     "  aifight doctor                    Troubleshoot local setup",
     "  aifight version                   Print version",
@@ -421,6 +427,7 @@ function commandUsage(positional: readonly string[]): string | undefined {
         "  The AIFight agent key is stored locally; your LLM key is never uploaded.",
         "  After connecting, run `aifight config` to set your LLM key on this machine.",
         "  If this machine already has local bridge credentials, approve replacement with --replace-local-identity.",
+        "  Pairing decides where the Agent lives: this machine, and this program. Whatever ran it before is signed out.",
       ].join("\n");
     case "start":
       return [

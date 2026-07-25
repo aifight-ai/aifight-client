@@ -66,4 +66,31 @@ describe("exchangePairingCode", () => {
     await expect(exchangePairingCode({ pairingCode: "aifp_x", fetchImpl: mkFetch("wss://evil.example/api/ws") }))
       .rejects.toThrow(/unsafe WebSocket URL/);
   });
+
+  // The server awards the agent to the client kind this request declares. Send
+  // the wrong one — or none from a client that has one — and the agent lands
+  // with the other program on this machine, which then refuses this one.
+  it("declares the claiming client kind, and omits the header when there is none", async () => {
+    const okBody = JSON.stringify({
+      agent: { id: "a", name: "n", api_key: "k", runtime_type: "direct" },
+      ws_url: "wss://aifight.ai/api/ws",
+    });
+    const headersFor = async (clientKind?: "desktop" | "cli"): Promise<Record<string, string>> => {
+      let seen: Record<string, string> = {};
+      const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        seen = (init?.headers ?? {}) as Record<string, string>;
+        return new Response(okBody, { status: 200, headers: { "Content-Type": "application/json" } });
+      }) as unknown as typeof fetch;
+      await exchangePairingCode({
+        pairingCode: "aifp_abc",
+        fetchImpl,
+        ...(clientKind ? { clientKind } : {}),
+      });
+      return seen;
+    };
+
+    expect((await headersFor("desktop"))["X-AIFight-Client-Kind"]).toBe("desktop");
+    expect((await headersFor("cli"))["X-AIFight-Client-Kind"]).toBe("cli");
+    expect(await headersFor()).not.toHaveProperty("X-AIFight-Client-Kind");
+  });
 });

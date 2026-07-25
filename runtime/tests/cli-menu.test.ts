@@ -99,8 +99,15 @@ describe("interactive menu", () => {
     expect(h.out()).toContain("non-negative");
   });
 
-  it("full command list calls showHelp", async () => {
+  it("update dispatches the update command", async () => {
     const h = harness(["8", "q"]);
+    await runInteractiveMenu(h.deps);
+    expect(h.dispatched).toEqual([{ cmd: "update", positional: [] }]);
+    expect(h.helpShown).toBe(false);
+  });
+
+  it("full command list calls showHelp", async () => {
+    const h = harness(["9", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.helpShown).toBe(true);
     expect(h.dispatched).toEqual([]);

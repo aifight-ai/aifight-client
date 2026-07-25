@@ -364,3 +364,78 @@ describe("SSO console-handoff URL passes the same external-open allowlist", () =
     ).toBeNull();
   });
 });
+
+// 2026-07-24 connect/evict storm. The platform keeps ONE live connection per
+// agent, and the desktop app and the CLI service share one agent identity under
+// the runtime home — so when both ran, each kicked the other off about once a
+// second and neither ever played a match. The lockfile is how they now take
+// turns: whoever starts first owns the seat, the other says so and stops.
+describe("agent seat — one Bridge per machine", () => {
+  /** Impersonate a live foreign Bridge. The lock carries the owner stamp a real
+   *  bridge writes; the pid is our own, since the liveness probe only asks
+   *  whether the process exists. */
+  function foreignBridgeHoldsSeat(home: string): void {
+    fs.writeFileSync(
+      path.join(home, "lock"),
+      JSON.stringify({ pid: process.pid, boot: Date.now() }),
+      { mode: 0o600 },
+    );
+    fs.writeFileSync(path.join(home, "pid"), `${process.pid}\n`, { mode: 0o600 });
+  }
+
+  it("start() refuses instead of connecting, and names the process holding it", async () => {
+    const home = freshHome();
+    writeBridgeConfig(validConfig());
+    foreignBridgeHoldsSeat(home);
+
+    const status = await new BridgeHost().start();
+
+    expect(status.phase).toBe("error");
+    expect(status.code).toBe("lockHeld");
+    expect(status.codeParams?.pid).toBe(process.pid);
+    // The runtime's own sentence rides along: for a lock left by a crash whose
+    // pid the OS has since reused, it is the only text that says what helps.
+    expect(String(status.codeParams?.detail)).toContain(String(process.pid));
+    // English fallback for an untranslated locale; the UI prefers bridgeError.*.
+    expect(status.message).toContain("already running this agent");
+    // The seat holder's files are untouched — deleting them would strand it.
+    expect(fs.existsSync(path.join(home, "lock"))).toBe(true);
+    expect(fs.existsSync(path.join(home, "pid"))).toBe(true);
+  });
+
+  it("passes through the runtime's recovery advice for a lock left by a crash", async () => {
+    // Hard kill leaves the lock behind; after a reboot the OS can hand that pid
+    // to an unrelated process, which probes as alive. Telling the user to stop a
+    // service that isn't running is a dead end — the lock file has to be named.
+    const home = freshHome();
+    writeBridgeConfig(validConfig());
+    fs.writeFileSync(
+      path.join(home, "lock"),
+      JSON.stringify({ pid: process.pid, boot: Date.now() - 7 * 24 * 60 * 60 * 1000 }),
+      { mode: 0o600 },
+    );
+
+    const status = await new BridgeHost().start();
+
+    expect(status.code).toBe("lockHeld");
+    expect(String(status.codeParams?.detail)).toContain("before the last restart");
+    expect(String(status.codeParams?.detail)).toContain(path.join(home, "lock"));
+  });
+
+  it("claims nothing when it never gets as far as connecting", async () => {
+    const home = freshHome(); // no bridge.json — start() bails out early
+    const host = new BridgeHost();
+
+    const status = await host.start();
+    expect(status.phase).toBe("unconfigured");
+    // A lock left behind here would lock the CLI service out of an agent this
+    // app is not even running.
+    expect(fs.existsSync(path.join(home, "lock"))).toBe(false);
+
+    // stop()/quit release the seat unconditionally; with nothing held that has
+    // to be a silent no-op, not a throw on the app's shutdown path.
+    await host.stop();
+    host.releaseAgentSeatSync();
+    expect(fs.existsSync(path.join(home, "lock"))).toBe(false);
+  });
+});

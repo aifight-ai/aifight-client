@@ -1,4 +1,4 @@
-import { performBridgePackageUpdate } from "../../bridge/auto-update";
+import { isSafeAutoUpdatePhase, performBridgePackageUpdate } from "../../bridge/auto-update";
 import { readBridgeConfig } from "../../bridge/config";
 import {
   BridgeServiceError,
@@ -8,12 +8,13 @@ import {
 import { checkBridgeUpdate } from "../../bridge/update-check";
 import { RUNTIME_VERSION } from "../../index";
 import type { HandlerArgs, HandlerEnv } from "../shared";
-import { CommandError, expectArity } from "../shared";
+import { CommandError, expectArity, makeClient } from "../shared";
 
 const USAGE = [
-  "usage: aifight update [--yes]",
+  "usage: aifight update [--yes] [--force]",
   "  Update the AIFight CLI package from npm, then restart aifight.service if it is installed.",
   "  Use --yes only after the human has approved the local AIFight package update.",
+  "  The restart waits while a match is in progress; --force restarts anyway.",
 ].join("\n");
 
 const DEFAULT_BASE_URL = "https://aifight.ai";
@@ -70,8 +71,10 @@ export async function runBridgeUpdate(
     }
   }
 
+  // The npm install itself is always safe: a running Bridge already has its code
+  // in memory and keeps playing. Only the RESTART below can interrupt a match.
   await runNpmUpdate(env, args.jsonMode);
-  const service = await restartInstalledService(env, args.jsonMode);
+  const service = await restartInstalledService(env, args.jsonMode, args.flags.force === true);
 
   if (args.jsonMode) {
     env.stdout(JSON.stringify({
@@ -112,6 +115,7 @@ async function runNpmUpdate(env: HandlerEnv, jsonMode: boolean): Promise<void> {
 async function restartInstalledService(
   env: HandlerEnv,
   jsonMode: boolean,
+  force: boolean,
 ): Promise<
   | { readonly installed: false }
   | { readonly installed: true; readonly restarted: boolean; readonly running: boolean | null; readonly detail: string }
@@ -146,6 +150,24 @@ async function restartInstalledService(
     };
   }
 
+  // Restarting drops the WebSocket mid-hand: the agent misses its turn and can
+  // lose the match on time. The new package is already on disk, so waiting costs
+  // nothing — the service picks it up at its next restart either way.
+  const busyPhase = force ? null : await matchInProgressPhase(env);
+  if (busyPhase !== null) {
+    if (!jsonMode) {
+      env.stdout(`A match is in progress (${busyPhase}) — not restarting the service.\n`);
+      env.stdout("The new package is installed. Run `aifight service restart` once the match ends,\n");
+      env.stdout("or `aifight update --yes --force` to restart now and give up the match.\n");
+    }
+    return {
+      installed: true,
+      restarted: false,
+      running: status.running,
+      detail: `match_in_progress:${busyPhase}`,
+    };
+  }
+
   if (!jsonMode) {
     env.stdout("Restarting aifight.service so it uses the updated CLI.\n");
   }
@@ -175,6 +197,35 @@ async function restartInstalledService(
     running: true,
     detail: "restarted",
   };
+}
+
+/**
+ * The phase of a match currently in flight, or null if nothing would be
+ * interrupted by restarting the service.
+ *
+ * Asks the running Bridge over its local control API — the same question the
+ * unattended auto-updater answers from inside the process, using the same
+ * definition of "busy" so a manual update and an automatic one never disagree.
+ *
+ * Any failure means "nothing to protect": no Bridge is listening (not running,
+ * or the desktop app owns the agent and runs no control server), so a restart
+ * cannot interrupt a match of ours. Never block an update on a broken probe —
+ * that would make a wedged Bridge un-updatable, which is the state where
+ * updating matters most.
+ */
+async function matchInProgressPhase(env: HandlerEnv): Promise<string | null> {
+  try {
+    const body = await makeClient(env).get<{
+      readonly agents?: ReadonlyArray<{ readonly state?: { readonly phase?: unknown } | null }>;
+    }>("/v1/agents");
+    for (const agent of body.agents ?? []) {
+      const phase = agent?.state?.phase;
+      if (typeof phase === "string" && !isSafeAutoUpdatePhase(phase)) return phase;
+    }
+  } catch {
+    // See above — an unanswered probe is not a reason to refuse.
+  }
+  return null;
 }
 
 function firstErrorLine(cause: unknown): string {

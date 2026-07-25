@@ -102,6 +102,22 @@ const en = {
         newDesc: "Register a fresh agent as this device's identity. Your old agent stays on the server (kept, not deleted) and can be taken over again later.",
       },
     },
+    clientMismatch: {
+      title: "This agent belongs to the background service",
+      body: "An agent keeps one connection, so it belongs to one place at a time — the app or the background service, never both. Yours is currently bound to the background service on this computer. Nothing is lost: it plays whenever that service is running, and if the service is stopped the agent is simply offline until it starts again.",
+      moveTitle: "Move this agent into the app",
+      moveDesc: "Paste a one-time pairing code to hand the agent to the app. It keeps its name, record, and rating.",
+      moveBtn: "Move it here",
+      moving: "Moving…",
+      afterNote: "Nothing to stop by hand — once the code is redeemed, the background service steps aside on its own.",
+      movedButOffline: "The agent is yours now, but it hasn't come online yet — usually the background service still letting go of this computer's slot. Give it a few seconds and hit Reconnect.",
+      keepTitle: "Or leave it where it is",
+      keepDesc: "The agent stays bound to the background service and plays whenever that service runs. You can still watch matches and browse replays here.",
+      newTitle: "Or start a new agent here",
+      newDesc: "Leaves the other agent exactly where it is and registers a brand-new one for the app. Pick this if you would rather not move anything.",
+      newBtn: "Set up a new agent",
+      newConfirm: "This registers a brand-new agent for the app and switches to it. The agent bound to the background service stays exactly where it is, with its name, record and rating — you can still move it here later with a pairing code. Continue?",
+    },
     notify: {
       startTitle: "Your agent is playing",
       startBody: "{{game}} — click to watch the match",
@@ -235,6 +251,7 @@ const en = {
       status: { online: "Online", connecting: "Connecting…", error: "Connection failed", retry: "Reconnect",
         newAgent: "Set up a new agent",
         newAgentConfirm: "This creates a brand-new agent on this machine and switches to it. Use this if the current agent no longer exists. Your old agent's local data (matches, strategy, LLM settings) is kept; the old identity is archived. Continue?",
+        newAgentBusy: "Setting up…",
         newAgentDone: "New agent created and online.",
         newAgentFailed: "Couldn't set up a new agent." },
       auto: {
@@ -555,6 +572,18 @@ const en = {
       avatarUpload: "Couldn't upload the avatar — please try again.",
       loadMatches: "Couldn't load your matches — please try again.",
     },
+    // Localized text for a BridgeStatus that carries a `code`. The English in
+    // status.message is the fallback, so an unlocalized code still reads fine.
+    // The banner shows only the FIRST LINE by default, so the action goes there;
+    // the rest sits behind the Details toggle.
+    bridgeError: {
+      lockHeld:
+        'Run "aifight service stop" in a terminal, then hit Reconnect — another AIFight bridge (PID {{pid}}) on this computer is running your agent.\nOnly one connection per agent stays live, so the app and a background service take turns rather than sharing it. Stopping the service frees this computer\u2019s slot for right now; "aifight service uninstall" also stops it coming back after a restart. Neither one changes which client OWNS the agent — but once the service lets go and the app connects, the app will tell you if the agent still belongs to the service and show you where to paste a pairing code.\n{{detail}}',
+      lockHeldUnknown:
+        'Run "aifight service stop" in a terminal, then hit Reconnect — another AIFight bridge on this computer is running your agent.\nOnly one connection per agent stays live, so the app and a background service take turns rather than sharing it. Stopping the service frees this computer\u2019s slot for right now; "aifight service uninstall" also stops it coming back after a restart. Neither one changes which client OWNS the agent — but once the service lets go and the app connects, the app will tell you if the agent still belongs to the service and show you where to paste a pairing code.\n{{detail}}',
+      lockFailed:
+        "The app can't bring your agent online — see below for what to fix.\n{{detail}}",
+    },
     guide: {
       eyebrow: "First-run setup",
       title: "Your agent is registered",
@@ -682,6 +711,22 @@ const zh = {
         newTitle: "在本机新建 Agent",
         newDesc: "在本机注册一个全新的 Agent 作为本机身份。旧 Agent 会保留在服务器上(保留,不删除),之后仍可再次接管。",
       },
+    },
+    clientMismatch: {
+      title: "该 Agent 归属于后台服务",
+      body: "一个 Agent 只保持一条连接,所以同一时间只归属一处——要么归 App,要么归后台服务,不会同时。你的 Agent 目前绑定在本机的后台服务上。没有任何损失:那个服务在跑,它就照常打局;那个服务停了,它就只是离线,等服务再起来继续。",
+      moveTitle: "把这个 Agent 移到 App",
+      moveDesc: "粘贴一次性配对码,把 Agent 交给 App。名字、战绩和评分都不变。",
+      moveBtn: "移到这里",
+      moving: "移动中…",
+      afterNote: "不用手动停任何东西——配对码一兑换,后台服务会自己退让。",
+      movedButOffline: "Agent 已经归你了,但还没连上线——通常是后台服务还在松手让出本机的位置。等几秒再点「重连」即可。",
+      keepTitle: "或者就让它留在那边",
+      keepDesc: "Agent 继续绑定在后台服务上,那个服务在跑它就照常打。你在这里照样能观战和看回放。",
+      newTitle: "或者在这里新建一个 Agent",
+      newDesc: "那边的 Agent 原封不动,给 App 注册一个全新的。不想搬任何东西时选这个。",
+      newBtn: "新建一个 Agent",
+      newConfirm: "这会给 App 注册一个全新 Agent 并切换过去。绑定在后台服务上的那个原封不动——名字、战绩、评分都在,以后仍然可以用配对码把它移过来。确定吗?",
     },
     notify: {
       startTitle: "你的 agent 开打了",
@@ -815,6 +860,7 @@ const zh = {
       status: { online: "在线", connecting: "连接中…", error: "连接失败", retry: "重连",
         newAgent: "设置新 Agent",
         newAgentConfirm: "这会在本机创建一个全新 Agent 并切换过去。如果当前 Agent 已不存在,就用这个。旧 Agent 的本地数据(对局、策略、LLM 设置)会保留,旧身份会被归档。确定吗?",
+        newAgentBusy: "创建中…",
         newAgentDone: "新 Agent 已创建并上线。",
         newAgentFailed: "设置新 Agent 失败。" },
       auto: {
@@ -1134,6 +1180,13 @@ const zh = {
       avatarClear: "头像清除失败,请重试。",
       avatarUpload: "头像上传失败,请重试。",
       loadMatches: "加载对局失败,请重试。",
+    },
+    bridgeError: {
+      lockHeld:
+        "在终端执行「aifight service stop」,再点「重连」——本机另一个 AIFight 客户端(进程号 {{pid}})正在跑你的 agent。\n一个 agent 只保留一条连线,所以 app 和后台服务是轮流接手,不是一起上。「stop」腾出本机此刻的位置,「aifight service uninstall」还能让它开机后不再自己起来。这两条都不改变 Agent 归谁所有——但服务一松手、App 连上去之后,App 会告诉你它是不是仍归后台服务,并给出贴配对码的地方。\n{{detail}}",
+      lockHeldUnknown:
+        "在终端执行「aifight service stop」,再点「重连」——本机另一个 AIFight 客户端正在跑你的 agent。\n一个 agent 只保留一条连线,所以 app 和后台服务是轮流接手,不是一起上。「stop」腾出本机此刻的位置,「aifight service uninstall」还能让它开机后不再自己起来。这两条都不改变 Agent 归谁所有——但服务一松手、App 连上去之后,App 会告诉你它是不是仍归后台服务,并给出贴配对码的地方。\n{{detail}}",
+      lockFailed: "app 无法让 agent 上线,请按下面的提示处理。\n{{detail}}",
     },
     guide: {
       eyebrow: "初始设置",
