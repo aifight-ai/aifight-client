@@ -2,7 +2,13 @@ import { AgentInstance, type AgentInstanceSnapshot } from "../agents/agent";
 import { MAX_CONCURRENT_MATCHES } from "../agents/limits";
 import { checkLocalDeviceIdentity, getDeviceId } from "../account/device-id";
 import { WSClientMismatchError, WSDeviceMismatchError, WSHandshakeError } from "../wsclient/errors";
-import type { ReconnectingWSClientOptions } from "../wsclient/reconnect";
+import type {
+  ReconnectingWSClientOptions,
+  ReconnectStateHandler,
+  ReconnectStateSnapshot,
+  SeatProbeResult,
+} from "../wsclient/reconnect";
+import { PROCESS_INSTANCE_ID } from "../wsclient/instance";
 import type { ServerMessageEnvelope } from "../wsclient/frame-handler";
 import { PROTOCOL_VERSION } from "../index";
 import type { MsgGameOver } from "../protocol/types";
@@ -236,6 +242,27 @@ function isDeviceMismatchError(err: unknown): boolean {
   return false;
 }
 
+/** Derive the presence-probe URL from the bridge's WS URL:
+ *  wss://host/api/ws → https://host/api/agents/me/presence. Null when the WS
+ *  URL is unparsable or not the expected shape — the probe then reports
+ *  "unavailable" and the facade keeps its cautious blind-dial cadence. */
+export function presenceURLFromWSURL(wsUrl: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(wsUrl);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol === "wss:") parsed.protocol = "https:";
+  else if (parsed.protocol === "ws:") parsed.protocol = "http:";
+  else return null;
+  if (!parsed.pathname.endsWith("/ws")) return null;
+  parsed.pathname = `${parsed.pathname.slice(0, -"/ws".length)}/agents/me/presence`;
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString();
+}
+
 export class BridgeRunner {
   readonly #opts: BridgeRunnerOptions;
   #agent: AgentInstance | null = null;
@@ -280,6 +307,12 @@ export class BridgeRunner {
       // R13-F08: after a 401 on reconnect, re-read the bridge config so a
       // credential rotated by re-pairing is picked up without a restart.
       refreshApiKey: () => this.#refreshApiKey(),
+      // Redesign P3 先问后拨: while parked (another connection holds the
+      // seat), ask the server whether the seat has freed up before dialing —
+      // a dial evicts the holder unconditionally. null (endpoint missing /
+      // unreachable) lets the facade fall back to its cautious blind-dial
+      // cadence.
+      probeSeat: () => this.#probeSeat(),
     };
 
     const agent = new AgentInstance({
@@ -412,6 +445,75 @@ export class BridgeRunner {
 
   snapshot(): AgentInstanceSnapshot | null {
     return this.#agent?.snapshot() ?? null;
+  }
+
+  // ── Reconnect-redesign surface (2026-07-25) for hosts ──
+
+  /** Wake the reconnect loop now (P2). The desktop host calls this on
+   *  powerMonitor "resume"; safe no-op when not running. */
+  poke(): void {
+    this.#agent?.poke();
+  }
+
+  /** Hand the seat back and stop retrying until poke() (P5). The desktop host
+   *  calls this on powerMonitor "suspend"; safe no-op when not running. */
+  suspendConnection(): void {
+    this.#agent?.suspendConnection();
+  }
+
+  /** Connection-state projection (P4) — hosts derive their UI phase from
+   *  THESE snapshots, never by narrating the log stream. */
+  onConnectionStateChange(handler: ReconnectStateHandler): () => void {
+    const agent = this.#agent;
+    if (agent === null) return () => {};
+    return agent.onConnectionStateChange(handler);
+  }
+
+  connectionSnapshot(): ReconnectStateSnapshot | null {
+    return this.#agent?.connectionSnapshot() ?? null;
+  }
+
+  /** One ask-before-dial probe against /api/agents/me/presence. Returns null
+   *  when the endpoint is unavailable (old server, network fault) — the
+   *  facade then falls back to its cautious blind-dial cadence. */
+  async #probeSeat(): Promise<SeatProbeResult | null> {
+    const url = presenceURLFromWSURL(this.#opts.config.wsUrl);
+    if (url === null) return null;
+    // Probe with the freshest credential we can get: a re-pair may have
+    // rotated the key while we were parked (same reason refreshApiKey exists).
+    let apiKey = this.#lastKnownApiKey;
+    try {
+      const fresh = await this.#refreshApiKey();
+      if (typeof fresh === "string" && fresh !== "") apiKey = fresh;
+    } catch {
+      /* keep the cached key */
+    }
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        headers: {
+          "X-API-Key": apiKey,
+          "X-AIFight-Instance": PROCESS_INSTANCE_ID,
+        },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!res.ok) return null; // 404 = old server; anything else = unknown
+      const body: unknown = await res.json();
+      if (
+        typeof body === "object" &&
+        body !== null &&
+        typeof (body as { connected?: unknown }).connected === "boolean" &&
+        typeof (body as { instance_matches?: unknown }).instance_matches === "boolean"
+      ) {
+        return {
+          connected: (body as { connected: boolean }).connected,
+          instanceMatches: (body as { instance_matches: boolean }).instance_matches,
+        };
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   joinQueue(

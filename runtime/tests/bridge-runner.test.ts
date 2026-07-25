@@ -20,6 +20,7 @@ import type { MsgActionRequest, MsgGameOver, MsgGameStart } from "../src/protoco
 import type { ServerMessageEnvelope } from "../src/wsclient/frame-handler";
 import type {
   ReconnectingWSClient,
+  ReconnectStateSnapshot,
   ReconnectingWSClientOptions,
   ReconnectCloseHandler,
   ReconnectEventHandler,
@@ -43,6 +44,28 @@ const welcome: WSWelcome = {
 };
 
 class FakeReconnectClient implements ReconnectingWSClient {
+  totalAttempts = 1;
+  nextRetryAt: number | null = null;
+  connectedAtMs: number | null = null;
+  parkedReason: ReconnectStateSnapshot["parkedReason"] = null;
+  onStateChange(handler: (snap: ReconnectStateSnapshot) => void): () => void {
+    handler(this.snapshot());
+    return () => {};
+  }
+  snapshot(): ReconnectStateSnapshot {
+    return {
+      state: this.state,
+      attempt: this.attempt,
+      totalAttempts: this.totalAttempts,
+      nextRetryAt: this.nextRetryAt,
+      connectedAt: this.connectedAtMs,
+      welcome: this.welcome,
+      parkedReason: this.parkedReason,
+      seq: 0,
+    };
+  }
+  poke(): void {}
+  suspend(): void {}
   state: ReconnectingWSClient["state"] = "connected";
   attempt = 1;
   welcome: WSWelcome | null = welcome;

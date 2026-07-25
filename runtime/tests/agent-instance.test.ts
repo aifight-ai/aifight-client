@@ -18,6 +18,7 @@ import type {
 import type { ServerMessageEnvelope } from "../src/wsclient/frame-handler";
 import type {
   ReconnectingWSClient,
+  ReconnectStateSnapshot,
   ReconnectingWSClientOptions,
   ReconnectCloseHandler,
   ReconnectCloseInfo,
@@ -44,6 +45,28 @@ const welcome: WSWelcome = {
 };
 
 class FakeReconnectClient implements ReconnectingWSClient {
+  totalAttempts = 1;
+  nextRetryAt: number | null = null;
+  connectedAtMs: number | null = null;
+  parkedReason: ReconnectStateSnapshot["parkedReason"] = null;
+  onStateChange(handler: (snap: ReconnectStateSnapshot) => void): () => void {
+    handler(this.snapshot());
+    return () => {};
+  }
+  snapshot(): ReconnectStateSnapshot {
+    return {
+      state: this.state,
+      attempt: this.attempt,
+      totalAttempts: this.totalAttempts,
+      nextRetryAt: this.nextRetryAt,
+      connectedAt: this.connectedAtMs,
+      welcome: this.welcome,
+      parkedReason: this.parkedReason,
+      seq: 0,
+    };
+  }
+  poke(): void {}
+  suspend(): void {}
   state: ReconnectingWSClient["state"] = "connected";
   attempt = 1;
   welcome: WSWelcome | null = welcome;
@@ -221,6 +244,9 @@ describe("AgentInstance", () => {
       url: "ws://127.0.0.1:1/api/ws",
       apiKey: "sk-test",
       expectedProtocolVersion: "v1.0.0",
+      // 审查 F5: start() threads its own abort signal into the connect so a
+      // stop() during a server outage can cancel instead of waiting forever.
+      signal: expect.any(AbortSignal),
     });
     expect(snapshot.started).toBe(true);
     expect(snapshot.state?.agentId).toBe("agent-1");
@@ -716,5 +742,36 @@ describe("AgentInstance", () => {
     await agent.stop("two");
 
     expect(client.closeCalls).toBe(1);
+  });
+});
+
+// 审查 F5 (重连重设计 2026-07-25): a stop() landing while start() is still
+// connecting must ABORT the connect, not wait for it — with the server down
+// the first-connect promise legitimately pends forever, and a stop that waits
+// hangs the host's whole shutdown for the length of the outage.
+describe("AgentInstance — abortable in-flight start", () => {
+  it("stop() aborts a pending first connect and start() rejects promptly", async () => {
+    const agent = new AgentInstance({
+      name: "abort-start",
+      ws: {
+        url: "ws://127.0.0.1:1/api/ws",
+        apiKey: "sk-test",
+        expectedProtocolVersion: "v1.0.0",
+      },
+      decisionProvider: { decide: vi.fn(async () => ({ type: "fold" })) },
+      connect: (ws) =>
+        new Promise((_resolve, reject) => {
+          // A faithful stand-in for a server outage: never resolves, but
+          // honours the abort signal exactly like createReconnectingWSClient.
+          ws.signal?.addEventListener("abort", () =>
+            reject(new Error("aborted by signal")),
+          );
+        }),
+    });
+
+    const started = agent.start();
+    started.catch(() => {}); // assertion below re-awaits; avoid unhandledrejection
+    await agent.stop("host shutdown");
+    await expect(started).rejects.toThrow(/aborted by signal|failed to start/);
   });
 });

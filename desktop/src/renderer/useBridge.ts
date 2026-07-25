@@ -35,13 +35,20 @@ export function useBridgeStatus(): BridgeStatus | null {
     const api = window.aifight;
     if (api === undefined) return;
     let alive = true;
+    // 审查 F6: the mount-time pull races the push subscription — its result can
+    // arrive AFTER a fresher push and overwrite it with a stale snapshot. The
+    // pull is a bootstrap only: it loses to any push that beat it.
+    let pushed = false;
     void api
       .getStatus()
       .then((s) => {
-        if (alive) setStatus(s);
+        if (alive && !pushed) setStatus(s);
       })
       .catch(() => {});
-    const off = api.onStatus((s) => setStatus(s));
+    const off = api.onStatus((s) => {
+      pushed = true;
+      setStatus(s);
+    });
     return () => {
       alive = false;
       off();

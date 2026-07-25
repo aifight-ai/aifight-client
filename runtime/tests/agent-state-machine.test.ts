@@ -491,7 +491,7 @@ describe("Agent FSM", () => {
     expect(notifyEffect(out.effects)).toMatchObject({ level: "warning", code: "reconnect.attempt_failure" });
   });
 
-  it("reconnect success restores transport connected without touching match", () => {
+  it("reconnect success restores transport connected without touching match — and SAYS so", () => {
     const activeMatch = { sessionId: "m1", game: "coup", startedAt: 1 };
     const out = transitionAgentFSM(initial({ phase: "in_match", transport: "backoff", activeMatch }), {
       type: "reconnect.event",
@@ -500,7 +500,38 @@ describe("Agent FSM", () => {
 
     expect(out.state.transport).toBe("connected");
     expect(out.state.activeMatch).toBe(activeMatch);
-    expect(out.effects).toEqual([]);
+    // 2026-07-25 redesign (审查 F8): success used to emit NOTHING, leaving
+    // hosts blind to recovery — the desktop pill sat on「连接中」while the
+    // bridge was online for 82 minutes. The success notify is now mandatory.
+    expect(notifyEffect(out.effects)).toMatchObject({
+      level: "info",
+      code: "reconnect.attempt_success",
+    });
+  });
+
+  it("parked and superseded-self stay recoverable — never the give-up arm", () => {
+    // A 4409 eviction parks the facade (redesign P3). Falling through to the
+    // give-up arm would set phase=closed and tear the agent down over a state
+    // the facade recovers from on its own.
+    const parked = transitionAgentFSM(initial({ phase: "connected", transport: "connected" }), {
+      type: "reconnect.event",
+      event: { type: "parked", attempt: 1, elapsedMs: 0, severity: "warning" },
+    });
+    expect(parked.state.phase).not.toBe("closed");
+    expect(notifyEffect(parked.effects)).toMatchObject({
+      level: "warning",
+      code: "reconnect.parked",
+    });
+
+    const forged = transitionAgentFSM(initial({ phase: "connected", transport: "connected" }), {
+      type: "reconnect.event",
+      event: { type: "superseded-self", attempt: 1, elapsedMs: 0, severity: "error" },
+    });
+    expect(forged.state.phase).not.toBe("closed");
+    expect(notifyEffect(forged.effects)).toMatchObject({
+      level: "error",
+      code: "reconnect.superseded_self",
+    });
   });
 
   it("reconnect close enters closed state", () => {

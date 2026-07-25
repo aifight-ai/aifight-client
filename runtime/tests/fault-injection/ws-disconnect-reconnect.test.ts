@@ -241,110 +241,154 @@ describe("connect/evict storm — flap escalation + replaced-seat yield", () => 
     expect(mockedCreate).toHaveBeenCalledTimes(4);
   });
 
-  test("close 4409 (replaced) yields the seat for minutes instead of racing back", async () => {
+  // ── 2026-07-25 redesign: identity-based eviction handling. ──
+  // The old yield ladder (30-60s → 5-10min, #replacedStreak) is gone: a 4409
+  // now parks the facade, which asks the presence endpoint before every
+  // re-dial. These tests pin the replacement semantics; the ladder tests they
+  // replace lived here until the redesign.
+
+  test("close 4409 parks the seat — blind re-dial only at the ladder-ceiling cadence", async () => {
+    // Legacy server: opaque reason text, no probeSeat hook. A blind dial rips
+    // the seat holder off unconditionally, so it may NOT happen on the 10s
+    // fast path — only at the ~5min cadence the old ladder converged to.
+    vi.spyOn(Math, "random").mockReturnValue(0); // pin the probe jitter to 0
     const handles = [makeFakeInner(), makeFakeInner()];
     for (const h of handles) mockedCreate.mockResolvedValueOnce(h.inner as any);
 
     const facade = await createReconnectingWSClient({ ...baseOpts, jitter: "none" });
 
-    // Defect 2: the server evicted the older connection with a bare TCP close,
-    // which the loser read as 1006 — a routine blip — and came straight back,
-    // evicting the winner in turn. The server now says 4409 ("someone else took
-    // this agent"), and the loser stands down for minutes: whoever the user
-    // actually wants gets to keep the seat. Still retriable, though — the other
-    // side may be a machine that goes to sleep.
     handles[0]!.simulateServerClose(4409, "replaced_by_new_connection");
     await flushMicrotasks();
+    expect(facade.state).toBe("parked");
 
-    // Equal jitter over a 60s base ⇒ the delay lands in [30s, 60s).
-    await vi.advanceTimersByTimeAsync(20_000);
+    // Fast first probe (10s): no probe hook → verdict unknown → NO blind dial.
+    await vi.advanceTimersByTimeAsync(11_000);
     await flushMicrotasks();
-    expect(facade.state).toBe("backoff");
+    expect(facade.state).toBe("parked");
     expect(mockedCreate).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(60_000);
+    // Full cadence (300s): blind dial is now allowed → reconnected.
+    await vi.advanceTimersByTimeAsync(301_000);
     await flushMicrotasks();
     expect(facade.state).toBe("connected");
     expect(mockedCreate).toHaveBeenCalledTimes(2);
   });
 
-  test("the yield survives a failed attempt instead of collapsing to the fast curve", async () => {
-    // Pin the jitter: the yield forces "equal" regardless of options, so with
-    // random()=0 every yield is exactly half its base and the timings below are
-    // exact rather than a range.
+  test("a probing rival keeps us parked; the seat freeing up ends the park", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0);
     const handles = [makeFakeInner(), makeFakeInner()];
-    mockedCreate.mockResolvedValueOnce(handles[0]!.inner as any);
-    // The attempt that follows the yield fails — a flaky link, not the peer
-    // letting go. If that reset us to the ordinary curve we would be back
-    // within ~2s and evict the winner all over again.
-    mockedCreate.mockRejectedValueOnce(new WSConnectError("network hiccup"));
-    mockedCreate.mockResolvedValueOnce(handles[1]!.inner as any);
+    for (const h of handles) mockedCreate.mockResolvedValueOnce(h.inner as any);
 
-    const facade = await createReconnectingWSClient({ ...baseOpts, jitter: "none" });
+    const probeSeat = vi
+      .fn()
+      .mockResolvedValueOnce({ connected: true, instanceMatches: false })
+      .mockResolvedValueOnce({ connected: true, instanceMatches: false })
+      .mockResolvedValue({ connected: false, instanceMatches: false });
 
-    handles[0]!.simulateServerClose(4409, "replaced_by_new_connection");
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(30_000); // yield elapses; attempt 2 fails
-    await flushMicrotasks();
-    expect(mockedCreate).toHaveBeenCalledTimes(2);
+    const facade = await createReconnectingWSClient({
+      ...baseOpts,
+      jitter: "none",
+      probeSeat,
+    });
 
-    // Still yielding — NOT back on the ~2s curve.
-    await vi.advanceTimersByTimeAsync(29_000);
+    facade.onMessage(() => {});
+    handles[0]!.simulateServerClose(
+      4409,
+      JSON.stringify({ reason: "replaced_by_new_connection", same_instance: false }),
+    );
     await flushMicrotasks();
-    expect(facade.state).toBe("backoff");
-    expect(mockedCreate).toHaveBeenCalledTimes(2);
+    expect(facade.state).toBe("parked");
 
-    await vi.advanceTimersByTimeAsync(2_000);
+    // Probe 1 (fast, 10s): rival holds the seat → stay parked, NO dial.
+    await vi.advanceTimersByTimeAsync(11_000);
     await flushMicrotasks();
+    expect(probeSeat).toHaveBeenCalledTimes(1);
+    expect(facade.state).toBe("parked");
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
+
+    // Probe 2 (full cadence): still held → still parked. The rival is NEVER
+    // ripped off the seat by a blind dial while the probe can answer.
+    await vi.advanceTimersByTimeAsync(301_000);
+    await flushMicrotasks();
+    expect(probeSeat).toHaveBeenCalledTimes(2);
+    expect(facade.state).toBe("parked");
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
+
+    // Probe 3: seat freed → dial → connected.
+    await vi.advanceTimersByTimeAsync(301_000);
+    await flushMicrotasks();
+    expect(probeSeat).toHaveBeenCalledTimes(3);
     expect(facade.state).toBe("connected");
+    expect(mockedCreate).toHaveBeenCalledTimes(2);
   });
 
-  test("repeated evictions escalate the yield even though each session outlasts the window", async () => {
-    // The trap this pins: the yield's own minimum (30s) is >= the stability
-    // window (30s), so the session between two evictions ALWAYS looks stable.
-    // Clearing the eviction streak there made the ladder unreachable — two
-    // clients then swapped the seat ~80×/hour forever, in turns far too short
-    // to finish a match, while every log line still read "attempt 1".
-    vi.spyOn(Math, "random").mockReturnValue(0); // equal jitter → exactly base/2
+  test("same_instance=true parks with a superseded-self alarm — never a silent death", async () => {
+    // Under single-flight a live facade can never be legitimately replaced by
+    // its own process, so same_instance=true means an internal regression or a
+    // forged instance id. Either way: alarm + park, NOT a silent stop (审查
+    // F7/F9/F10 — a silent stop would be a forgeable kill switch).
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const handles = [makeFakeInner(), makeFakeInner()];
+    for (const h of handles) mockedCreate.mockResolvedValueOnce(h.inner as any);
+
+    const probeSeat = vi
+      .fn()
+      .mockResolvedValue({ connected: true, instanceMatches: true });
+
+    const facade = await createReconnectingWSClient({
+      ...baseOpts,
+      jitter: "none",
+      probeSeat,
+    });
+    const events: Array<{ type: string; severity: string }> = [];
+    facade.onReconnect((ev) => events.push({ type: ev.type, severity: ev.severity }));
+
+    handles[0]!.simulateServerClose(
+      4409,
+      JSON.stringify({ reason: "replaced_by_new_connection", same_instance: true }),
+    );
+    await flushMicrotasks();
+
+    expect(facade.state).toBe("parked");
+    expect(facade.parkedReason).toBe("superseded-self");
+    const alarm = events.find((e) => e.type === "superseded-self");
+    expect(alarm).toBeDefined();
+    expect(alarm!.severity).toBe("error");
+
+    // The holder reports OUR instance id — a zombie of this very process.
+    // Reclaiming it disrupts nobody: first probe already authorizes the dial.
+    await vi.advanceTimersByTimeAsync(11_000);
+    await flushMicrotasks();
+    expect(facade.state).toBe("connected");
+    expect(mockedCreate).toHaveBeenCalledTimes(2);
+  });
+
+  test("after a parked exit, an ordinary disconnect is back on the fast curve", async () => {
+    // Once the contention is over nothing about a past eviction may slow the
+    // ordinary reconnect path down.
+    vi.spyOn(Math, "random").mockReturnValue(0);
     const handles = [makeFakeInner(), makeFakeInner(), makeFakeInner()];
     for (const h of handles) mockedCreate.mockResolvedValueOnce(h.inner as any);
 
-    const facade = await createReconnectingWSClient({ ...baseOpts, jitter: "none" });
+    const probeSeat = vi
+      .fn()
+      .mockResolvedValue({ connected: false, instanceMatches: false });
 
-    // Eviction 1: base 60s → 30s.
-    handles[0]!.simulateServerClose(4409, "replaced_by_new_connection");
+    const facade = await createReconnectingWSClient({
+      ...baseOpts,
+      jitter: "none",
+      probeSeat,
+    });
+
+    handles[0]!.simulateServerClose(
+      4409,
+      JSON.stringify({ reason: "replaced_by_new_connection", same_instance: false }),
+    );
     await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(11_000); // probe says empty → dial
     await flushMicrotasks();
     expect(facade.state).toBe("connected");
-
-    // Eviction 2 after a seat we held for a while: base 120s → 60s. The old
-    // code came back after 30s here, forever.
-    await vi.advanceTimersByTimeAsync(31_000);
-    handles[1]!.simulateServerClose(4409, "replaced_by_new_connection");
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(59_000);
-    await flushMicrotasks();
-    expect(facade.state).toBe("backoff");
-    await vi.advanceTimersByTimeAsync(2_000);
-    await flushMicrotasks();
-    expect(facade.state).toBe("connected");
-  });
-
-  test("an ordinary disconnect ends the yield, so the peer leaving restores the fast curve", async () => {
-    // Once the competitor is gone, nothing about a past eviction should still be
-    // slowing us down: a plain network drop must retry in ~1s, not minutes.
-    const handles = [makeFakeInner(), makeFakeInner(), makeFakeInner()];
-    for (const h of handles) mockedCreate.mockResolvedValueOnce(h.inner as any);
-
-    const facade = await createReconnectingWSClient({ ...baseOpts, jitter: "none" });
-
-    handles[0]!.simulateServerClose(4409, "replaced_by_new_connection");
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(60_000);
-    await flushMicrotasks();
-    expect(facade.state).toBe("connected");
+    expect(mockedCreate).toHaveBeenCalledTimes(2);
 
     // A normal 1006 now — the seat was not taken from us this time.
     await vi.advanceTimersByTimeAsync(31_000);
@@ -353,6 +397,159 @@ describe("connect/evict storm — flap escalation + replaced-seat yield", () => 
     await flushMicrotasks();
     expect(facade.state).toBe("connected");
     expect(mockedCreate).toHaveBeenCalledTimes(3);
+  });
+
+  test("close() during an in-flight dial cannot resurrect the facade (P1 single-flight)", async () => {
+    // THE zombie guard (2026-07-25 incident): a dial that lands after close()
+    // must be discarded, never installed — the pre-redesign code wrote
+    // #inner/state unconditionally after the await, resurrecting a facade the
+    // caller had been told was closed, as an unowned connection holding the
+    // agent seat.
+    const first = makeFakeInner();
+    mockedCreate.mockResolvedValueOnce(first.inner as any);
+
+    const facade = await createReconnectingWSClient({ ...baseOpts, jitter: "none" });
+    const received: unknown[] = [];
+    facade.onMessage((m) => {
+      received.push(m);
+    });
+
+    // Drop the session; the loop schedules a 1s retry whose dial we hold open.
+    let releaseDial: ((v: unknown) => void) | null = null;
+    const late = makeFakeInner();
+    mockedCreate.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseDial = resolve as (v: unknown) => void;
+        }) as any,
+    );
+    first.simulateServerClose(1006);
+    await vi.advanceTimersByTimeAsync(1_000); // dial 2 now in flight
+    expect(mockedCreate).toHaveBeenCalledTimes(2);
+
+    // close() resolves via a setImmediate fallback when the loop is parked on
+    // the in-flight dial — fake timers own setImmediate, so pump once.
+    const closing = facade.close(1000, "user quit");
+    await flushMicrotasks();
+    await closing;
+    expect(facade.state).toBe("closed");
+
+    // The dial lands AFTER the close — the mock ignores the abort signal, the
+    // worst case. The facade must stay closed, hang up the late socket, and
+    // never wire handlers onto it.
+    releaseDial!(late.inner);
+    await flushMicrotasks();
+    expect(facade.state).toBe("closed");
+    expect(late.inner.close).toHaveBeenCalled();
+    late.emitMessage({ type: "ping" });
+    expect(received).toHaveLength(0);
+  });
+
+  test("poke() during backoff dials immediately instead of waiting out the timer", async () => {
+    const handles = [makeFakeInner(), makeFakeInner()];
+    for (const h of handles) mockedCreate.mockResolvedValueOnce(h.inner as any);
+
+    const facade = await createReconnectingWSClient({ ...baseOpts, jitter: "none" });
+
+    // Escalate to a 2s delay so an immediate reconnect is distinguishable
+    // from the timer just firing.
+    await vi.advanceTimersByTimeAsync(31_000);
+    handles[0]!.simulateServerClose(1006);
+    await flushMicrotasks();
+    expect(facade.state).toBe("backoff");
+
+    facade.poke();
+    await flushMicrotasks();
+    expect(facade.state).toBe("connected");
+    expect(mockedCreate).toHaveBeenCalledTimes(2);
+  });
+
+  test("a wall-clock jump during backoff reads as a wake: curve reset, dial now", async () => {
+    // The machine slept through the retry timer. setTimeout resumes the STALE
+    // countdown on wake; the deadline sleep detects the jump instead and
+    // dials immediately with a fresh curve (P2/D3).
+    const handles = [makeFakeInner(), makeFakeInner()];
+    mockedCreate.mockResolvedValueOnce(handles[0]!.inner as any);
+    mockedCreate.mockRejectedValueOnce(new WSConnectError("net down"));
+    mockedCreate.mockRejectedValueOnce(new WSConnectError("net down"));
+    mockedCreate.mockRejectedValueOnce(new WSConnectError("net down"));
+    mockedCreate.mockResolvedValueOnce(handles[1]!.inner as any);
+
+    const facade = await createReconnectingWSClient({ ...baseOpts, jitter: "none" });
+
+    // Two failed dials after the flap escalate the curve to a 4s wait.
+    handles[0]!.simulateServerClose(1006);
+    await vi.advanceTimersByTimeAsync(1_000); // dial #2 fails → next in 2s
+    await vi.advanceTimersByTimeAsync(2_000); // dial #3 fails → next in 4s
+    await flushMicrotasks();
+    expect(facade.state).toBe("backoff");
+    expect(mockedCreate).toHaveBeenCalledTimes(3);
+
+    // Sleep the machine mid-backoff: jump the wall clock 1h, then let the
+    // frozen timer fire — the overshoot reads as a wake and dials NOW.
+    vi.setSystemTime(Date.now() + 3_600_000);
+    await vi.advanceTimersByTimeAsync(4_000);
+    await flushMicrotasks();
+    expect(mockedCreate).toHaveBeenCalledTimes(4); // post-wake dial (fails)
+
+    // The observable proof of the curve RESET: that failed post-wake dial is
+    // failure #1 of a fresh cycle, so recovery comes at 1s — without the
+    // reset the curve would sit at failure #4 and wait 8s.
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushMicrotasks();
+    expect(facade.state).toBe("connected");
+    expect(mockedCreate).toHaveBeenCalledTimes(5);
+  });
+
+  test("suspend() hands the seat back and schedules nothing; poke() resumes", async () => {
+    const handles = [makeFakeInner(), makeFakeInner()];
+    for (const h of handles) mockedCreate.mockResolvedValueOnce(h.inner as any);
+
+    const facade = await createReconnectingWSClient({ ...baseOpts, jitter: "none" });
+
+    facade.suspend();
+    await flushMicrotasks();
+    expect(handles[0]!.inner.close).toHaveBeenCalledWith(1000, "host sleeping");
+    expect(facade.state).toBe("suspended");
+
+    // No retries while suspended — a lid-close must not fight the sleep.
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
+    await flushMicrotasks();
+    expect(facade.state).toBe("suspended");
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
+
+    facade.poke();
+    await flushMicrotasks();
+    expect(facade.state).toBe("connected");
+    expect(mockedCreate).toHaveBeenCalledTimes(2);
+  });
+
+  test("onStateChange projects every edge — including connected (审查 F8)", async () => {
+    const handles = [makeFakeInner(), makeFakeInner()];
+    for (const h of handles) mockedCreate.mockResolvedValueOnce(h.inner as any);
+
+    const facade = await createReconnectingWSClient({ ...baseOpts, jitter: "none" });
+
+    const seen: Array<{ state: string; seq: number }> = [];
+    facade.onStateChange((snap) => seen.push({ state: snap.state, seq: snap.seq }));
+    // Late subscriber gets the standing state immediately.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.state).toBe("connected");
+
+    handles[0]!.simulateServerClose(1006);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushMicrotasks();
+
+    const states = seen.map((s) => s.state);
+    // The reconnect must project backoff → connecting → connected. The
+    // CONNECTED edge is the one the legacy event stream never carried — its
+    // absence is what wedged the desktop UI on "connecting" while online.
+    expect(states).toContain("backoff");
+    expect(states).toContain("connecting");
+    expect(states.lastIndexOf("connected")).toBeGreaterThan(0);
+    for (let i = 1; i < seen.length; i++) {
+      expect(seen[i]!.seq).toBeGreaterThan(seen[i - 1]!.seq);
+    }
   });
 
   test("a run of failed connects does not push the next short session to the cap", async () => {

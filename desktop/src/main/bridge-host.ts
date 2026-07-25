@@ -43,6 +43,7 @@ import type { BridgeRunner as BridgeRunnerInstance } from "@aifight/aifight/brid
 import type { BridgeDecisionTrace } from "@aifight/aifight/bridge/provider";
 import type { ServerMessageEnvelope } from "@aifight/aifight/wsclient/frame-handler";
 import type { AgentInstanceSnapshot } from "@aifight/aifight/agents/agent";
+import type { ReconnectStateSnapshot } from "@aifight/aifight/wsclient/reconnect";
 import type {
   AgentPolicy,
   AgentProfileData,
@@ -88,6 +89,15 @@ export interface BridgeHostCallbacks {
  *  free (two syscalls), fast enough that `aifight service stop` feels instant. */
 const SEAT_RETRY_INTERVAL_MS = 5_000;
 
+/** Shown while parked: another connection holds the seat, we probe gently. */
+const SEAT_TAKEN_MESSAGE =
+  "Another connection is using this agent (another machine, or a CLI service beside the app). Standing by — the seat is re-checked every few minutes; Retry checks now.";
+/** Parked because the evictor claimed OUR process identity — structurally
+ *  impossible unless the single-flight invariant regressed or someone forged
+ *  the instance id. Loud on purpose (审查 F7/F10). */
+const SEAT_SUPERSEDED_SELF_MESSAGE =
+  "Evicted by a connection claiming this app's own identity. Standing by and probing — if this repeats, please report it (possible client bug or identity forgery).";
+
 const RECONNECT_GAVE_UP_MESSAGE =
   "Connection stopped and could not reconnect automatically. Retry below; if it keeps failing, re-pair this agent from the Dashboard.";
 
@@ -111,6 +121,20 @@ export class BridgeHost {
   // or a start() in flight). Released on stop, on a failed start, when the
   // reconnect loop gives up, and synchronously on app quit (main.ts).
   #lock: LockHandle | null = null;
+  // ── P4 projection plumbing (重连重设计 2026-07-25): phase/uptime/counter
+  // derive from facade state snapshots, never from narrating the log stream
+  // (the narration model is what wedged the pill on「连接中」while online). ──
+  #connUnsub: (() => void) | null = null;
+  #lastConnSeq = -1;
+  /** totalAttempts at subscription time — the display counter shows the DELTA,
+   *  preserving the old "reconnects this session" semantics (审查 F10:
+   *  facade.attempt resets on success and cannot feed this UI). */
+  #attemptBase: number | null = null;
+  #lastConnState: ReconnectStateSnapshot["state"] | null = null;
+  /** True once the app entered automatic matchmaking this session; a recovered
+   *  connection re-joins the pool (审查 F9: joinAutoMatch used to fire only on
+   *  launch, so an agent that reconnected sat online but never played again). */
+  #autoMatchWanted = false;
   // In-flight start(), so two callers cannot both get past the "#runner is null"
   // check and race into two runners on one seat (#runner is only assigned after
   // an await). The renderer can trigger start() from several places at once —
@@ -549,7 +573,15 @@ export class BridgeHost {
    * phase "error" / "unconfigured" so the UI can render them.
    */
   async start(): Promise<BridgeStatus> {
-    if (this.#runner !== null) return this.#status;
+    if (this.#runner !== null) {
+      // Already running. If we are PARKED (seat held elsewhere), the Retry
+      // button's intent is "check the seat now" — poke the facade instead of
+      // silently returning the stale status.
+      if (this.#lastConnState === "parked" || this.#lastConnState === "backoff") {
+        this.#runner.poke();
+      }
+      return this.#status;
+    }
     // Join an in-flight start instead of beginning a second one.
     if (this.#starting !== null) return this.#starting;
     const run = this.#startOnce();
@@ -601,25 +633,14 @@ export class BridgeHost {
         clientKind: "desktop",
         onLog: (event) => {
           this.#noteActivity();
-          // The FSM surfaces every reconnect attempt as this log code
-          // (state-machine.ts reconnectEvent → notify "reconnect.attempt_start").
-          // Reflect a post-connect drop in the host phase so the renderer's status
-          // pill stops showing a stale "online" while we're actually reconnecting —
-          // it flips back to running on the next welcome frame below.
-          if (
-            event.code === "reconnect.attempt_start" ||
-            event.code === "reconnect.attempt_failure"
-          ) {
-            // attempt_failure fires FIRST — attempt_start only comes after the
-            // backoff sleep, which is now minutes long when another connection
-            // took the seat. Leaving the pill on "online" for that whole window
-            // (uptime still ticking, Play still enabled) would be a lie.
-            if (event.code === "reconnect.attempt_start") this.#reconnects += 1;
-            if (this.#status.phase === "running") {
-              this.#connectedAt = null;
-              this.#setStatus({ phase: "starting", config: this.#status.config, message: undefined });
-            }
-          } else if (event.code === "reconnect.give_up" || event.code === "reconnect.closed") {
+          // Phase/counter narration is GONE (重连重设计 2026-07-25 P4): the pill
+          // used to flip to "starting" on attempt events and only flip back on a
+          // welcome frame that — as the redesign audit proved — never reaches
+          // this handler (the handshake consumes it), so any single reconnect
+          // wedged the UI on「连接中」while actually online for hours. Phase,
+          // uptime and the reconnect counter now derive exclusively from
+          // #applyConnSnapshot (facade state projection).
+          if (event.code === "reconnect.give_up" || event.code === "reconnect.closed") {
             // The reconnect loop has permanently stopped. With the 2026-06-28
             // runtime change this only fires on a TRULY terminal condition (a
             // protocol-version mismatch needing a client update, a 403 device
@@ -630,11 +651,18 @@ export class BridgeHost {
             // restarts rather than no-opping on a non-null runner.
             const runner = this.#runner;
             this.#runner = null;
+            this.#connUnsub?.();
+            this.#connUnsub = null;
             this.#connectedAt = null;
-            if (runner !== null) void runner.stop().catch(() => {});
-            // We are no longer using the agent — hand the seat back so a standby
-            // CLI service can take over (and so 重连 can re-acquire it cleanly).
-            this.#releaseAgentSeat();
+            // Seat release ONLY after stop() truly finished (审查 F3): the old
+            // fire-and-forget released the lock while a mid-dial zombie of the
+            // stopping runner could still land — a live connection holding the
+            // seat with no lock, which is exactly what invited the standby CLI
+            // service in alongside. stop() is bounded now (P1), so this settles.
+            void (async () => {
+              if (runner !== null) await runner.stop().catch(() => {});
+              this.#releaseAgentSeat();
+            })();
             this.#setStatus({
               phase: "error",
               config: this.#status.config,
@@ -646,19 +674,10 @@ export class BridgeHost {
         onTrace: (trace) => this.#callbacks.onTrace?.(trace),
         onServerMessage: (message) => {
           this.#noteActivity();
-          // The welcome frame advertises the platform's CURRENT live games
-          // (engine.LiveNames()) — refresh the allow-list on every (re)connect.
-          if (message.type === "welcome") {
-            const games = parseWelcomeGames(message.data);
-            if (games !== null) this.#liveGames = games;
-            // A welcome after a reconnect-induced "starting" means we're back
-            // online — restore the running phase + fresh connectedAt so the pill,
-            // the diagnostics card, and the connected-gated buttons all recover.
-            if (this.#status.phase === "starting" && this.#runner !== null) {
-              this.#connectedAt = Date.now();
-              this.#setStatus({ phase: "running", config: this.#status.config, message: undefined });
-            }
-          }
+          // NOTE: no welcome handling here — the handshake consumes the welcome
+          // frame before this handler exists (redesign audit F1), so a branch on
+          // it is dead code. Live games + phase recovery come from
+          // #applyConnSnapshot, whose snapshots carry the welcome payload.
           this.#callbacks.onServerMessage?.(message);
         },
       });
@@ -673,9 +692,23 @@ export class BridgeHost {
 
     try {
       await runner.start();
-      this.#connectedAt = Date.now();
       this.#noteActivity();
-      this.#setStatus({ phase: "running", config: summary, message: undefined });
+      // P4: from here phase/uptime/counter derive from the facade projection.
+      // Subscribing replays the standing snapshot synchronously (state
+      // "connected"), which sets phase running + connectedAt through
+      // #applyConnSnapshot; the direct set below is only the fallback for a
+      // sandwich build whose runtime predates the projection API.
+      this.#lastConnSeq = -1;
+      this.#attemptBase = null;
+      this.#lastConnState = null;
+      this.#connUnsub?.();
+      this.#connUnsub = runner.onConnectionStateChange((snap) =>
+        this.#applyConnSnapshot(snap),
+      );
+      if (this.#status.phase !== "running") {
+        this.#connectedAt = Date.now();
+        this.#setStatus({ phase: "running", config: summary, message: undefined });
+      }
     } catch (cause) {
       this.#runner = null;
       this.#connectedAt = null;
@@ -695,7 +728,18 @@ export class BridgeHost {
     // live connection on — leaving a running bridge holding no lock, which is
     // precisely how a standby CLI service ends up connecting alongside us.
     // Failures are the starting caller's to report, not ours.
-    if (this.#starting !== null) await this.#starting.catch(() => undefined);
+    //
+    // 审查 F5: "finish first" must not mean "wait out a server outage" — the
+    // first-connect promise legitimately pends forever while the server is
+    // down. runner.stop() aborts the in-flight connect (AgentInstance threads
+    // an abort into the facade), so the await below settles promptly.
+    if (this.#starting !== null) {
+      const startingRunner = this.#runner;
+      if (startingRunner !== null) void startingRunner.stop().catch(() => {});
+      await this.#starting.catch(() => undefined);
+    }
+    this.#connUnsub?.();
+    this.#connUnsub = null;
     const runner = this.#runner;
     if (runner === null) {
       // Belt and braces: normally the seat is already free here, but a release
@@ -820,8 +864,79 @@ export class BridgeHost {
    * current policy (the source of truth, reflecting Dashboard edits): only join
    * when the daily cap > 0. No-op when offline. Never throws.
    */
+  /** P4 projection applier — THE single writer of phase/uptime/counter while a
+   *  runner is alive. Snapshots are seq-guarded so a stale/reordered one can
+   *  never overwrite a newer state (审查 F6). */
+  #applyConnSnapshot(snap: ReconnectStateSnapshot): void {
+    if (snap.seq <= this.#lastConnSeq) return;
+    this.#lastConnSeq = snap.seq;
+    this.#noteActivity();
+    if (this.#attemptBase === null) this.#attemptBase = snap.totalAttempts;
+    this.#reconnects = Math.max(0, snap.totalAttempts - this.#attemptBase);
+    if (snap.welcome !== null) {
+      // Live-games refresh, relocated from the dead welcome-message branch:
+      // the snapshot carries the welcome payload the handshake consumed.
+      const games = parseWelcomeGames(snap.welcome.data);
+      if (games !== null) this.#liveGames = games;
+    }
+    if (this.#runner === null) return; // teardown raced this snapshot
+    const prev = this.#lastConnState;
+    this.#lastConnState = snap.state;
+    switch (snap.state) {
+      case "connected": {
+        this.#connectedAt = snap.connectedAt ?? Date.now();
+        this.#setStatus({ phase: "running", config: this.#status.config, message: undefined });
+        // 审查 F9: automatic matchmaking re-arms on EVERY recovery. It used to
+        // fire only on launch, so a bridge that reconnected sat online but
+        // never played again until the app was restarted.
+        if (prev !== null && prev !== "connected" && this.#autoMatchWanted) {
+          void this.joinAutoMatch();
+        }
+        break;
+      }
+      case "connecting":
+      case "backoff":
+      case "suspended": {
+        this.#connectedAt = null;
+        if (this.#status.phase === "running") {
+          this.#setStatus({ phase: "starting", config: this.#status.config, message: undefined });
+        }
+        break;
+      }
+      case "parked": {
+        this.#connectedAt = null;
+        const self = snap.parkedReason === "superseded-self";
+        this.#setStatus({
+          phase: "error",
+          config: this.#status.config,
+          message: self ? SEAT_SUPERSEDED_SELF_MESSAGE : SEAT_TAKEN_MESSAGE,
+          code: self ? "seatSupersededSelf" : "seatTakenParked",
+        });
+        break;
+      }
+      case "closed":
+        // Terminal — the reconnect.give_up log branch owns teardown/message.
+        break;
+    }
+  }
+
+  /** Host sleep hand-off (P5): gracefully hand the seat back before the
+   *  machine sleeps, so the server shows this agent offline within a second
+   *  instead of holding a zombie until its read deadline. Wired to Electron
+   *  powerMonitor "suspend" in main.ts; safe no-op when not running. */
+  suspendForSleep(): void {
+    this.#runner?.suspendConnection();
+  }
+
+  /** Wake hand-off (P2): dial immediately with a fresh backoff curve instead
+   *  of resuming a stale frozen countdown. Wired to powerMonitor "resume". */
+  pokeAfterWake(): void {
+    this.#runner?.poke();
+  }
+
   async joinAutoMatch(): Promise<void> {
     if (this.#runner === null) return;
+    this.#autoMatchWanted = true;
     const policy = await this.getAgentPolicy();
     if (policy !== null && policy.maxGamesPerDay <= 0) return; // auto-match disabled server-side
     try {
@@ -840,6 +955,9 @@ export class BridgeHost {
   async setMatchingPaused(paused: boolean): Promise<void> {
     if (this.#runner === null) return;
     if (paused) {
+      // Also drop the re-arm intent: a reconnect while paused must NOT sneak
+      // the agent back into the pool (the F9 re-arm honours the pause).
+      this.#autoMatchWanted = false;
       try {
         this.#runner.leaveQueue();
       } catch (cause) {

@@ -575,7 +575,16 @@ function serverEvent(state: AgentFSMState, msg: MsgEvent): AgentFSMTransition {
 
 function reconnectEvent(state: AgentFSMState, event: ReconnectEvent): AgentFSMTransition {
   if (event.type === "attempt-success") {
-    return ok({ ...state, transport: "connected" });
+    // The success MUST be told (审查 F8): this used to emit nothing, leaving
+    // every host blind to recovery — the desktop pill sat on「连接中」while
+    // the bridge was online for 82 minutes (2026-07-25 incident).
+    return ok({ ...state, transport: "connected" }, [
+      notify(
+        "info",
+        "reconnect.attempt_success",
+        `Reconnected (attempt ${event.attempt})`,
+      ),
+    ]);
   }
   if (event.type === "attempt-start") {
     return ok({ ...state, transport: "backoff" }, [
@@ -596,6 +605,31 @@ function reconnectEvent(state: AgentFSMState, event: ReconnectEvent): AgentFSMTr
         event.severity,
         "reconnect.attempt_failure",
         `Reconnect attempt ${event.attempt} failed${cause}${retryIn}`,
+      ),
+    ]);
+  }
+  if (event.type === "parked") {
+    // Seat taken by another connection — the facade is probing, NOT dead.
+    // Deliberately NOT phase "closed": parked is a recoverable state (redesign
+    // P7), and letting it fall through to the give-up arm below would have the
+    // FSM tear the agent down over a state the facade recovers from on its own.
+    return ok({ ...state, transport: "backoff" }, [
+      notify(
+        "warning",
+        "reconnect.parked",
+        "Another connection holds this agent's seat — standing by, probing every few minutes",
+      ),
+    ]);
+  }
+  if (event.type === "superseded-self") {
+    // Structurally impossible under single-flight unless something forged our
+    // instance id or the invariant regressed — either way it must be LOUD
+    // (审查 F7/F10: a silent stop here would be a forgeable kill switch).
+    return ok({ ...state, transport: "backoff" }, [
+      notify(
+        "error",
+        "reconnect.superseded_self",
+        "Evicted by a connection claiming THIS process's identity — parking and probing (possible instance-id forgery or a client bug; please report)",
       ),
     ]);
   }

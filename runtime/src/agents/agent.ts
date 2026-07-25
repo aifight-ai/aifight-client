@@ -10,6 +10,8 @@ import {
   type ReconnectingWSClient,
   type ReconnectingWSClientOptions,
   type ReconnectCloseInfo,
+  type ReconnectStateHandler,
+  type ReconnectStateSnapshot,
 } from "../wsclient/reconnect";
 import type { WSClientMessage } from "../wsclient/client";
 import type { ServerMessageEnvelope } from "../wsclient/frame-handler";
@@ -162,6 +164,9 @@ interface ActiveDecision {
 export class AgentInstance {
   readonly #opts: AgentInstanceOptions;
   #client: ReconnectingWSClient | null = null;
+  /** Abort handle for an IN-FLIGHT start()'s first connect only (审查 F5).
+   *  Null once the connect settles — later stops go through client.close(). */
+  #startAbort: AbortController | null = null;
   #state: AgentFSMState | null = null;
   #started = false;
   #stopped = false;
@@ -184,14 +189,34 @@ export class AgentInstance {
     }
 
     const connect = this.#opts.connect ?? createReconnectingWSClient;
+    // Abortable in-flight start (redesign, 审查 F5): with the server down the
+    // first-connect promise legitimately PENDS (transient failures retry
+    // forever), and a stop() that merely waited for it would hang the host's
+    // shutdown for as long as the outage lasts. stop() aborts this controller
+    // instead — the facade rejects promptly and start() surfaces the stop.
+    // Chained onto the caller's own signal so an external abort still lands.
+    const startAbort = new AbortController();
+    this.#startAbort = startAbort;
+    const upstream = this.#opts.ws.signal;
+    const relayAbort = (): void => startAbort.abort(upstream?.reason);
+    if (upstream !== undefined) {
+      if (upstream.aborted) relayAbort();
+      else upstream.addEventListener("abort", relayAbort, { once: true });
+    }
     let client: ReconnectingWSClient;
     try {
-      client = await connect(this.#opts.ws);
+      client = await connect({ ...this.#opts.ws, signal: startAbort.signal });
     } catch (e) {
       throw new AgentInstanceStartError(
         `failed to start agent '${this.#opts.name}': ${stringifyCause(e)}`,
         e,
       );
+    } finally {
+      // Once the connect settles the controller's job is done: a LATER stop()
+      // must go through client.close() (caller-close semantics), never through
+      // a lifecycle abort that would reclassify the shutdown as kind=signal.
+      this.#startAbort = null;
+      if (upstream !== undefined) upstream.removeEventListener("abort", relayAbort);
     }
     if (client.welcome === null) {
       throw new AgentInstanceStartError(
@@ -231,6 +256,10 @@ export class AgentInstance {
     this.#stopped = true;
     this.#cleanupHandlers();
 
+    // A start still connecting (server down → first-connect pends forever) is
+    // aborted, not waited out (审查 F5) — see the controller in start().
+    this.#startAbort?.abort();
+
     const client = this.#client;
     if (client !== null && client.state !== "closed") {
       await client.close(1000, reason);
@@ -269,6 +298,33 @@ export class AgentInstance {
       started: this.#started,
       stopped: this.#stopped,
     };
+  }
+
+  // ── Reconnect-redesign passthroughs (2026-07-25) — thin by design: the
+  // facade owns the semantics; these only exist so hosts reach it through the
+  // instance without holding the raw client. ──
+
+  /** Wake the reconnect loop now (P2): backoff → dial, parked → probe,
+   *  suspended → resume. Safe no-op before start / after stop. */
+  poke(): void {
+    this.#client?.poke();
+  }
+
+  /** Non-terminal sleep parking (P5): hand the seat back gracefully and stop
+   *  scheduling retries until poke(). Safe no-op before start / after stop. */
+  suspendConnection(): void {
+    this.#client?.suspend();
+  }
+
+  /** Live connection-state projection (P4). The handler also fires once
+   *  immediately with the standing snapshot. Returns an unsubscribe. */
+  onConnectionStateChange(handler: ReconnectStateHandler): () => void {
+    return this.#requireClient().onStateChange(handler);
+  }
+
+  /** Pull counterpart of onConnectionStateChange, null before start. */
+  connectionSnapshot(): ReconnectStateSnapshot | null {
+    return this.#client?.snapshot() ?? null;
   }
 
   /** Number of matches with a decision currently in flight — the local "busy"

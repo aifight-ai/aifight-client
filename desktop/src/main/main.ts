@@ -4,7 +4,7 @@
 // D2: own the bridge engine (BridgeHost) and read the shared config on launch.
 // D3 will replace the console callbacks below with real IPC channels.
 
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, shell, Tray } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, shell, Tray, powerMonitor } from "electron";
 import path from "node:path";
 
 import { BridgeHost } from "./bridge-host";
@@ -301,6 +301,13 @@ app.whenReady().then(async () => {
     const status = await bridgeHost.start();
     if (status.phase === "running") await bridgeHost.joinAutoMatch();
   }
+  // 重连重设计 2026-07-25 P5/P2: be honest about sleep. On lid-close hand the
+  // seat back gracefully (server shows offline in ~1s instead of a ~60s
+  // zombie); on wake dial immediately with a fresh backoff curve — never
+  // resume a stale frozen countdown (the 10:00→10:16 incident: timers froze
+  // through sleep and the app sat disconnected for the whole ladder residue).
+  powerMonitor.on("suspend", () => bridgeHost.suspendForSleep());
+  powerMonitor.on("resume", () => bridgeHost.pokeAfterWake());
   app.on("activate", () => {
     // Dock click (macOS) or relaunch — bring the window back from the tray.
     showMainWindow();

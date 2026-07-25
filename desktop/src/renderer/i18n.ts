@@ -583,6 +583,10 @@ const en = {
         'Run "aifight service stop" in a terminal, then hit Reconnect — another AIFight bridge on this computer is running your agent.\nOnly one connection per agent stays live, so the app and a background service take turns rather than sharing it. Stopping the service frees this computer\u2019s slot for right now; "aifight service uninstall" also stops it coming back after a restart. Neither one changes which client OWNS the agent — but once the service lets go and the app connects, the app will tell you if the agent still belongs to the service and show you where to paste a pairing code.\n{{detail}}',
       lockFailed:
         "The app can't bring your agent online — see below for what to fix.\n{{detail}}",
+      seatTakenParked:
+        "Another connection is using this agent (another machine, or a CLI service beside the app). The app is standing by and re-checks the seat every few minutes — Retry checks right now.",
+      seatSupersededSelf:
+        "Evicted by a connection claiming this app's own identity. Standing by and probing — if this keeps happening, please report it (possible client bug or identity forgery).",
     },
     guide: {
       eyebrow: "First-run setup",
@@ -1187,6 +1191,10 @@ const zh = {
       lockHeldUnknown:
         "在终端执行「aifight service stop」,再点「重连」——本机另一个 AIFight 客户端正在跑你的 agent。\n一个 agent 只保留一条连线,所以 app 和后台服务是轮流接手,不是一起上。「stop」腾出本机此刻的位置,「aifight service uninstall」还能让它开机后不再自己起来。这两条都不改变 Agent 归谁所有——但服务一松手、App 连上去之后,App 会告诉你它是不是仍归后台服务,并给出贴配对码的地方。\n{{detail}}",
       lockFailed: "app 无法让 agent 上线,请按下面的提示处理。\n{{detail}}",
+      seatTakenParked:
+        "另一条连接正在使用这个 agent(另一台电脑,或本机 app 之外的 CLI 服务)。app 已进入待命,每隔几分钟自动查看席位是否空出——点「重连」立即查看一次。",
+      seatSupersededSelf:
+        "被一条自称「本 app 自己」的连接顶下线。app 已待命并持续探测——若反复出现请反馈给我们(可能是客户端缺陷或身份伪造)。",
     },
     guide: {
       eyebrow: "初始设置",

@@ -1,9 +1,13 @@
 // M1-07 reconnect manager — exponential backoff + jitter + close-code dispatch.
 //
 // Wraps M1-06 createWSClient() in a stable facade that survives across
-// transient disconnects. See docs/plans/m1/M1-07.md for the design TED.
+// transient disconnects. See docs/plans/m1/M1-07.md for the original design
+// TED and docs/agent-bridge/RECONNECT_REDESIGN_2026-07-25.md for the 2026-07-25
+// redesign this file now implements (P1 single-flight close semantics, P2
+// deadline-based retries + poke + sleep detection, P3 identity-based eviction
+// handling replacing the yield ladder, P4 state projection, P5 suspended).
 //
-// Scope (rev 4 lock):
+// Scope (rev 4 lock, still honoured):
 //   - factory + ReconnectingWSClient facade only
 //   - 5 Roy 拍板: exponential 1s base × 2 cap 30s; full jitter; no max-attempts
 //     cap by default; error classes per TED; close whitelist 1001/1006/1011/1012
@@ -92,6 +96,48 @@ export type ReconnectCloseHandler = (info: ReconnectCloseInfo) => void;
 /** Backoff jitter strategy. Default "full" (rev 2 Roy 拍板 #2). */
 export type JitterStrategy = "none" | "full" | "equal";
 
+/** Why the facade is sitting in "parked" (seat lost to another connection). */
+export type ParkedReason = "seat-taken" | "superseded-self";
+
+/** Result of one ask-before-dial seat probe (redesign P3). `connected` is
+ *  whether ANY connection currently holds this agent's seat server-side;
+ *  `instanceMatches` is whether that holder reported OUR process instance id
+ *  (i.e. it is a zombie of this very process — reclaiming it is correct). */
+export interface SeatProbeResult {
+  readonly connected: boolean;
+  readonly instanceMatches: boolean;
+}
+
+/** Live snapshot of the facade's state machine (redesign P4). The UI derives
+ *  its phase from THIS — never from narrating the event stream, which is what
+ *  wedged the desktop pill on "connecting" while actually online. */
+export interface ReconnectStateSnapshot {
+  readonly state:
+    | "connecting"
+    | "connected"
+    | "backoff"
+    | "parked"
+    | "suspended"
+    | "closed";
+  /** Attempt counter of the CURRENT disconnect cycle (resets on success). */
+  readonly attempt: number;
+  /** Cumulative attempts over this facade's lifetime — never resets. This is
+   *  the number the desktop host historically surfaced as「重连次数」(审查
+   *  F10: facade.attempt resets on success, so it alone cannot feed that UI). */
+  readonly totalAttempts: number;
+  /** Wall-clock ms of the next scheduled dial, null when not in backoff. */
+  readonly nextRetryAt: number | null;
+  /** Wall-clock ms the CURRENT session connected, null when not connected. */
+  readonly connectedAt: number | null;
+  readonly welcome: WSWelcome | null;
+  readonly parkedReason: ParkedReason | null;
+  /** Monotonic per-facade sequence. Consumers must drop snapshots whose seq is
+   *  ≤ the last applied one (IPC reorder/stale-pull guard, 审查 F6). */
+  readonly seq: number;
+}
+
+export type ReconnectStateHandler = (snap: ReconnectStateSnapshot) => void;
+
 export interface ReconnectingWSClientOptions {
   url: string;
   apiKey: string;
@@ -99,6 +145,8 @@ export interface ReconnectingWSClientOptions {
   deviceId?: string;
   /** Which program is running this agent — see WSClientOptions.clientKind. */
   clientKind?: string;
+  /** Override the process instance id (tests simulating two processes only). */
+  instanceId?: string;
   expectedProtocolVersion: string;
   initialBackoffMs?: number;
   backoffFactor?: number;
@@ -122,7 +170,19 @@ export interface ReconnectingWSClientOptions {
    *  shorter than this are treated as flaps and keep escalating the existing
    *  curve. Default DEFAULT_STABILITY_WINDOW_MS (30s). */
   stabilityWindowMs?: number;
+  /** Parked-state probe cadence (redesign P3). Defaults 5min + up to 1min
+   *  jitter. Exposed for tests. */
+  parkedProbeIntervalMs?: number;
+  parkedProbeJitterMs?: number;
   signal?: AbortSignal;
+  /** Ask-before-dial seat probe (redesign P3, 审查 F4). Called while parked,
+   *  before every re-dial. Return null (or throw) when the probe endpoint is
+   *  unavailable — the facade then falls back to dialing blind, which matches
+   *  the pre-redesign behaviour against old servers. When it answers: the
+   *  facade dials only if the seat is empty or held by OUR OWN process
+   *  (reclaiming a zombie of ourselves); a seat held by someone else keeps us
+   *  parked so we never rip an active connection out of a live match. */
+  probeSeat?: () => Promise<SeatProbeResult | null>;
   /** R13-F08: called after a reconnect attempt failed with a 401 handshake, so
    *  a credential rotated out from under this process (e.g. re-pairing rewrote
    *  the bridge config while it kept running) is picked up without a restart.
@@ -139,6 +199,8 @@ export interface ReconnectEvent {
     | "attempt-start"
     | "attempt-success"
     | "attempt-failure"
+    | "parked"
+    | "superseded-self"
     | "give-up";
   readonly attempt: number;
   readonly nextDelayMs?: number;
@@ -152,14 +214,36 @@ export type ReconnectEventHandler = (ev: ReconnectEvent) => void;
 /** Stable facade — caller holds this reference indefinitely. Inner WSClient
  *  is mutable across reconnects; facade type is stable. */
 export interface ReconnectingWSClient {
-  readonly state: "connecting" | "connected" | "backoff" | "closed";
+  readonly state: ReconnectStateSnapshot["state"];
   readonly attempt: number;
+  readonly totalAttempts: number;
   readonly welcome: WSWelcome | null;
+  readonly nextRetryAt: number | null;
+  readonly connectedAtMs: number | null;
+  readonly parkedReason: ParkedReason | null;
   send(msg: WSClientMessage): void;
   onMessage(handler: WSMessageHandler): () => void;
   onError(handler: WSErrorHandler): () => void;
   onClose(handler: ReconnectCloseHandler): () => void;
   onReconnect(handler: ReconnectEventHandler): () => void;
+  /** State-machine projection (redesign P4). Fires on every state edge —
+   *  including connected, which the legacy event stream never surfaced. The
+   *  handler is also invoked once immediately with the current snapshot so a
+   *  late subscriber cannot miss the standing state. */
+  onStateChange(handler: ReconnectStateHandler): () => void;
+  /** Snapshot getter (pull counterpart of onStateChange, for IPC bootstrap). */
+  snapshot(): ReconnectStateSnapshot;
+  /** Wake the loop NOW (redesign P2): in backoff → dial immediately; parked →
+   *  probe immediately; suspended → resume with a fresh curve and dial. No-op
+   *  while connected/connecting/closed. */
+  poke(): void;
+  /** Enter the non-terminal suspended state (redesign P5): gracefully close
+   *  the inner socket (wire-level 1000 "host sleeping" — the server frees the
+   *  seat instantly instead of holding a zombie until its read deadline), stop
+   *  scheduling retries, keep the facade alive. poke() resumes. NOT close():
+   *  close() stays terminal (审查 F12 — a literal close() per lid-close would
+   *  tear the bridge down and race the seat lock). */
+  suspend(): void;
   close(code?: number, reason?: string): Promise<void>;
 }
 
@@ -179,49 +263,41 @@ const DEFAULT_JITTER: JitterStrategy = "full";
 /** A session that dies sooner than this after a successful welcome is a FLAP,
  *  not the start of a fresh disconnect cycle — so it must NOT reset the backoff
  *  curve. Without this the curve is pinned at ~1s forever whenever the server
- *  drops us immediately every time (2026-07-24: two local clients sharing one
- *  agent identity evicted each other ~30×/min indefinitely). 30s is far longer
- *  than any storm's session (~1s) yet short enough that a real session — even a
- *  brief one — still counts as "connected once" and restarts from 1s. */
+ *  drops us immediately every time (connect-then-instant-death faults: backend
+ *  crash-loop, a proxy that upgrades then resets). KEPT by the 2026-07-25
+ *  redesign (审查 F5): identity-based eviction handling replaces only the 4409
+ *  yield ladder — it cannot see this fault class, which has nothing to do with
+ *  seat contention. 30s is far longer than any storm's session (~1s) yet short
+ *  enough that a real session — even a brief one — still counts as "connected
+ *  once" and restarts from 1s. */
 const DEFAULT_STABILITY_WINDOW_MS = 30_000;
 
-/** Yield curve for CLOSE_CODE_REPLACED (imported from ./capabilities, which also
- *  declares the handshake capability that lets the server send it at all).
- *
- *  Equal jitter, NOT the default full jitter: full draws from [0, base) and
- *  would happily pick 0.4s, which is exactly the thrash we are yielding to
- *  avoid. So the real delay is [base/2, base) — 30-60s on the first eviction,
- *  rising to 5-10 minutes at the ceiling.
- *
- *  The ceiling is a deliberate trade. Two clients that share one agent are a
- *  MISCONFIGURATION, and the useful outcome is that one of them plainly wins:
- *  a hold has to outlast a match, and a single decision alone can take minutes
- *  (llm_call_timeout_seconds defaults to 270s). A shorter ceiling looked safer —
- *  it kept a yield under the server's 180s disconnect grace — but that safety
- *  was illusory (one failed attempt inside a yield already doubles the gap past
- *  it) and it bought a standoff where the seat changes hands every minute or two
- *  and NEITHER side ever completes a game. The residual risk is narrow: being
- *  offline through a long yield only forfeits a match if the peer that took the
- *  seat ALSO dies during it.
- *
- *  What this curve is FOR has narrowed since it was written. The server now
- *  settles the fight outright: an agent is bound to one device AND one client
- *  kind, and the loser is refused at the handshake (403 client_mismatch) instead
- *  of being let in to evict the winner. Two CURRENT clients can no longer storm.
- *
- *  It stays because of the mixed-version window, which is not hypothetical: a
- *  client too old to send X-AIFight-Client-Kind is deliberately waved through and
- *  binds nothing (the compatibility rule that keeps un-updated installs alive).
- *  So an updated app beside a not-yet-updated CLI service — the exact shape of the
- *  2026-07-24 report — can still trade the seat, and only the updated side is
- *  capable of standing down. Damping one side is enough to stop the thrash there;
- *  it just means the older client wins, which is the right outcome anyway since it
- *  is the one that cannot be told anything.
- *
- *  Never terminal: the peer may stop at any moment and we must recover with no
- *  user action (2026-06-28 never-give-up directive). */
-const REPLACED_INITIAL_BACKOFF_MS = 60_000;
-const REPLACED_MAX_BACKOFF_MS = 600_000;
+/** Parked-state probe cadence (redesign P3). The 2026-07-24 yield ladder
+ *  (30-60s escalating to 5-10min, #replacedStreak) is GONE: it existed only
+ *  because an evicted client could not tell its own successor from a rival, so
+ *  it guessed from timing. The server now answers that question outright
+ *  (same_instance boolean in the 4409 reason), and a genuine rival puts us in
+ *  "parked": ask the presence endpoint every ~5min whether the seat has freed
+ *  up, and only dial when it is empty or held by our own zombie — never a
+ *  blind dial that would rip the rival (possibly mid-match) off the seat
+ *  (审查 F4: blind 5-min dials would trade the seat forever between two
+ *  clients on the lock-bypass paths). */
+const DEFAULT_PARKED_PROBE_INTERVAL_MS = 300_000;
+const DEFAULT_PARKED_PROBE_JITTER_MS = 60_000;
+/** First parked probe comes sooner: the common real-world eviction is a stale
+ *  belief (the rival already died, or it was our own zombie the server hadn't
+ *  reaped), and waiting a full 5min to discover an empty seat is needless
+ *  downtime. */
+const PARKED_FIRST_PROBE_DELAY_MS = 10_000;
+
+/** Deadline sleep internals (redesign P2). Sleeps are chunked so a laptop that
+ *  slept through the timer is detected: each chunk knows when it EXPECTED to
+ *  fire, and an overshoot beyond WALL_JUMP_THRESHOLD_MS means the process was
+ *  frozen (system sleep / App Nap) — the loop then treats it as a wake: curve
+ *  reset, dial now. setTimeout alone cannot do this: a 10-min timer set 1 min
+ *  before lid-close fires 9 min after lid-open. */
+const SLEEP_CHUNK_MS = 30_000;
+const WALL_JUMP_THRESHOLD_MS = 90_000;
 
 const SEVERITY_WARN_THRESHOLD_MS = 5 * 60 * 1_000;
 const SEVERITY_ERROR_THRESHOLD_MS = 15 * 60 * 1_000;
@@ -276,6 +352,28 @@ function isRetriableClose(info: WSCloseInfo): boolean {
   return RETRIABLE_CLOSE_CODES.has(info.code);
 }
 
+/** Parse the 4409 close reason. beta.25+ servers send JSON
+ *  `{"reason":"replaced_by_new_connection","same_instance":true|false}`;
+ *  older servers send opaque text. Unknown/unparsable → null (treated as
+ *  "someone else" — the conservative reading, and the correct one during the
+ *  deploy window where the server predates the field, 审查 F6). */
+function parseReplacedSameInstance(reason: string | undefined): boolean | null {
+  if (!reason) return null;
+  try {
+    const parsed: unknown = JSON.parse(reason);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as { same_instance?: unknown }).same_instance === "boolean"
+    ) {
+      return (parsed as { same_instance: boolean }).same_instance;
+    }
+  } catch {
+    /* legacy plain-text reason */
+  }
+  return null;
+}
+
 /** Roy 拍板 #4: WSClientError class dispatch.
  *  `connectedBefore` distinguishes a first-connect failure from a reconnect.
  *  401/404 are terminal on the FIRST connect — a genuinely bad or unclaimed
@@ -313,12 +411,21 @@ function severityForElapsed(elapsedMs: number): "info" | "warning" | "error" {
   return "info";
 }
 
+/** Interruption kinds shared by the deadline sleep and the parked/suspended
+ *  waits. "timeout" = deadline reached; "wake" = wall-clock jump detected
+ *  (system slept through us); the rest are caller verbs. */
+type WaitOutcome = "timeout" | "wake" | "poke" | "suspend" | "abort" | "close";
+
 // ─── Implementation class (module-private) ──────────────────────────
 
 class ReconnectingWSClientImpl implements ReconnectingWSClient {
-  state: "connecting" | "connected" | "backoff" | "closed" = "connecting";
+  state: ReconnectStateSnapshot["state"] = "connecting";
   attempt = 0;
+  totalAttempts = 0;
   welcome: WSWelcome | null = null;
+  nextRetryAt: number | null = null;
+  connectedAtMs: number | null = null;
+  parkedReason: ParkedReason | null = null;
 
   readonly #opts: ReconnectingWSClientOptions;
   /** Credential used for the next connect attempt. Starts as opts.apiKey and
@@ -329,6 +436,7 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
   readonly #errorHandlers = new Set<WSErrorHandler>();
   readonly #closeHandlers = new Set<ReconnectCloseHandler>();
   readonly #reconnectHandlers = new Set<ReconnectEventHandler>();
+  readonly #stateHandlers = new Set<ReconnectStateHandler>();
   #cycleStartTime = 0;
   /** Consecutive-failure counter that drives backoff curve (rev 5).
    *  Resets to 0 on every successful welcome. Incremented on each
@@ -350,25 +458,32 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
    *  wi-fi was down) must not make the first short session that follows start
    *  from the top of the curve. Reset by any session that outlives the window. */
   #flapStreak = 0;
-  /** Consecutive "a newer connection replaced me" evictions. Drives the yield
-   *  curve on its own, because the reconnect BETWEEN two evictions succeeds and
-   *  would otherwise reset #failures — leaving two competitors trading the slot
-   *  at a fixed 60s forever. Escalating instead makes the loser yield longer
-   *  each round until the winner simply keeps the slot.
-   *
-   *  Cleared only by a session that outlives the stability window — i.e. by
-   *  evidence that we are no longer competing. NOT by a mere successful connect
-   *  (the winner-for-a-moment always connects, that is what an eviction is), and
-   *  NOT by a failed attempt in between: a single flaky connect used to collapse
-   *  a 60s yield back to the 2s curve and restart the fight. */
-  #replacedStreak = 0;
   #firstConnectResolve: (() => void) | null = null;
   #firstConnectReject: ((err: unknown) => void) | null = null;
   #firstConnectSettled = false;
   #terminating: { code?: number; reason?: string } | null = null;
   #closedDispatched = false;
-  #wakeupSleep: ((kind: "abort" | "close") => void) | null = null;
+  /** Resolvers waiting for terminal close — close() awaits one of these so a
+   *  caller that closed mid-dial gets a Promise that resolves only after the
+   *  loop truly dispatched terminal state (P1: close() must not lie). */
+  #closedWaiters: Array<() => void> = [];
+  /** Wakes whichever wait (#sleepUntil chunk / parked wait / suspended wait)
+   *  is currently pending. Null when the loop is not waiting. */
+  #wakeWait: ((kind: Exclude<WaitOutcome, "timeout" | "wake">) => void) | null =
+    null;
+  /** Suspend request flag (redesign P5). Checked at every loop juncture; set
+   *  by suspend(), cleared when the loop enters the suspended wait's exit. */
+  #suspendRequested = false;
+  /** Poke request that arrived while no wait was pending (e.g. during a dial).
+   *  Consumed at the next wait so a poke is never lost to a race. */
+  #pokePending = false;
+  /** Abort controller for the IN-FLIGHT dial only (P1). close()/suspend()
+   *  abort it so a caller-close or lid-close cannot leave a dial completing in
+   *  the background and resurrecting a facade that already reported closed —
+   *  the zombie-connection root cause of the 2026-07-25 self-eviction spiral. */
+  #dialAbort: AbortController | null = null;
   #innerUnsubs: Array<() => void> = [];
+  #seq = 0;
 
   constructor(opts: ReconnectingWSClientOptions) {
     this.#opts = opts;
@@ -422,25 +537,99 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
     };
   }
 
+  onStateChange(handler: ReconnectStateHandler): () => void {
+    this.#stateHandlers.add(handler);
+    // Late subscriber gets the standing state immediately — the projection
+    // must never depend on being subscribed before an edge fired (审查 F6).
+    try {
+      handler(this.snapshot());
+    } catch {
+      /* projection handler errors must not break the caller */
+    }
+    return () => {
+      this.#stateHandlers.delete(handler);
+    };
+  }
+
+  snapshot(): ReconnectStateSnapshot {
+    return {
+      state: this.state,
+      attempt: this.attempt,
+      totalAttempts: this.totalAttempts,
+      nextRetryAt: this.nextRetryAt,
+      connectedAt: this.connectedAtMs,
+      welcome: this.welcome,
+      parkedReason: this.parkedReason,
+      seq: this.#seq,
+    };
+  }
+
+  poke(): void {
+    if (this.state === "closed") return;
+    if (this.#wakeWait !== null) {
+      this.#wakeWait("poke");
+      return;
+    }
+    // No wait pending (mid-dial, mid-close-drain): remember it so the next
+    // wait consumes it instead of the poke evaporating.
+    this.#pokePending = true;
+  }
+
+  suspend(): void {
+    if (this.state === "closed" || this.state === "suspended") return;
+    this.#suspendRequested = true;
+    // Abort an in-flight dial: a dial completing during system sleep prep
+    // would be exactly the resurrection window P1 closes.
+    this.#dialAbort?.abort();
+    if (this.#wakeWait !== null) {
+      this.#wakeWait("suspend");
+    }
+    if (this.#inner !== null) {
+      // Wire-level graceful close — the server frees the seat NOW instead of
+      // discovering a dead peer at its read deadline (≤60s). The run loop sees
+      // the close, notices #suspendRequested, and parks in "suspended" instead
+      // of scheduling a retry.
+      void this.#inner.close(1000, "host sleeping").catch(() => {
+        /* best-effort; server read-deadline (≤60s) is the fallback */
+      });
+    }
+  }
+
   async close(code?: number, reason?: string): Promise<void> {
     if (this.state === "closed") return;
     this.#terminating = { code, reason };
-    if (this.#wakeupSleep) {
-      this.#wakeupSleep("close");
+    // P1: a close must also stop an IN-FLIGHT dial — without this the dial
+    // lands later, rewrites #inner/state, and resurrects a facade the caller
+    // was told is closed (the 2026-07-25 zombie root cause).
+    this.#dialAbort?.abort();
+    if (this.#wakeWait !== null) {
+      this.#wakeWait("close");
     }
     if (this.#inner !== null) {
       await this.#inner.close(code, reason).catch(() => {
         /* ignore inner close errors */
       });
-    } else if (!this.#closedDispatched) {
-      // No inner, no pending sleep → directly dispatch terminal close.
-      this.#terminate({
-        kind: "caller-close",
-        code: code ?? 1000,
-        closeReason: reason,
-        cause: undefined,
-      });
     }
+    if (this.#closedDispatched) return;
+    // The loop owns terminal dispatch on every path that is currently awaiting
+    // something (#sleepUntil / parked / suspended / in-flight dial → abort).
+    // But if the loop is NOT waiting anywhere (e.g. close() called before the
+    // loop's first await, or between awaits), nobody would ever dispatch — so
+    // wait a microtask-bounded beat for the loop, then dispatch directly.
+    await new Promise<void>((resolve) => {
+      this.#closedWaiters.push(resolve);
+      // Let the loop's pending continuations run first.
+      setImmediate(() => {
+        if (!this.#closedDispatched) {
+          this.#terminate({
+            kind: "caller-close",
+            code: code ?? 1000,
+            closeReason: reason,
+            cause: undefined,
+          });
+        }
+      });
+    });
   }
 
   /** Wires up the first-connect promise resolvers and runs the main loop
@@ -467,29 +656,58 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
     }
 
     while (this.state !== "closed") {
+      // A suspend that raced ahead of the dial parks first.
+      if (this.#suspendRequested) {
+        const resume = await this.#suspendWait();
+        if (resume !== "resume") return; // terminal dispatched inside
+        continue;
+      }
+
       this.attempt++;
-      this.state = "connecting";
+      this.totalAttempts++;
+      this.#setState("connecting");
       this.#emit("attempt-start", this.attempt);
 
       let lastErr: WSClientError | undefined;
       let innerSucceeded = false;
       try {
-        const inner = await createWSClient({
-          url: this.#opts.url,
-          apiKey: this.#apiKey,
-          deviceId: this.#opts.deviceId,
-          clientKind: this.#opts.clientKind,
-          expectedProtocolVersion: this.#opts.expectedProtocolVersion,
-          welcomeTimeoutMs: this.#opts.welcomeTimeoutMs,
-          pingIntervalMs: this.#opts.pingIntervalMs,
-          livenessTimeoutMs: this.#opts.livenessTimeoutMs,
-          signal: this.#opts.signal,
-        });
+        const inner = await this.#dial();
         innerSucceeded = true;
+
+        // P1 resurrection guard: the dial may have raced a close()/abort that
+        // already dispatched (or is dispatching) terminal state. A connection
+        // landing after that point must be discarded, never installed — the
+        // pre-redesign code wrote #inner/state unconditionally here, which is
+        // how a "closed" facade came back to life as an unowned zombie holding
+        // the agent's seat (2026-07-25 incident).
+        if (
+          this.#closedDispatched ||
+          this.#terminating !== null ||
+          this.#opts.signal?.aborted === true
+        ) {
+          void inner.close(1000, "superseded by caller close").catch(() => {});
+          if (!this.#closedDispatched) {
+            this.#terminate({
+              kind: this.#terminating !== null ? "caller-close" : "signal",
+              code: this.#terminating?.code ?? 1000,
+              closeReason: this.#terminating?.reason,
+              cause: undefined,
+            });
+          }
+          return;
+        }
+        if (this.#suspendRequested) {
+          // Lid closed while the dial was in flight and the abort lost the
+          // race: hand the seat back and park.
+          void inner.close(1000, "host sleeping").catch(() => {});
+          const resume = await this.#suspendWait();
+          if (resume !== "resume") return;
+          continue;
+        }
+
         this.#inner = inner;
         this.welcome = inner.welcome;
         this.#wireHandlersTo(inner);
-        this.state = "connected";
         const succeededAttempt = this.attempt;
         // Reset BOTH counters on success (rev 5):
         //   - public `attempt` per TED rev 4 (caller-visible cycle counter)
@@ -498,6 +716,10 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
         this.attempt = 0;
         this.#failures = 0;
         this.#connectedAt = Date.now();
+        this.connectedAtMs = this.#connectedAt;
+        this.nextRetryAt = null;
+        this.parkedReason = null;
+        this.#setState("connected");
         this.#emit("attempt-success", succeededAttempt);
 
         // Resolve first-connect facade (idempotent)
@@ -509,12 +731,17 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
         const closeInfo = await this.#waitInnerClose(inner);
         this.#dropInnerUnsubs();
         this.#inner = null;
+        this.connectedAtMs = null;
 
-        if (this.#terminating) {
+        // Read through a method: close() mutates #terminating concurrently
+        // from outside this loop, which TS's flow analysis cannot see — a
+        // direct field read here narrows to null after the early-return above.
+        const term = this.#terminatingNow();
+        if (term !== null) {
           this.#terminate({
             kind: "caller-close",
-            code: this.#terminating.code ?? closeInfo.code,
-            closeReason: this.#terminating.reason ?? closeInfo.reason,
+            code: term.code ?? closeInfo.code,
+            closeReason: term.reason ?? closeInfo.reason,
             cause: undefined,
           });
           return;
@@ -522,6 +749,12 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
         if (this.#opts.signal?.aborted) {
           this.#terminate({ kind: "signal", cause: undefined });
           return;
+        }
+        if (this.#suspendRequested) {
+          // suspend() closed the inner socket gracefully; park (non-terminal).
+          const resume = await this.#suspendWait();
+          if (resume !== "resume") return;
+          continue;
         }
         if (!isRetriableClose(closeInfo)) {
           const cause = new ReconnectStoppedError(
@@ -537,14 +770,42 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
           });
           return;
         }
+
+        // ── Eviction (4409): identity-based handling, redesign P3. ──
+        // The server told us a NEWER connection took this agent's seat, and —
+        // on beta.25+ servers — whether that newer connection came from this
+        // very process. This replaces the old timing-heuristic yield ladder
+        // (#replacedStreak, 30-60s→5-10min): park, ask the presence endpoint
+        // before every re-dial, and only take the seat back when it is free or
+        // held by our own zombie.
+        if (closeInfo.code === CLOSE_CODE_REPLACED) {
+          const sameInstance = parseReplacedSameInstance(closeInfo.reason);
+          // same_instance=true arriving on the LIVE facade is structurally
+          // impossible under P1 single-flight (a legitimate successor of ours
+          // only ever evicts a socket we already abandoned). So it is either
+          // an internal single-flight regression or a forged instance id —
+          // NEVER handle it silently (审查 F7/F9/F10): park like a rival took
+          // the seat, and shout in telemetry.
+          const reason: ParkedReason =
+            sameInstance === true ? "superseded-self" : "seat-taken";
+          if (reason === "superseded-self") {
+            this.#emit("superseded-self", Math.max(1, this.totalAttempts));
+          }
+          const verdict = await this.#parkedWait(reason);
+          if (verdict !== "dial") return; // terminal dispatched inside
+          // Considered exit — fresh cycle, not a blind escalation.
+          this.#failures = 0;
+          this.#flapStreak = 0;
+          continue;
+        }
+
         // Retriable server-initiated close. A session that LASTED counts as the
         // 1st failure of a new disconnect cycle, so the curve starts at 1s
         // (rev 5 lock; Roy 拍板 #1 + plan §5.9 字面曲线 1s → 2s → ...).
         // A session that died inside stabilityWindowMs is a FLAP: resetting to
-        // 1 there would pin the curve at ~1s forever (2026-07-24: two local
-        // clients sharing one agent id evicted each other ~30×/min without end),
-        // so a flap keeps escalating its own streak.
-        //
+        // 1 there would pin the curve at ~1s forever (connect-then-instant-
+        // death faults), so a flap keeps escalating its own streak (审查 F5:
+        // kept by the redesign — this guards a fault class identity cannot).
         const sessionMs = Date.now() - this.#connectedAt;
         const stabilityWindowMs =
           this.#opts.stabilityWindowMs ?? DEFAULT_STABILITY_WINDOW_MS;
@@ -555,35 +816,41 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
           this.#flapStreak += 1;
           this.#failures = this.#flapStreak;
         }
-        // The eviction ladder answers only to evictions. It deliberately does
-        // NOT reset on a long session: the yield itself is longer than the
-        // stability window, so the session between two evictions always looks
-        // "stable" and clearing it here made the ladder unreachable — two
-        // clients then traded the seat ~80×/hour forever, in turns too short to
-        // finish a match. Any close that is NOT an eviction is evidence the
-        // contention is over, and clears it.
-        if (closeInfo.code === CLOSE_CODE_REPLACED) {
-          this.#replacedStreak += 1;
-        } else {
-          this.#replacedStreak = 0;
-        }
         // Give the backoff/telemetry path an actual cause. WSClosedError is NOT
         // a WSHandshakeError, so the refreshApiKey and isAuthFailure branches
         // below are unaffected — this only fills in the previously-empty
         // `lastErr` so logs state WHY we are reconnecting.
         lastErr = new WSClosedError(
-          closeInfo.code === CLOSE_CODE_REPLACED
-            ? "another connection claimed this agent — only one connection per agent stays live, so this one is standing down for a few minutes (check for this agent running on another machine, or a background service alongside the app)"
-            : `server closed the connection (code ${closeInfo.code}${
-                closeInfo.reason ? `: ${closeInfo.reason}` : ""
-              })`,
+          `server closed the connection (code ${closeInfo.code}${
+            closeInfo.reason ? `: ${closeInfo.reason}` : ""
+          })`,
         );
-        this.state = "backoff";
+        this.#setState("backoff");
         this.#cycleStartTime = Date.now();
       } catch (err) {
         if (innerSucceeded) {
           // Should not reach here — innerSucceeded path doesn't throw.
           throw err;
+        }
+        // An abort caused by our own close()/suspend() is a caller verb, not a
+        // connection failure — route it to the matching non-failure exit.
+        if (err instanceof WSAbortedError) {
+          if (this.#terminating !== null) {
+            if (!this.#closedDispatched) {
+              this.#terminate({
+                kind: "caller-close",
+                code: this.#terminating.code ?? 1000,
+                closeReason: this.#terminating.reason,
+                cause: undefined,
+              });
+            }
+            return;
+          }
+          if (this.#suspendRequested) {
+            const resume = await this.#suspendWait();
+            if (resume !== "resume") return;
+            continue;
+          }
         }
         if (err instanceof WSClientError) {
           lastErr = err;
@@ -599,7 +866,7 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
         }
         // Transient connect failure — count it (rev 5 lock).
         this.#failures++;
-        this.state = "backoff";
+        this.#setState("backoff");
       }
 
       // R13-F08: a 401 on reconnect may mean the credential was rotated out
@@ -632,23 +899,13 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
       // 2026-06-28: auth-class reconnect failures (401/404) use a gentler 60s
       // cap so a permanently-revoked credential isn't retried every 30s, while
       // network/server failures keep the fast 30s cap for prompt recovery.
-      // 2026-07-24: while we owe another connection the seat, a MUCH slower
-      // curve applies. It stays in force until a session outlives the stability
-      // window — not just for the one iteration that saw the eviction — because
-      // a single failed attempt in between would otherwise collapse a 60s yield
-      // back to ~2s and restart the fight.
-      const yieldToPeer = this.#replacedStreak > 0;
-      const baseCap = yieldToPeer
-        ? REPLACED_MAX_BACKOFF_MS
-        : (this.#opts.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS);
+      const baseCap = this.#opts.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
       const isAuthFailure =
         lastErr instanceof WSHandshakeError &&
         (lastErr.statusCode === 401 || lastErr.statusCode === 404);
       const cappedBase = computeBackoff(
-        yieldToPeer ? this.#replacedStreak : this.#failures,
-        yieldToPeer
-          ? REPLACED_INITIAL_BACKOFF_MS
-          : (this.#opts.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS),
+        this.#failures,
+        this.#opts.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS,
         this.#opts.backoffFactor ?? DEFAULT_BACKOFF_FACTOR,
         isAuthFailure ? Math.max(baseCap, AUTH_MAX_BACKOFF_MS) : baseCap,
       );
@@ -661,8 +918,9 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
       // the same whether it was passed explicitly or defaulted, because
       // otherwise passing the documented default silently weakens the curve.
       const requested = this.#opts.jitter ?? DEFAULT_JITTER;
-      const escalated = requested === "full" && this.#failures > 1 ? "equal" : requested;
-      const delay = computeJitter(cappedBase, yieldToPeer ? "equal" : escalated);
+      const escalated =
+        requested === "full" && this.#failures > 1 ? "equal" : requested;
+      const delay = computeJitter(cappedBase, escalated);
       // Emit `attempt-failure` with the ATTEMPT NUMBER associated with
       // this failure event:
       //   - catch path: `this.attempt` is the just-failed attempt number
@@ -670,14 +928,8 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
       //     the consecutive-failure count instead. During a flap storm that
       //     climbs 1,2,3,… (matching the escalating delay) rather than being
       //     pinned at "attempt 1" forever, which read as "stuck" in the logs.
-      //   - while yielding: #failures resets to 1 every round (each eviction is
-      //     preceded by a connect that SUCCEEDED), so report the eviction streak
-      //     or a two-machine standoff reads as "attempt 1" forever.
-      const eventAttempt = yieldToPeer
-        ? Math.max(1, this.#replacedStreak)
-        : this.attempt === 0
-          ? Math.max(1, this.#failures)
-          : this.attempt;
+      const eventAttempt =
+        this.attempt === 0 ? Math.max(1, this.#failures) : this.attempt;
       this.#emit("attempt-failure", eventAttempt, delay, lastErr);
 
       // maxAttempts caps CONSECUTIVE failures (#failures), not the attempt
@@ -699,44 +951,117 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
         return;
       }
 
-      const sleepResult = await this.#sleep(delay);
-      if (sleepResult === "abort") {
-        this.#terminate({ kind: "signal", cause: undefined });
-        if (!this.#firstConnectSettled) {
-          this.#firstConnectSettled = true;
-          this.#firstConnectReject?.(
-            new ReconnectStoppedError(
-              "signal",
-              undefined,
-              "ReconnectingWSClient aborted during backoff",
-            ),
-          );
+      const sleepResult = await this.#sleepUntil(Date.now() + delay);
+      this.nextRetryAt = null;
+      switch (sleepResult) {
+        case "abort":
+          this.#terminate({ kind: "signal", cause: undefined });
+          if (!this.#firstConnectSettled) {
+            this.#firstConnectSettled = true;
+            this.#firstConnectReject?.(
+              new ReconnectStoppedError(
+                "signal",
+                undefined,
+                "ReconnectingWSClient aborted during backoff",
+              ),
+            );
+          }
+          return;
+        case "close":
+          this.#terminate({
+            kind: "caller-close",
+            code: this.#terminating?.code ?? 1000,
+            closeReason: this.#terminating?.reason,
+            cause: undefined,
+          });
+          return;
+        case "suspend": {
+          const resume = await this.#suspendWait();
+          if (resume !== "resume") return;
+          continue;
         }
-        return;
-      }
-      if (sleepResult === "close") {
-        this.#terminate({
-          kind: "caller-close",
-          code: this.#terminating?.code ?? 1000,
-          closeReason: this.#terminating?.reason,
-          cause: undefined,
-        });
-        return;
+        case "wake":
+          // The machine slept through this backoff (wall-clock jump). Fresh
+          // network reality: reset the curve and dial immediately (P2).
+          this.#failures = 0;
+          this.#flapStreak = 0;
+          continue;
+        case "poke":
+        case "timeout":
+          continue;
       }
     }
   }
 
-  #sleep(delayMs: number): Promise<"timeout" | "abort" | "close"> {
-    return new Promise<"timeout" | "abort" | "close">((resolve) => {
+  /** One dial with its own AbortController (P1). The controller chains the
+   *  caller's signal so an external abort still lands, but close()/suspend()
+   *  can also abort JUST this dial without the caller's signal firing. */
+  async #dial(): Promise<WSClient> {
+    const controller = new AbortController();
+    this.#dialAbort = controller;
+    const upstream = this.#opts.signal;
+    const relay = (): void => controller.abort(upstream?.reason);
+    if (upstream) {
+      if (upstream.aborted) controller.abort(upstream.reason);
+      else upstream.addEventListener("abort", relay, { once: true });
+    }
+    try {
+      return await createWSClient({
+        url: this.#opts.url,
+        apiKey: this.#apiKey,
+        deviceId: this.#opts.deviceId,
+        clientKind: this.#opts.clientKind,
+        instanceId: this.#opts.instanceId,
+        expectedProtocolVersion: this.#opts.expectedProtocolVersion,
+        welcomeTimeoutMs: this.#opts.welcomeTimeoutMs,
+        pingIntervalMs: this.#opts.pingIntervalMs,
+        livenessTimeoutMs: this.#opts.livenessTimeoutMs,
+        signal: controller.signal,
+      });
+    } finally {
+      this.#dialAbort = null;
+      if (upstream) upstream.removeEventListener("abort", relay);
+    }
+  }
+
+  /** Deadline sleep (P2): chunked so a machine that sleeps through it is
+   *  detected as a wall-clock jump ("wake") instead of silently resuming a
+   *  stale countdown minutes after lid-open. */
+  async #sleepUntil(deadline: number): Promise<WaitOutcome> {
+    this.nextRetryAt = deadline;
+    this.#project();
+    for (;;) {
+      const now = Date.now();
+      if (now >= deadline) return "timeout";
+      const chunk = Math.min(SLEEP_CHUNK_MS, deadline - now);
+      const expectedFire = now + chunk;
+      const outcome = await this.#interruptibleDelay(chunk);
+      if (outcome !== "timeout") return outcome;
+      if (Date.now() - expectedFire > WALL_JUMP_THRESHOLD_MS) {
+        return "wake";
+      }
+    }
+  }
+
+  /** One interruptible timer tick. Interruptions come from poke()/suspend()/
+   *  close()/signal-abort via #wakeWait. */
+  #interruptibleDelay(delayMs: number): Promise<WaitOutcome> {
+    return new Promise<WaitOutcome>((resolve) => {
+      // A poke that raced in while the loop was between waits fires now.
+      if (this.#pokePending) {
+        this.#pokePending = false;
+        resolve("poke");
+        return;
+      }
       let settled = false;
-      const settle = (v: "timeout" | "abort" | "close") => {
+      const settle = (v: WaitOutcome): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         if (signal && abortListener) {
           signal.removeEventListener("abort", abortListener);
         }
-        this.#wakeupSleep = null;
+        this.#wakeWait = null;
         resolve(v);
       };
       const timer = setTimeout(() => settle("timeout"), delayMs);
@@ -750,8 +1075,155 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
         abortListener = () => settle("abort");
         signal.addEventListener("abort", abortListener);
       }
-      this.#wakeupSleep = (kind) => settle(kind);
+      this.#wakeWait = (kind) => settle(kind);
     });
+  }
+
+  /** Parked wait (P3): the seat belongs to another connection. Probe on a
+   *  gentle cadence and return "dial" only when taking the seat is KNOWN to be
+   *  non-disruptive (empty, or held by our own process's zombie) — or when the
+   *  probe endpoint is unavailable (legacy server), where a blind dial is the
+   *  only option and matches pre-redesign behaviour. */
+  async #parkedWait(reason: ParkedReason): Promise<"dial" | "stopped"> {
+    this.parkedReason = reason;
+    this.nextRetryAt = null;
+    this.#setState("parked");
+    this.#emit("parked", Math.max(1, this.totalAttempts));
+
+    const interval =
+      this.#opts.parkedProbeIntervalMs ?? DEFAULT_PARKED_PROBE_INTERVAL_MS;
+    const jitterSpan =
+      this.#opts.parkedProbeJitterMs ?? DEFAULT_PARKED_PROBE_JITTER_MS;
+    let waitMs = Math.min(PARKED_FIRST_PROBE_DELAY_MS, interval);
+    for (;;) {
+      // Whether THIS round already waited a full probe cadence. Gates the
+      // blind-dial fallback below: a blind dial rips the seat holder off
+      // unconditionally (newest-wins), so when the probe cannot answer (old
+      // server / endpoint down) it may only happen at the ladder-ceiling
+      // cadence the old design converged to — never on the 10s fast path,
+      // which against an old server would have two parked rivals trading the
+      // seat every ~20s, worse than the ladder it replaces.
+      const waitedFullCadence = waitMs >= interval;
+      const outcome = await this.#sleepUntil(Date.now() + waitMs);
+      this.nextRetryAt = null;
+      // A poke/wake is the operator (or a lid-open) saying "try now" — human
+      // intent overrides the blind-dial caution.
+      let operatorIntent = false;
+      switch (outcome) {
+        case "abort":
+          this.#terminate({ kind: "signal", cause: undefined });
+          return "stopped";
+        case "close":
+          this.#terminate({
+            kind: "caller-close",
+            code: this.#terminating?.code ?? 1000,
+            closeReason: this.#terminating?.reason,
+            cause: undefined,
+          });
+          return "stopped";
+        case "suspend": {
+          const resume = await this.#suspendWait();
+          if (resume !== "resume") return "stopped";
+          // Woke from sleep while parked: the world may have changed (the
+          // rival may be gone). Probe immediately.
+          operatorIntent = true;
+          break;
+        }
+        case "wake":
+        case "poke":
+          operatorIntent = true;
+          break;
+        case "timeout":
+          break;
+      }
+
+      // Ask before dialing (审查 F4).
+      let verdict: SeatProbeResult | null = null;
+      if (this.#opts.probeSeat !== undefined) {
+        try {
+          verdict = await this.#opts.probeSeat();
+        } catch {
+          verdict = null;
+        }
+      }
+      // Re-check interruptions that landed during the async probe.
+      const term = this.#terminatingNow();
+      if (term !== null) {
+        this.#terminate({
+          kind: "caller-close",
+          code: term.code ?? 1000,
+          closeReason: term.reason,
+          cause: undefined,
+        });
+        return "stopped";
+      }
+      if (this.#opts.signal?.aborted) {
+        this.#terminate({ kind: "signal", cause: undefined });
+        return "stopped";
+      }
+      if (this.#suspendRequested) {
+        const resume = await this.#suspendWait();
+        if (resume !== "resume") return "stopped";
+      }
+      if (verdict !== null) {
+        if (verdict.connected === false || verdict.instanceMatches === true) {
+          // Seat empty, or held by a zombie of this very process — taking it
+          // (back) disrupts nobody.
+          this.parkedReason = null;
+          return "dial";
+        }
+      } else if (operatorIntent || waitedFullCadence) {
+        // Probe unavailable → blind dial, but only at operator request or the
+        // full ladder-ceiling cadence (see waitedFullCadence above).
+        this.parkedReason = null;
+        return "dial";
+      }
+      // Seat still held by someone else (or unknown on the fast path) — stay
+      // parked, next probe after the full cadence (+ jitter so two parked
+      // rivals don't probe in lockstep).
+      waitMs = interval + Math.floor(Math.random() * Math.max(0, jitterSpan));
+    }
+  }
+
+  /** Suspended wait (P5): non-terminal parking for host sleep. Exits on
+   *  poke ("resume"), or dispatches terminal state and returns "stopped". */
+  async #suspendWait(): Promise<"resume" | "stopped"> {
+    this.#suspendRequested = false;
+    this.nextRetryAt = null;
+    this.connectedAtMs = null;
+    this.#setState("suspended");
+    for (;;) {
+      const outcome = await this.#interruptibleDelay(2_147_000_000);
+      switch (outcome) {
+        case "poke":
+        case "wake":
+          // Fresh curve on resume: the network world has changed (P2/P5).
+          this.#failures = 0;
+          this.#flapStreak = 0;
+          return "resume";
+        case "abort":
+          this.#terminate({ kind: "signal", cause: undefined });
+          return "stopped";
+        case "close":
+          this.#terminate({
+            kind: "caller-close",
+            code: this.#terminating?.code ?? 1000,
+            closeReason: this.#terminating?.reason,
+            cause: undefined,
+          });
+          return "stopped";
+        case "suspend":
+        case "timeout":
+          continue; // already suspended / timer horizon reached — keep waiting
+      }
+    }
+  }
+
+  /** Concurrency-honest read of #terminating: a method-call boundary stops
+   *  TS from narrowing the field to null on paths where close() (another
+   *  entry point) may have set it during an await. */
+  #terminatingNow(): { code?: number; reason?: string } | null {
+    return this.#terminating;
   }
 
   #waitInnerClose(inner: WSClient): Promise<WSCloseInfo> {
@@ -788,6 +1260,27 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
     this.#innerUnsubs.length = 0;
   }
 
+  /** State setter that also projects (P4). Every state edge — including the
+   *  connected one the legacy event stream never carried — reaches
+   *  onStateChange subscribers with a fresh monotonic seq. */
+  #setState(next: ReconnectStateSnapshot["state"]): void {
+    this.state = next;
+    this.#project();
+  }
+
+  #project(): void {
+    this.#seq++;
+    const snap = this.snapshot();
+    const snapshotHandlers = [...this.#stateHandlers];
+    for (const h of snapshotHandlers) {
+      try {
+        h(snap);
+      } catch {
+        // Projection handler errors swallowed — must not break loop
+      }
+    }
+  }
+
   #emit(
     type: ReconnectEvent["type"],
     attempt: number,
@@ -796,11 +1289,13 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
   ): void {
     const elapsedMs = Date.now() - this.#cycleStartTime;
     const severity =
-      type === "give-up"
+      type === "give-up" || type === "superseded-self"
         ? "error"
-        : type === "attempt-failure"
-          ? severityForElapsed(elapsedMs)
-          : "info";
+        : type === "parked"
+          ? "warning"
+          : type === "attempt-failure"
+            ? severityForElapsed(elapsedMs)
+            : "info";
     const ev: ReconnectEvent = {
       type,
       attempt,
@@ -841,9 +1336,11 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
   #terminate(info: ReconnectCloseInfo): void {
     if (this.#closedDispatched) return;
     this.#closedDispatched = true;
-    this.state = "closed";
     this.#dropInnerUnsubs();
     this.#inner = null;
+    this.connectedAtMs = null;
+    this.nextRetryAt = null;
+    this.#setState("closed");
     this.#emit("give-up", this.attempt, undefined, info.cause);
     const snapshot = [...this.#closeHandlers];
     for (const h of snapshot) {
@@ -853,6 +1350,9 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
         // Swallow handler errors — onClose dispatch must complete
       }
     }
+    const waiters = this.#closedWaiters;
+    this.#closedWaiters = [];
+    for (const w of waiters) w();
   }
 }
 

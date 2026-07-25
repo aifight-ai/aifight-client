@@ -23,6 +23,7 @@
 import { WebSocket } from "ws";
 
 import { BRIDGE_CAPABILITIES } from "./capabilities";
+import { PROCESS_INSTANCE_ID } from "./instance";
 
 /** Which client the server says currently owns the agent, from a client_mismatch
  *  403 body. Best effort: the message reads fine without it. */
@@ -140,6 +141,10 @@ export interface WSClientOptions {
    *  other kind. Omitted when unknown, which the server treats as "binds
    *  nothing" so an older client keeps working. */
   clientKind?: string;
+  /** Process connection-instance id sent as X-AIFight-Instance. Defaults to
+   *  the module-wide PROCESS_INSTANCE_ID — override only in tests that need
+   *  to simulate two distinct processes from one test runner. */
+  instanceId?: string;
   /** Runtime's compiled-in protocol version, SemVer (e.g. "1.0.0"
    *  or "v1.0.0"). The optional "v" prefix is stripped before
    *  comparison. Major component must match server's
@@ -787,6 +792,10 @@ export async function createWSClient(
       const headers: Record<string, string> = { "X-API-Key": opts.apiKey };
       if (opts.deviceId) headers["X-Device-Id"] = opts.deviceId;
       if (opts.clientKind) headers["X-AIFight-Client-Kind"] = opts.clientKind;
+      // Process instance id (reconnect redesign 2026-07-25 P3): lets the
+      // server tell an evicted connection whether its replacer is the same
+      // process (boolean only — see instance.ts for why never the raw id).
+      headers["X-AIFight-Instance"] = opts.instanceId ?? PROCESS_INSTANCE_ID;
       // Declare the protocol version our bundled schemas speak (F07,
       // protocol v1.2). Since the 2026-07-16 enforcement the server REFUSES
       // handshakes below v1.2.0 (readable error frame + close): every
