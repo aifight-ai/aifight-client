@@ -110,7 +110,7 @@ describe("config update", () => {
   it("caps --max-tokens to the model ceiling", async () => {
     await runCapture(["config", "add", "c", "--protocol", "claude", "--env", "K", "--no-test"]);
     await runCapture(["config", "update", "c", "--max-tokens", "999999"]);
-    expect(readConfig().profiles.c.request.maxTokens).toBe(64000); // claude-sonnet-4-6 ceiling
+    expect(readConfig().profiles.c.request.maxTokens).toBe(128000); // claude-sonnet-4-6 ceiling
   });
 });
 

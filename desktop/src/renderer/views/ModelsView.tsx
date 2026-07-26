@@ -4,10 +4,12 @@
 // protocol, set model/endpoint, paste a key, tune temperature/maxTokens/
 // streaming/reasoning, test — never touching the CLI.
 //
-// The per-model reasoning specifics (Opus 4.6 vs 4.7 vs 4.8; GPT-5.4 vs 5.5;
-// DeepSeek V4; Gemini 3 vs 2.5) are auto-detected from the model id in the
-// adapters — there's no manual variant switch. The UI just surfaces which effort
-// levels a model supports and what will be sent, so the user can see it.
+// The per-model reasoning specifics (which thinking shape, which effort tiers, what
+// output ceiling) are auto-detected from the model id — there's no manual variant
+// switch. This view does NOT keep its own table of that: it asks the capability
+// registry over IPC (llmModelCapabilities), the same source the adapters and the CLI
+// read, and shows the answer so the user can see what will be sent. Tiers are shown
+// as SUGGESTIONS in a combo box, so a model newer than this build stays configurable.
 //
 // Reads/writes the SAME agent config.json the CLI uses (config:* IPC); pasted
 // keys → 0600 file in main. Fully bilingual (zh/en).
@@ -20,6 +22,7 @@ import {
   runCli,
   getLLMConfig,
   llmRecommendMaxTokens,
+  llmModelCapabilities,
   saveLLMProfile,
   setLLMKey,
   clearLLMKey,
@@ -31,7 +34,7 @@ import { localizeServerError } from "../errors";
 import { PageHeader } from "../components/ui";
 import { useLiveGames } from "../liveGames";
 import { gameLabel } from "../../shared/games";
-import type { ConfigProfileView, ConfigView, ProfileInput, ProtocolFamily } from "../../shared/ipc";
+import type { ConfigProfileView, ConfigView, ModelCapabilitiesResult, ProfileInput, ProtocolFamily } from "../../shared/ipc";
 
 
 interface FamilyDef {
@@ -42,7 +45,7 @@ interface FamilyDef {
 }
 // Model suggestions reflect current (2026) releases; the field stays free-text.
 const FAMILIES: FamilyDef[] = [
-  { key: "anthropic", label: "Anthropic (Messages)", models: ["claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6", "claude-opus-4-5"], baseURLPlaceholderKey: "models.baseUrlAnthropic" },
+  { key: "anthropic", label: "Anthropic (Messages)", models: ["claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-opus-4-8", "claude-sonnet-4-6"], baseURLPlaceholderKey: "models.baseUrlAnthropic" },
   { key: "openai_responses", label: "OpenAI Responses", models: ["gpt-5.5", "gpt-5.4"], baseURLPlaceholderKey: "models.baseUrlOpenai" },
   { key: "openai_chat", label: "OpenAI Chat 兼容 (DeepSeek / custom)", models: ["deepseek-v4-pro", "deepseek-v4-flash", "gpt-4o"], baseURLPlaceholderKey: "models.baseUrlChat" },
   { key: "gemini", label: "Gemini (generateContent)", models: ["gemini-3-pro", "gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.5-flash"], baseURLPlaceholderKey: "models.baseUrlGemini" },
@@ -51,24 +54,34 @@ function familyDef(key: ProtocolFamily): FamilyDef {
   return FAMILIES.find((f) => f.key === key) ?? FAMILIES[0];
 }
 
+// Effort tiers are NOT listed here. They come from the capability registry over
+// IPC (llmModelCapabilities → model-capabilities.json), the same source the
+// adapters and the CLI read. A UI-local mirror of that table is precisely how this
+// editor ended up offering only low/medium/high for claude-opus-5 — a model that
+// takes all five tiers — while `aifight config` offered the full ladder. And
+// because registry tiers are SUGGESTIONS rather than a whitelist, a model newer
+// than this build stays configurable: the field accepts any typed value.
+
 /**
- * Effort levels a model accepts. This is a non-authoritative UI mirror of the
- * canonical spec in runtime/src/llm/capabilities/model-capabilities.json (the
- * runtime adapters do the real normalization). Keep it consistent with that spec
- * and internal/llmcompat/compat.go (xhigh only on Opus 4.7/4.8; Sonnet 4.x and
- * Opus 4.6 top out at max).
+ * What (if anything) is wrong with a typed effort. Two distinct outcomes, so two
+ * distinct answers:
+ *   unstorable — config.json's schema rejects it, so Save must be blocked
+ *   clamped    — storable, but this model doesn't list it, so the adapter will
+ *                lower it to high; worth saying, not worth blocking
+ * A model the registry doesn't list has no per-model opinion, so only the storable
+ * check applies. Exported for the unit test.
  */
-function effortOptionsFor(family: ProtocolFamily, model: string): string[] {
-  const m = model.toLowerCase();
-  if (family === "anthropic") {
-    if (/opus-4[-.]?(7|8)/.test(m)) return ["low", "medium", "high", "xhigh", "max"];
-    if (/opus-4[-.]?6|sonnet-4/.test(m)) return ["low", "medium", "high", "max"]; // adaptive, no xhigh
-    return ["low", "medium", "high"]; // 4.5/3.7 legacy budget-based
+export function classifyEffort(
+  effort: string,
+  caps: ModelCapabilitiesResult | null,
+): { blocking: boolean; kind: "unstorable" | "clamped" } | null {
+  const v = effort.trim();
+  if (v === "" || caps === null) return null;
+  if (!caps.storableEfforts.includes(v)) return { blocking: true, kind: "unstorable" };
+  if (caps.isKnownModel && caps.efforts.length > 0 && !caps.efforts.includes(v)) {
+    return { blocking: false, kind: "clamped" };
   }
-  if (family === "openai_responses") return ["low", "medium", "high", "xhigh"]; // gpt-5.x
-  if (family === "openai_chat") return /deepseek/.test(m) ? ["high", "max"] : ["low", "medium", "high"];
-  if (family === "gemini") return /gemini-3/.test(m) ? ["minimal", "low", "medium", "high"] : []; // 2.5 = budget
-  return ["low", "medium", "high"];
+  return null;
 }
 
 /** Model-specific OPT-IN special toggles (off by default; only shown for models that support them). */
@@ -82,14 +95,22 @@ function specialFeatures(family: ProtocolFamily, model: string): { key: string; 
 }
 
 /** Human-readable "what will be sent", from the model id (for the auto-detect hint). */
-function detectHint(t: (k: string) => string, family: ProtocolFamily, model: string): string {
+function detectHint(
+  t: (k: string) => string,
+  family: ProtocolFamily,
+  model: string,
+  caps: ModelCapabilitiesResult | null,
+): string {
   const m = model.toLowerCase();
   if (!model.trim()) return "";
   if (family === "anthropic") {
-    if (/opus-4[-.]?(7|8)/.test(m)) return t("models.detAnthropicAdaptiveX");
-    if (/opus-4[-.]?6|sonnet-4/.test(m)) return t("models.detAnthropicAdaptive");
-    if (/4[-.]?5|3[-.]?7/.test(m)) return t("models.detAnthropicLegacy");
-    return t("models.detAnthropicAdaptive");
+    // Which thinking shape gets sent is the registry's call (see the adapter's
+    // thinkingShapeFor), so report ITS answer rather than re-deriving one here —
+    // a hint that disagrees with the wire is worse than no hint.
+    if (caps === null) return "";
+    if (caps.thinkingModes.includes("adaptive")) return t("models.detAnthropicAdaptive");
+    if (caps.thinkingModes.includes("extended")) return t("models.detAnthropicLegacy");
+    return t("models.detAnthropicUnlisted");
   }
   if (family === "openai_responses") return t("models.detResponses");
   if (family === "openai_chat") return /deepseek/.test(m) ? t("models.detDeepseek") : t("models.detChat");
@@ -437,6 +458,34 @@ export function ModelsView() {
   );
 }
 
+/**
+ * Ask the capability registry (in main, over IPC) what this family+model supports.
+ * Returns null until the first answer lands, and while the model field is empty.
+ *
+ * The model field is free-text and fires on every keystroke, so requests can resolve
+ * out of order — an earlier one landing last would describe a prefix of what the user
+ * typed. Only the newest sequence number may write back, the same discipline
+ * maybeRaiseTokens uses for its recommendation.
+ */
+function useModelCapabilities(
+  family: ProtocolFamily,
+  model: string,
+): ModelCapabilitiesResult | null {
+  const [caps, setCaps] = useState<ModelCapabilitiesResult | null>(null);
+  const seq = useRef(0);
+  useEffect(() => {
+    if (!model.trim()) {
+      setCaps(null);
+      return;
+    }
+    const mine = ++seq.current;
+    void llmModelCapabilities({ family, model }).then((res) => {
+      if (mine === seq.current) setCaps(res);
+    });
+  }, [family, model]);
+  return caps;
+}
+
 function ProfileForm({ form, setForm, onSave, onCancel, saving, t }: {
   form: FormState;
   setForm: (f: FormState) => void;
@@ -447,8 +496,16 @@ function ProfileForm({ form, setForm, onSave, onCancel, saving, t }: {
 }) {
   const up = (patch: Partial<FormState>) => setForm({ ...form, ...patch });
   const fdef = familyDef(form.family);
-  const efforts = effortOptionsFor(form.family, form.model);
-  const hint = detectHint(t, form.family, form.model);
+  const caps = useModelCapabilities(form.family, form.model);
+  const efforts = caps?.efforts ?? [];
+  const hint = detectHint(t, form.family, form.model, caps);
+  const effortIssue = classifyEffort(form.effort, caps);
+  const effortProblem = effortIssue === null ? null : {
+    blocking: effortIssue.blocking,
+    text: effortIssue.kind === "unstorable"
+      ? `${t("models.effortUnstorable")} ${(caps?.storableEfforts ?? []).join(" · ")}`
+      : t("models.effortWillClamp"),
+  };
   const [tokenHint, setTokenHint] = useState<string | null>(null);
   // Only the LATEST recommendation request may write back. The recommend call is
   // async, and rapid model-field typing fires many — an earlier one resolving
@@ -523,14 +580,21 @@ function ProfileForm({ form, setForm, onSave, onCancel, saving, t }: {
         {t("models.keyReassure")} {t("models.testHint")}
       </div>
 
+      {/* Captions sit ABOVE their input, not after it. They used to trail, so on a
+          three-field row "temp" rendered between the temperature box and the
+          maxTokens box and read as the label for the wrong one — an owner reported
+          maxTokens as 270 (the request timeout) because of it. */}
       <Row label={t("models.sampling")}>
-        <div className="flex flex-wrap items-center gap-2">
-          <input className={inputCls + " max-w-[110px]"} value={form.temperature} onChange={(e) => up({ temperature: e.target.value })} placeholder={t("models.temperaturePh")} />
-          <span className="text-[11px] text-[var(--text-faint)]">temp</span>
-          <input className={inputCls + " max-w-[120px]"} value={form.maxTokens} onChange={(e) => { setTokenHint(null); up({ maxTokens: e.target.value }); }} placeholder="32000" />
-          <span className="text-[11px] text-[var(--text-faint)]">maxTokens</span>
-          <input className={inputCls + " max-w-[110px]"} value={form.requestTimeoutSec} onChange={(e) => up({ requestTimeoutSec: e.target.value })} placeholder="270" />
-          <span className="text-[11px] text-[var(--text-faint)]">{t("models.requestTimeoutLabel")}</span>
+        <div className="flex flex-wrap items-end gap-3">
+          <CapField label="temp">
+            <input className={inputCls + " max-w-[110px]"} value={form.temperature} onChange={(e) => up({ temperature: e.target.value })} placeholder={t("models.temperaturePh")} />
+          </CapField>
+          <CapField label="maxTokens">
+            <input className={inputCls + " max-w-[120px]"} value={form.maxTokens} onChange={(e) => { setTokenHint(null); up({ maxTokens: e.target.value }); }} placeholder="32000" />
+          </CapField>
+          <CapField label={t("models.requestTimeoutLabel")}>
+            <input className={inputCls + " max-w-[110px]"} value={form.requestTimeoutSec} onChange={(e) => up({ requestTimeoutSec: e.target.value })} placeholder="270" />
+          </CapField>
         </div>
         {tokenHint && <div className="v3-dv-acc mt-1 text-[11px] leading-snug">{tokenHint}</div>}
       </Row>
@@ -551,16 +615,41 @@ function ProfileForm({ form, setForm, onSave, onCancel, saving, t }: {
       <Row label={t("models.thinking")}>
         <div className="flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-1.5 text-[13px] text-[var(--text)]">
-            <input type="checkbox" checked={form.thinkingEnabled} onChange={(e) => { const thinkingEnabled = e.target.checked; up({ thinkingEnabled }); maybeRaiseTokens({ thinkingEnabled }); }} />
+            <input type="checkbox" checked={form.thinkingEnabled} onChange={(e) => { const thinkingEnabled = e.target.checked; up({ thinkingEnabled }); maybeRaiseTokens({ thinkingEnabled }); }} disabled={caps?.thinkingAlwaysOn === true} />
             {t("models.thinkingOn")}
           </label>
-          {form.thinkingEnabled && efforts.length > 0 && (
-            <select className={inputCls + " max-w-[160px]"} value={form.effort} onChange={(e) => { const effort = e.target.value; up({ effort }); maybeRaiseTokens({ effort }); }}>
-              <option value="">{t("models.effortDefault")}</option>
-              {efforts.map((eff) => <option key={eff} value={eff}>{eff}</option>)}
-            </select>
+          {form.thinkingEnabled && (
+            // A combo box, not a dropdown: registry tiers are suggestions, so a model
+            // this build predates can still be given the tier its provider accepts.
+            // Same shape as the model field above, which is free-text for the same reason.
+            <>
+              <input
+                className={inputCls + " max-w-[170px]"}
+                list="effort-suggest"
+                value={form.effort}
+                onChange={(e) => { const effort = e.target.value.trim(); up({ effort }); maybeRaiseTokens({ effort }); }}
+                placeholder={t("models.effortPh")}
+              />
+              <datalist id="effort-suggest">{efforts.map((eff) => <option key={eff} value={eff} />)}</datalist>
+            </>
           )}
         </div>
+        {form.thinkingEnabled && (
+          <div className="mt-1 text-[11px] leading-snug text-[var(--text-faint)]">
+            {caps?.thinkingAlwaysOn === true && <div>{t("models.effortAlwaysOn")}</div>}
+            {efforts.length > 0 && caps?.isKnownModel === true && (
+              <div>{t("models.effortSuggest")} {efforts.join(" · ")}{caps.defaultEffort ? ` (${t("models.effortDefaultIs")} ${caps.defaultEffort})` : ""}</div>
+            )}
+            {caps !== null && caps.isKnownModel === false && <div>{t("models.effortFreeform")}</div>}
+            {/* A free-text field must say so BEFORE Save, not fail after it: an
+                unstorable tier is rejected by config.json's schema, and a storable
+                one the model doesn't list gets clamped by the adapter. Two different
+                outcomes, so two different messages. */}
+            {effortProblem !== null && (
+              <div className={effortProblem.blocking ? "text-[var(--danger,#c0392b)]" : "v3-dv-acc"}>{effortProblem.text}</div>
+            )}
+          </div>
+        )}
       </Row>
 
       {form.family === "openai_responses" && (
@@ -594,7 +683,7 @@ function ProfileForm({ form, setForm, onSave, onCancel, saving, t }: {
 
       <div className="flex items-center justify-end gap-2 pt-1">
         <SmallBtn onClick={onCancel}>{t("models.cancel")}</SmallBtn>
-        <button onClick={onSave} disabled={saving || form.model.trim() === ""} className="v3-dv-btn v3-dv-btn--primary">
+        <button onClick={onSave} disabled={saving || form.model.trim() === "" || effortProblem?.blocking === true} className="v3-dv-btn v3-dv-btn--primary">
           {saving ? t("models.saving") : t("models.save")}
         </button>
       </div>
@@ -608,8 +697,25 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   return (
     <div className="grid grid-cols-1 gap-1 sm:grid-cols-[120px_1fr] sm:items-center">
       <span className="text-[12px] text-[var(--text-muted)]">{label}</span>
-      {children}
+      {/* One wrapper, always. Children used to be spread straight into the grid, so a
+          row passing a field PLUS a hint line put the hint in the NEXT grid cell —
+          the 120px label column — and it rendered as a 4-words-wide sliver. That is
+          what happened to the maxTokens recommendation hint. min-w-0 lets the field
+          shrink instead of forcing the column wider than the card. */}
+      <div className="min-w-0">{children}</div>
     </div>
+  );
+}
+
+/** One captioned field inside a multi-field row. The caption is bound to its own
+ *  input by being INSIDE the same label element and rendered above it, so it cannot
+ *  be misread as belonging to the neighbouring field when the row wraps. */
+function CapField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-[11px] leading-none text-[var(--text-faint)]">{label}</span>
+      {children}
+    </label>
   );
 }
 

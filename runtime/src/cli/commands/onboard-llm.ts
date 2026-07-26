@@ -19,6 +19,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import type { HandlerEnv } from "../shared.js";
+import { STORABLE_REASONING_EFFORTS } from "../../profile/config-schema.js";
 import type { LLMConfig, LLMProfile, Protocol, ReasoningEffort } from "../../profile/config-schema.js";
 import { validateProviderBaseURL } from "../../profile/config-schema.js";
 import { resolveAgentDir } from "../../profile/profile-loader.js";
@@ -55,7 +56,9 @@ export const ONBOARD_PROVIDERS: readonly OnboardProvider[] = [
     label: "Claude   (Anthropic)",
     protocol: "anthropic_messages",
     officialBaseURL: "https://api.anthropic.com",
-    defaultModel: "claude-sonnet-4-6",
+    // Current-generation speed/intelligence tier. Sonnet 4.6 is now a legacy model,
+    // so pointing a first run at it started new users one generation behind.
+    defaultModel: "claude-sonnet-5",
     displayName: "Claude (Anthropic)",
   },
   {
@@ -361,11 +364,31 @@ async function chooseModelSettings(
     const def: ReasoningEffort = caps.defaultEffort
       ? normalizeEffort(caps.defaultEffort)
       : (efforts[efforts.length - 1] as ReasoningEffort);
-    env.stdout(`  Reasoning effort: ${efforts.join(", ")}\n`);
+    env.stdout(
+      `  Reasoning effort: ${efforts.join(", ")}` +
+        (caps.isKnownModel ? "" : " (suggested — this model isn't in the built-in list)") +
+        "\n",
+    );
     const ans = (await io.promptLine(`  Effort [Enter = ${def}]: `)).trim().toLowerCase();
     const picked = normalizeEffort(ans);
-    effort = ans === "" ? def : efforts.includes(picked) ? picked : def;
-    effortExplicit = ans !== "" && efforts.includes(picked);
+    if (ans === "") {
+      effort = def;
+    } else if (efforts.includes(picked)) {
+      effort = picked;
+      effortExplicit = true;
+    } else if (!caps.isKnownModel && STORABLE_REASONING_EFFORTS.includes(picked)) {
+      // Same rule as `aifight config add`: only the registry may reject a tier, and
+      // only for a model it lists. For an unlisted model take the answer as given and
+      // let the auto-test be the judge.
+      effort = picked;
+      effortExplicit = true;
+    } else {
+      // Never swallow the answer. This used to fall back to the default in silence,
+      // so a user who typed a tier the model lacks got a config that disagreed with
+      // what they'd just chosen, with nothing on screen saying so.
+      env.stdout(`  "${ans}" isn't available here — using ${def}.\n`);
+      effort = def;
+    }
   }
 
   // ── Advanced (off by default; LLM config is set once, but keep the common path short) ──

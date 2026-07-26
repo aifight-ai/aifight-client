@@ -266,3 +266,78 @@ describe("openai responses adapter: verbosity", () => {
     expect(b.text).toBeUndefined();
   });
 });
+
+// The 2026-07-26 regression. supportsAdaptiveThinking() was a hand-written regex
+// over Opus 4.6/4.7/4.8 + Sonnet 4.6 + Mythos, so every Claude 5 model matched
+// NEITHER it nor the legacy 4.5 predicate and fell into the "this model can't
+// think" branch: no `thinking`, no `output_config`, temperature sent, and the
+// effort the user picked in the app thrown away in silence. It looked like it
+// worked, because the API's own default is high effort.
+describe("Claude 5 family reasoning shape", () => {
+  for (const model of ["claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5"]) {
+    it(`${model} sends adaptive thinking, never a manual budget`, async () => {
+      const body = await callAnthropic(model, { enabled: true, effort: "max" }, 0.7);
+      expect(body.thinking).toMatchObject({ type: "adaptive" });
+      expect(body.output_config).toEqual({ effort: "max" });
+      expect(body).not.toHaveProperty("temperature");
+    });
+  }
+
+  // xhigh reaches Opus 5 / Sonnet 5 / Fable 5 unchanged, but clamps to high on the
+  // adaptive models that never got the tier — sending it there is a 400.
+  it("routes xhigh by per-model support, not by generation", async () => {
+    for (const model of ["claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-opus-4-8", "claude-opus-4-7"]) {
+      const body = await callAnthropic(model, { enabled: true, effort: "xhigh" }, null);
+      expect(body.output_config, `${model} must keep xhigh`).toEqual({ effort: "xhigh" });
+    }
+    for (const model of ["claude-opus-4-6", "claude-sonnet-4-6", "claude-mythos-preview"]) {
+      const body = await callAnthropic(model, { enabled: true, effort: "xhigh" }, null);
+      expect(body.output_config, `${model} must clamp xhigh down`).toEqual({ effort: "high" });
+    }
+  });
+
+  // Both directions of the 400: 4.7+ reject type:"enabled", the 4.5 generation
+  // rejects type:"adaptive". The registry's thinkingModes is what keeps them apart.
+  it("keeps the 4.5 generation on manual budget_tokens", async () => {
+    for (const model of ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"]) {
+      const body = await callAnthropic(model, { enabled: true, budgetTokens: 8000 }, 0.7);
+      expect(body.thinking, model).toEqual({ type: "enabled", budget_tokens: 8000 });
+      expect(body, model).not.toHaveProperty("output_config");
+    }
+  });
+
+  // A model newer than this build must default to adaptive. The old fallback was
+  // "no thinking at all", which is the failure that hid for a whole generation:
+  // silent, and indistinguishable from working.
+  it("defaults an unlisted Claude to adaptive and passes the effort through", async () => {
+    const body = await callAnthropic("claude-opus-9-imaginary", { enabled: true, effort: "max" }, 0.7);
+    expect(body.thinking).toMatchObject({ type: "adaptive" });
+    expect(body.output_config).toEqual({ effort: "max" });
+  });
+
+  // Unknown model + a tier this build has never heard of: send it as configured
+  // rather than second-guessing. The cast is the point — config.json's schema
+  // (STORABLE_REASONING_EFFORTS) is what stops "ultra" ever reaching here from a
+  // real profile, so this pins the ADAPTER's defensive behaviour: if the union is
+  // widened for a newly shipped tier, no adapter change is needed. mapEffort used to
+  // be a closed switch that rewrote anything unrecognized to "high", making a new
+  // tier indistinguishable from asking for high.
+  it("does not clamp an unrecognized effort on an unlisted model", async () => {
+    const effort = "ultra" as CanonicalReasoningConfig["effort"];
+    const body = await callAnthropic("claude-opus-9-imaginary", { enabled: true, effort }, null);
+    expect(body.output_config).toEqual({ effort: "ultra" });
+  });
+
+  // The alias still normalizes, and is not treated as "unrecognized".
+  it("normalizes minimal to low rather than falling back to high", async () => {
+    const body = await callAnthropic("claude-opus-9-imaginary", { enabled: true, effort: "minimal" }, null);
+    expect(body.output_config).toEqual({ effort: "low" });
+  });
+
+  it("still omits thinking entirely when reasoning is off", async () => {
+    const body = await callAnthropic("claude-opus-5", { enabled: false }, 0.7);
+    expect(body).not.toHaveProperty("thinking");
+    expect(body).not.toHaveProperty("output_config");
+    expect(body.temperature).toBe(0.7);
+  });
+});

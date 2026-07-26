@@ -49,9 +49,13 @@ describe("resolveProfileSettings (D5 defaults)", () => {
     expect(s.temperature).toBeNull();
   });
 
-  it("caps maxTokens to the model ceiling (claude-sonnet-4-6 = 64000)", () => {
+  it("caps maxTokens to the model ceiling (claude-sonnet-4-6 = 128000)", () => {
     const s = resolveProfileSettings("anthropic_messages", "claude-sonnet-4-6", { "max-tokens": 999999 }, undefined);
-    expect(s.maxTokens).toBe(64000);
+    expect(s.maxTokens).toBe(128000);
+    // Claude 5 ceilings, absent from the registry until 2026-07-26.
+    expect(resolveProfileSettings("anthropic_messages", "claude-opus-5", { "max-tokens": 999999 }, undefined).maxTokens).toBe(128000);
+    // The 4.5 generation really is 64000 — the value Sonnet 4.6 used to inherit.
+    expect(resolveProfileSettings("anthropic_messages", "claude-sonnet-4-5", { "max-tokens": 999999 }, undefined).maxTokens).toBe(64000);
   });
 
   it("rejects max-tokens below the floor", () => {
@@ -72,7 +76,8 @@ describe("resolveProfileSettings (D5 defaults)", () => {
   it("is permissive about effort for an unknown/new model (new models keep arriving)", () => {
     // A future Anthropic model not yet in the capability registry: any effort is
     // accepted as-is; the auto-test — not a stale registry — is the source of truth.
-    const s = resolveProfileSettings("anthropic_messages", "claude-opus-5-2027", { effort: "minimal" }, undefined);
+    // NB: this used to say "claude-opus-5-2027" — which stopped being hypothetical.
+    const s = resolveProfileSettings("anthropic_messages", "claude-opus-9-2031", { effort: "minimal" }, undefined);
     expect(s.effort).toBe("minimal");
     expect(s.thinkingEnabled).toBe(true);
   });

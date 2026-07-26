@@ -379,6 +379,34 @@ export interface RecommendMaxTokensResult {
   readonly ceilingKnown: boolean;
 }
 
+/**
+ * What the capability registry knows about one family+model. The UI asks instead of
+ * keeping its own copy: a second hand-maintained table of "which effort tiers does
+ * this model take" is how the whole Claude 5 family ended up unable to select xhigh
+ * or max in the app while the CLI offered both.
+ */
+export interface ModelCapabilitiesInput {
+  readonly family: ProtocolFamily;
+  readonly model: string;
+}
+export interface ModelCapabilitiesResult {
+  /** Effort tiers to suggest. Empty = this model has no effort parameter at all. */
+  readonly efforts: readonly string[];
+  /** Every tier config.json can store. In here but not in `efforts` = storable but
+   *  the adapter will clamp it; outside it = cannot be saved at all. */
+  readonly storableEfforts: readonly string[];
+  /** False when the registry has no entry — `efforts` is then a protocol-wide guess. */
+  readonly isKnownModel: boolean;
+  /** Tier used when the field is left blank. */
+  readonly defaultEffort?: string;
+  /** Thinking wire shapes, e.g. ["adaptive"] — empty for an unlisted model. */
+  readonly thinkingModes: readonly string[];
+  /** The model always reasons; the on/off toggle is meaningless. */
+  readonly thinkingAlwaysOn: boolean;
+  /** Output-token ceiling, when the registry knows it. */
+  readonly maxOutputTokens?: number;
+}
+
 /** Editable profile fields (everything except the API key, which has its own call). */
 export interface ProfileInput {
   readonly profileId: string;
@@ -596,6 +624,7 @@ export const IPC = {
   strategyWrite: "strategy:write",
   configGet: "config:get",
   configRecommendMaxTokens: "config:recommend-max-tokens",
+  configModelCapabilities: "config:model-capabilities",
   configSaveProfile: "config:save-profile",
   configSetKey: "config:set-key",
   configClearKey: "config:clear-key",
@@ -708,6 +737,8 @@ export interface AifightBridgeApi {
   getLLMConfig(): Promise<ConfigView>;
   /** Recommend a maxTokens for a family+model+effort (null = no recommendation). */
   llmRecommendMaxTokens(input: RecommendMaxTokensInput): Promise<RecommendMaxTokensResult | null>;
+  /** What the capability registry knows about a family+model (effort tiers, ceiling). */
+  llmModelCapabilities(input: ModelCapabilitiesInput): Promise<ModelCapabilitiesResult | null>;
   saveLLMProfile(input: ProfileInput): Promise<ConfigMutResult>;
   setLLMKey(profileId: string, apiKey: string): Promise<ConfigMutResult>;
   /** Remove a profile's stored API key (deletes the 0600 key file, resets the ref). */

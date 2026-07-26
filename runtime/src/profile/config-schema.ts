@@ -299,7 +299,18 @@ const VALID_PROTOCOLS = new Set<string>([
   "gemini_openai_compat",
 ]);
 
-const VALID_REASONING_EFFORTS = new Set<string>([
+/**
+ * Every effort token config.json will accept, across all protocols — the union, not
+ * a per-model list (which model takes which tier lives in the capability registry).
+ * Exported so a UI can tell "not offered for THIS model" (a warning: the adapter
+ * clamps it) apart from "cannot be stored at all" (an error), instead of letting a
+ * config write fail after the fact.
+ *
+ * Deliberately a closed set: when a provider ships a new tier, adding it here and to
+ * model-capabilities.json is the two-line change, and keeping it closed is what turns
+ * a typo into a clear message rather than a silent downgrade to high.
+ */
+export const STORABLE_REASONING_EFFORTS: readonly string[] = [
   "off",
   "minimal",
   "low",
@@ -308,7 +319,9 @@ const VALID_REASONING_EFFORTS = new Set<string>([
   "xhigh",
   "max",
   "auto",
-]);
+];
+
+const VALID_REASONING_EFFORTS = new Set<string>(STORABLE_REASONING_EFFORTS);
 
 const VALID_GAME_TYPES = new Set<string>(["texas_holdem", "liars_dice", "coup"]);
 

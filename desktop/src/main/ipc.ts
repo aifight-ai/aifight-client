@@ -21,6 +21,7 @@ import {
   deleteProfile,
   getConfig,
   recommendMaxTokensForFamily,
+  modelCapabilitiesForFamily,
   saveProfile,
   setActive,
   setKey,
@@ -204,6 +205,7 @@ export function registerBridgeIpc(host: BridgeHost): void {
   // to a 0600 file (never argv, never returned to the renderer).
   handle(IPC.configGet, () => getConfig());
   handle(IPC.configRecommendMaxTokens, (_e, input: unknown) => recommendMaxTokensForFamily(input as never));
+  handle(IPC.configModelCapabilities, (_e, input: unknown) => modelCapabilitiesForFamily(input as never));
   handle(IPC.configSaveProfile, (_e, input: unknown) => saveProfile("default", input as never));
   handle(IPC.configSetKey, (_e, profileId: unknown, apiKey: unknown) => setKey("default", profileId, apiKey));
   handle(IPC.configClearKey, (_e, profileId: unknown) => clearKey("default", profileId));

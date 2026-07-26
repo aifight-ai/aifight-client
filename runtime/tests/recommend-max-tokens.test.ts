@@ -11,6 +11,16 @@ describe("recommendMaxTokens (D3)", () => {
     expect(recommendMaxTokens({ protocol: "anthropic_messages", model: "claude-opus-4-7", effort: "max", thinkingEnabled: true }))
       .toEqual({ recommended: 128000, ceilingKnown: true });
     expect(recommendMaxTokens({ protocol: "anthropic_messages", model: "claude-sonnet-4-6", effort: "high", thinkingEnabled: true }))
+      .toEqual({ recommended: 128000, ceilingKnown: true });
+    // Claude 5: the whole family was missing from the registry until 2026-07-26, so
+    // every one of them recommended the 65536 unknown-model fallback instead.
+    expect(recommendMaxTokens({ protocol: "anthropic_messages", model: "claude-opus-5", effort: "xhigh", thinkingEnabled: true }))
+      .toEqual({ recommended: 128000, ceilingKnown: true });
+    expect(recommendMaxTokens({ protocol: "anthropic_messages", model: "claude-fable-5", effort: "max", thinkingEnabled: true }))
+      .toEqual({ recommended: 128000, ceilingKnown: true });
+    // Sonnet 4.5 keeps the 64000 ceiling that the over-broad ^claude-sonnet-4
+    // pattern used to hand to Sonnet 4.6 as well.
+    expect(recommendMaxTokens({ protocol: "anthropic_messages", model: "claude-sonnet-4-5", effort: "high", thinkingEnabled: true }))
       .toEqual({ recommended: 64000, ceilingKnown: true });
     expect(recommendMaxTokens({ protocol: "openai_responses", model: "gpt-5.5", effort: "xhigh", thinkingEnabled: true }))
       .toEqual({ recommended: 128000, ceilingKnown: true });

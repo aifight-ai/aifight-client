@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { getConfig, saveProfile, setKey, clearKey, setActive, setRoute, deleteProfile } from "./config-host";
+import { getConfig, saveProfile, setKey, clearKey, setActive, setRoute, deleteProfile, modelCapabilitiesForFamily } from "./config-host";
 
 const ORIGINAL_HOME = process.env.AIFIGHT_HOME;
 const tmpDirs: string[] = [];
@@ -286,5 +286,62 @@ describe("config-host: standalone graphical config", () => {
     expect((await saveProfile("default", { profileId: "x", family: "not_a_family" as never, model: "m", thinkingEnabled: false })).ok).toBe(false);
     expect((await saveProfile("default", { profileId: "x", family: "anthropic", model: "", thinkingEnabled: false })).ok).toBe(false);
     expect((await setKey("default", "nope", "k")).ok).toBe(false); // no config yet
+  });
+});
+
+// 2026-07-26: the app's Models editor kept its OWN regex table of effort tiers, so
+// claude-opus-5 — which takes all five — offered only low/medium/high, while the CLI
+// (registry-driven) offered the full ladder. The fix routes the UI through this
+// function; these pin what it must report.
+describe("modelCapabilitiesForFamily", () => {
+  it("reports the full effort ladder and real ceiling for Claude 5", () => {
+    for (const model of ["claude-opus-5", "claude-sonnet-5", "claude-fable-5"]) {
+      const caps = modelCapabilitiesForFamily({ family: "anthropic", model });
+      expect(caps, model).not.toBeNull();
+      expect(caps?.isKnownModel, model).toBe(true);
+      expect(caps?.efforts, model).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      // 65536 was the unknown-model fallback the whole family used to land on.
+      expect(caps?.maxOutputTokens, model).toBe(128000);
+      expect(caps?.thinkingModes, model).toContain("adaptive");
+    }
+  });
+
+  it("does not offer xhigh where the model lacks it", () => {
+    for (const model of ["claude-opus-4-6", "claude-sonnet-4-6"]) {
+      expect(modelCapabilitiesForFamily({ family: "anthropic", model })?.efforts, model)
+        .toEqual(["low", "medium", "high", "max"]);
+    }
+  });
+
+  it("marks Fable 5 as always reasoning (the on/off toggle is meaningless)", () => {
+    expect(modelCapabilitiesForFamily({ family: "anthropic", model: "claude-fable-5" })?.thinkingAlwaysOn).toBe(true);
+    expect(modelCapabilitiesForFamily({ family: "anthropic", model: "claude-opus-5" })?.thinkingAlwaysOn).toBe(false);
+  });
+
+  it("keeps the 4.5 generation on manual budget with no effort tiers", () => {
+    const caps = modelCapabilitiesForFamily({ family: "anthropic", model: "claude-sonnet-4-5" });
+    expect(caps?.thinkingModes).toEqual(["extended"]);
+    expect(caps?.efforts).toEqual([]);
+    expect(caps?.maxOutputTokens).toBe(64000);
+  });
+
+  // An unlisted model must stay CONFIGURABLE: suggestions fall back to the whole
+  // protocol vocabulary and isKnownModel:false tells the UI to say so, rather than
+  // narrowing the user to whatever this build happens to know.
+  it("degrades to the protocol vocabulary for an unlisted model", () => {
+    const caps = modelCapabilitiesForFamily({ family: "anthropic", model: "claude-opus-9-imaginary" });
+    expect(caps?.isKnownModel).toBe(false);
+    expect(caps?.efforts).toContain("max");
+    expect(caps?.maxOutputTokens).toBeUndefined();
+  });
+
+  it("exposes the storable union so the UI can tell unsavable from clamped", () => {
+    const caps = modelCapabilitiesForFamily({ family: "anthropic", model: "claude-opus-4-6" });
+    expect(caps?.storableEfforts).toContain("xhigh"); // storable everywhere…
+    expect(caps?.efforts).not.toContain("xhigh"); // …but not offered on THIS model
+  });
+
+  it("returns null on malformed input", () => {
+    expect(modelCapabilitiesForFamily({ family: 1 as never, model: "m" })).toBeNull();
   });
 });

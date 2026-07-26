@@ -4,10 +4,10 @@
 // Endpoint: POST ${baseURL}/v1/messages
 // Auth: x-api-key + anthropic-version: 2023-06-01
 //
-// Model-specific reasoning behavior:
-//   Opus 4.7  → thinking: { type: "adaptive", display: "omitted" }  + output_config: { effort: "xhigh" }
-//   Opus 4.6  → thinking: { type: "adaptive", display: "summarized" } + output_config: { effort: "high" }
-//   Sonnet    → same shape as 4.6
+// Model-specific reasoning behavior is NOT hardcoded here — it is looked up in
+// capabilities/model-capabilities.json (see thinkingShapeFor / clampEffortForModel):
+//   adaptive models → thinking: { type: "adaptive", display } + output_config: { effort }
+//   4.5-generation  → thinking: { type: "enabled", budget_tokens }
 // For xhigh / max effort: omit temperature, top_p, top_k entirely.
 
 import type {
@@ -21,6 +21,7 @@ import type {
   CanonicalReasoningConfig,
 } from "./types.js";
 import { AdapterError } from "./types.js";
+import { resolveModelCapabilities } from "../capabilities/validate-capabilities.js";
 import { looksLikeTokenLimit, computeTruncated } from "./token-limit.js";
 import { parseRetryAfterMs, isContentFilterReason } from "./error-class.js";
 import { boundedErrorBody } from "./redact.js";
@@ -30,22 +31,28 @@ const PROTOCOL = "anthropic_messages" as const;
 const ANTHROPIC_VERSION = "2023-06-01";
 
 // ─── Model classification ────────────────────────────────────────────
-// Adaptive thinking (thinking:{type:"adaptive"} + output_config.effort) is
-// supported on Opus 4.6/4.7/4.8, Sonnet 4.6, and Mythos. Opus 4.7/4.8 and
-// Mythos accept ONLY adaptive — manual type:"enabled"+budget_tokens returns
-// HTTP 400. Older Claude (Opus/Sonnet 4.5, 3.7) require manual extended
-// thinking (enabled + budget_tokens) and do NOT support adaptive.
-
-function supportsAdaptiveThinking(model: string): boolean {
-  return (
-    /claude-opus-4[-.](6|7|8)/i.test(model) ||
-    /claude-sonnet-4[-.]6/i.test(model) ||
-    /mythos/i.test(model)
-  );
-}
-
-function legacyThinkingCapable(model: string): boolean {
-  return /claude-(opus|sonnet)-4[-.]5/i.test(model) || /claude-3[-.]7/i.test(model);
+// Which thinking shape a model wants, and which effort tiers it accepts, are
+// facts ABOUT THE MODEL: they live in capabilities/model-capabilities.json and
+// are read from there rather than re-encoded as regexes here. Two independent
+// hand-maintained copies of this knowledge (this file and Go's
+// internal/llmcompat/compat.go) had both silently missed the entire Claude 5
+// family — a duplicated fact drifts, a looked-up one cannot.
+//
+//   adaptive → thinking:{type:"adaptive"} + output_config:{effort}
+//   extended → thinking:{type:"enabled", budget_tokens:N}   (4.5 generation, 3.7)
+//
+// Claude 4.7 and later REJECT type:"enabled" with HTTP 400, so for a model the
+// registry has never heard of, ADAPTIVE is the right guess: an unrecognized id is
+// far more likely to be newer than the registry than older than the 4.5
+// generation, and guessing wrong surfaces as a loud 400 on the user's very first
+// Test — whereas the old "unknown ⇒ no thinking support" default sent a plain
+// request and threw the configured effort away in silence.
+function thinkingShapeFor(model: string): "adaptive" | "extended" | "none" {
+  const caps = resolveModelCapabilities(PROTOCOL, model);
+  if (!caps.thinkingModesKnown) return "adaptive";
+  if (caps.thinkingModes.includes("adaptive")) return "adaptive";
+  if (caps.thinkingModes.includes("extended")) return "extended";
+  return "none";
 }
 
 function isXHighEffort(effort: string | undefined): boolean {
@@ -61,7 +68,11 @@ interface AnthropicThinkingConfig {
 }
 
 interface AnthropicOutputConfig {
-  effort: "low" | "medium" | "high" | "xhigh" | "max";
+  /** `low | medium | high | xhigh | max` today. Typed as a plain string, not a
+   *  union, because the tier vocabulary is Anthropic's to extend and it is the
+   *  capability registry — not this file — that decides which tiers a given model
+   *  accepts (see clampEffortForModel). */
+  effort: string;
 }
 
 interface AnthropicMessage {
@@ -163,56 +174,76 @@ function buildRequestBody(
     return body;
   }
 
-  if (supportsAdaptiveThinking(profile.model)) {
-    // New models: adaptive thinking + effort. display "omitted" is fine and
-    // faster — we only need the final action text, not a thinking summary.
-    body.thinking = { type: "adaptive", display: reasoning?.display ?? "omitted" };
-    body.output_config = { effort: clampEffortForModel(mapEffort(effort) ?? "high", profile.model) };
-    // Thinking active → leave temperature unset (Anthropic requirement).
-  } else if (legacyThinkingCapable(profile.model)) {
-    // Older models: manual extended thinking via enabled + budget_tokens.
-    const budget = Math.max(1024, reasoning?.budgetTokens ?? 4096);
-    body.thinking = { type: "enabled", budget_tokens: budget };
-    // Manual thinking also requires temperature unset.
-  } else {
-    // Model has no thinking support (e.g. Haiku 3): plain request.
-    if (input.temperature !== null) body.temperature = input.temperature;
+  switch (thinkingShapeFor(profile.model)) {
+    case "adaptive":
+      // Adaptive thinking + effort. display "omitted" is fine and faster — we only
+      // need the final action text, not a thinking summary.
+      body.thinking = { type: "adaptive", display: reasoning?.display ?? "omitted" };
+      body.output_config = { effort: clampEffortForModel(mapEffort(effort) ?? "high", profile.model) };
+      // Thinking active → leave temperature unset (Anthropic requirement).
+      break;
+    case "extended": {
+      // 4.5 generation and older: manual extended thinking via enabled + budget_tokens.
+      const budget = Math.max(1024, reasoning?.budgetTokens ?? 4096);
+      body.thinking = { type: "enabled", budget_tokens: budget };
+      // Manual thinking also requires temperature unset.
+      break;
+    }
+    default:
+      // Registry says this model cannot think at all: plain request.
+      if (input.temperature !== null) body.temperature = input.temperature;
   }
 
   return body;
 }
 
-function mapEffort(effort: string | undefined): AnthropicOutputConfig["effort"] | undefined {
+/**
+ * Canonical effort → Anthropic `output_config.effort`.
+ *
+ * Known aliases normalize (`minimal` → `low`), and the sentinels below mean "no
+ * explicit tier" so the caller's `?? "high"` applies. `adaptive` is on that list on
+ * purpose: it is a THINKING MODE, not an effort level, and the effort docs call out
+ * passing it here as a mistake.
+ *
+ * Anything else passes through UNCHANGED. This used to be a closed enum that mapped
+ * every unrecognized value to `high`, which made a newer tier indistinguishable from
+ * asking for high — the same silent-downgrade failure the model classification had.
+ * A tier this build has never heard of should reach the API and be answered by it;
+ * for a model the registry DOES list, clampEffortForModel still absorbs it (so a
+ * typo on a known model lands on `high` rather than a 400).
+ */
+function mapEffort(effort: string | undefined): string | undefined {
   switch (effort) {
-    case "low":
+    case undefined:
+    case "":
+    case "off":
+    case "none":
+    case "auto":
+    case "default":
+    case "adaptive":
+      return undefined;
     case "minimal":
       return "low";
-    case "medium":
-      return "medium";
-    case "high":
-      return "high";
-    case "xhigh":
-      return "xhigh";
-    case "max":
-      return "max";
     default:
-      return undefined;
+      return effort;
   }
 }
 
-/** Per the Effort docs, `xhigh` is only valid on Opus 4.7 / 4.8. On other adaptive
- *  models (Opus 4.6, Sonnet 4.6, Mythos) sending it 400s — clamp it down to `high`.
- *  `max` is accepted on all adaptive models, so it needs no clamp. */
-function supportsXhigh(model: string): boolean {
-  return /claude-opus-4[-.](7|8)/i.test(model);
-}
-
-function clampEffortForModel(
-  effort: AnthropicOutputConfig["effort"],
-  model: string,
-): AnthropicOutputConfig["effort"] {
-  if (effort === "xhigh" && !supportsXhigh(model)) return "high";
-  return effort;
+/** Effort tiers are per-model (e.g. `xhigh` exists on Opus 4.7/4.8, Opus 5,
+ *  Sonnet 5 and Fable 5, but NOT on Opus 4.6 or Sonnet 4.6, where sending it
+ *  400s). A tier the model does not list clamps DOWN to `high`, never up, so a
+ *  house bot and an app-configured agent on the same model and the same nominal
+ *  effort actually reason at the same level — Go's NormalizeClaudeEffort does the
+ *  identical clamp against the identical registry.
+ *
+ *  For a model the registry doesn't know, the configured value is sent AS-IS: only
+ *  the registry can authoritatively reject a tier, and only for a model it lists.
+ *  New models keep arriving with new vocabularies; let the API be the judge rather
+ *  than silently downgrading the user's choice. (Same rule as CLI `config add`.) */
+function clampEffortForModel(effort: string, model: string): string {
+  const caps = resolveModelCapabilities(PROTOCOL, model);
+  if (!caps.isKnownModel || caps.efforts.length === 0) return effort;
+  return caps.efforts.includes(effort) ? effort : "high";
 }
 
 // ─── HTTP helper ─────────────────────────────────────────────────────

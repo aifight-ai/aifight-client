@@ -115,7 +115,10 @@ describe("onboardDirectLLM", () => {
     const cfg = readConfig();
     const active = cfg.profiles[cfg.activeProfile];
     expect(active.protocol).toBe("anthropic_messages");
-    expect(active.model).toBe("claude-sonnet-4-6");
+    // The wizard's Enter-accepts default for Claude. Kept in step with the desktop
+    // presets and model-capabilities.json; a legacy model here starts new users a
+    // generation behind.
+    expect(active.model).toBe("claude-sonnet-5");
     expect(active.apiKeyRef.type).toBe("file");
     expect(cfg.routing.default).toBe(cfg.activeProfile);
     // Interop: the desktop app validates config.json on read with the SAME
@@ -252,7 +255,7 @@ describe("onboardDirectLLM", () => {
     expect(result).toBe("configured");
     const active = readConfig().profiles[readConfig().activeProfile];
     expect(active.thinking.effort).toBe("max");
-    expect(active.request.maxTokens).toBe(64000); // raised to claude-sonnet-4-6 ceiling
+    expect(active.request.maxTokens).toBe(128000); // raised to claude-sonnet-4-6 ceiling
   });
 
   it("does NOT nag about max tokens when the effort is left at default", async () => {

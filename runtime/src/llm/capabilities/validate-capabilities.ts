@@ -5,6 +5,7 @@
 // and protocol/model mismatches before any LLM call is issued.
 
 import capabilitiesJson from "./model-capabilities.json";
+import { STORABLE_REASONING_EFFORTS } from "../../profile/config-schema.js";
 
 // ─── Registry schema types ────────────────────────────────────────────────────
 
@@ -285,6 +286,19 @@ export interface ResolvedModelCapabilities {
   thinkingAlwaysOn: boolean;
   /** Effort levels valid for this model (model.efforts ?? protocol.effortValues). */
   efforts: string[];
+  /**
+   * Thinking wire shapes the model accepts, e.g. ["adaptive"] | ["extended"].
+   * Empty for a model the registry doesn't list — callers must NOT read that as
+   * "no thinking"; see thinkingModesKnown.
+   */
+  thinkingModes: string[];
+  /**
+   * False when the registry has no entry for this model, so thinkingModes is a
+   * blank rather than a statement. Adapters pick their own default for an
+   * unrecognized model; conflating "unknown" with "cannot think" is what let
+   * every Claude 5 model silently lose its reasoning config.
+   */
+  thinkingModesKnown: boolean;
   /** Suggested default effort (model.defaultEffort ?? protocol.defaultEffort). */
   defaultEffort?: string;
   /** A temperature value is meaningful only when thinking is OFF and the model accepts it. */
@@ -295,6 +309,12 @@ export interface ResolvedModelCapabilities {
   maxOutputTokens?: number;
   /** Canonical default base URL for the protocol (empty for compat protocols). */
   defaultBaseURL?: string;
+  /**
+   * Every effort token config.json can store, regardless of model. A value in here
+   * but NOT in `efforts` is storable and will be clamped by the adapter; a value
+   * outside it cannot be saved at all. Lets a UI distinguish the two.
+   */
+  storableEfforts: readonly string[];
 }
 
 /**
@@ -344,6 +364,9 @@ export function resolveModelCapabilities(
       canDisableThinking: false,
       thinkingAlwaysOn: false,
       efforts: [],
+      thinkingModes: [],
+      thinkingModesKnown: false,
+      storableEfforts: STORABLE_REASONING_EFFORTS,
       temperatureUsableWhenThinkingOff: true,
       samplingIgnoredWhenThinking: false,
     };
@@ -377,6 +400,9 @@ export function resolveModelCapabilities(
     canDisableThinking,
     thinkingAlwaysOn,
     efforts,
+    thinkingModes: (entry?.thinkingModes ?? []).slice(),
+    thinkingModesKnown: entry?.thinkingModes !== undefined,
+    storableEfforts: STORABLE_REASONING_EFFORTS,
     ...(defaultEffort !== undefined ? { defaultEffort } : {}),
     temperatureUsableWhenThinkingOff,
     samplingIgnoredWhenThinking,

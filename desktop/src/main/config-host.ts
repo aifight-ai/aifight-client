@@ -25,9 +25,13 @@ import {
   type LLMProfile,
   type Protocol,
   type ReasoningEffort,
+  STORABLE_REASONING_EFFORTS,
 } from "@aifight/aifight/profile/config-schema";
 import { storeSecretFile, checkSecretStatus } from "@aifight/aifight/profile/secret-ref";
-import { recommendMaxTokens } from "@aifight/aifight/llm/capabilities/validate-capabilities";
+import {
+  recommendMaxTokens,
+  resolveModelCapabilities,
+} from "@aifight/aifight/llm/capabilities/validate-capabilities";
 import type {
   ConfigMutResult,
   ConfigProfileView,
@@ -71,16 +75,10 @@ function resolveConcreteProtocol(family: string, model: string, baseURL: string)
   return "openai_chat_compat";
 }
 
-const VALID_EFFORTS: ReadonlySet<string> = new Set([
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-  "auto",
-]);
+// The storable set comes from the runtime schema, not a copy — a local duplicate
+// silently drops any tier the copy predates (this one had no way to know about a
+// value the schema would happily have accepted).
+const VALID_EFFORTS: ReadonlySet<string> = new Set(STORABLE_REASONING_EFFORTS);
 
 function coerceEffort(value: string | undefined): ReasoningEffort | undefined {
   return value !== undefined && VALID_EFFORTS.has(value) ? (value as ReasoningEffort) : undefined;
@@ -225,6 +223,38 @@ export function recommendMaxTokensForFamily(input: {
     thinkingEnabled: input.thinkingEnabled === true,
   });
   return rec ?? null;
+}
+
+/**
+ * Surface the capability registry to the renderer so the Models editor offers the
+ * effort tiers a model actually has, instead of a regex table maintained here.
+ * An unlisted model yields the protocol-wide tier list with isKnownModel:false —
+ * suggestions, not a whitelist, so a model newer than this build stays configurable.
+ */
+export function modelCapabilitiesForFamily(input: {
+  family: string;
+  model: string;
+}): {
+  efforts: string[];
+  storableEfforts: readonly string[];
+  isKnownModel: boolean;
+  defaultEffort?: string;
+  thinkingModes: string[];
+  thinkingAlwaysOn: boolean;
+  maxOutputTokens?: number;
+} | null {
+  if (typeof input?.family !== "string" || typeof input?.model !== "string") return null;
+  const protocol = resolveConcreteProtocol(input.family, input.model, "");
+  const caps = resolveModelCapabilities(protocol, input.model);
+  return {
+    efforts: caps.efforts,
+    storableEfforts: caps.storableEfforts,
+    isKnownModel: caps.isKnownModel,
+    ...(caps.defaultEffort !== undefined ? { defaultEffort: caps.defaultEffort } : {}),
+    thinkingModes: caps.thinkingModes,
+    thinkingAlwaysOn: caps.thinkingAlwaysOn,
+    ...(caps.maxOutputTokens !== undefined ? { maxOutputTokens: caps.maxOutputTokens } : {}),
+  };
 }
 
 export async function getConfig(slug: string = DEFAULT_SLUG): Promise<ConfigView> {

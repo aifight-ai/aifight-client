@@ -14,6 +14,62 @@
       "defaultEffort": "high",
       "models": [
         {
+          "pattern": "^claude-fable-5",
+          "thinkingModes": ["adaptive"],
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "supportsManualBudget": false,
+          "supportsTemperature": false,
+          "thinkingRequired": true,
+          "maxOutputTokens": 128000,
+          "notes": "Adaptive thinking is ALWAYS on, so a temperature value can never take effect. type:\"enabled\" returns 400."
+        },
+        {
+          "pattern": "^claude-mythos-5",
+          "thinkingModes": ["adaptive"],
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "supportsManualBudget": false,
+          "supportsTemperature": false,
+          "thinkingRequired": true,
+          "maxOutputTokens": 128000,
+          "notes": "Shares Claude Fable 5's specs and pricing. Invitation-only (Project Glasswing)."
+        },
+        {
+          "pattern": "^claude-mythos-preview",
+          "thinkingModes": ["adaptive", "extended"],
+          "efforts": ["low", "medium", "high", "max"],
+          "supportsManualBudget": true,
+          "supportsTemperature": true,
+          "maxOutputTokens": 128000,
+          "notes": "The one model that accepts BOTH thinking modes. xhigh not supported (max is)."
+        },
+        {
+          "pattern": "^claude-opus-5",
+          "thinkingModes": ["adaptive"],
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "supportsManualBudget": false,
+          "supportsTemperature": true,
+          "maxOutputTokens": 128000,
+          "notes": "All five effort tiers. type:\"enabled\" returns 400; thinking cannot be disabled at xhigh/max either."
+        },
+        {
+          "pattern": "^claude-sonnet-5",
+          "thinkingModes": ["adaptive"],
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "supportsManualBudget": false,
+          "supportsTemperature": true,
+          "maxOutputTokens": 128000,
+          "notes": "Unlike Sonnet 4.6, Sonnet 5 does support xhigh. type:\"enabled\" returns 400."
+        },
+        {
+          "pattern": "^claude-opus-4-8",
+          "thinkingModes": ["adaptive"],
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "supportsManualBudget": false,
+          "supportsTemperature": true,
+          "maxOutputTokens": 128000,
+          "notes": "Use adaptive thinking + output_config.effort. Never send manual budget_tokens."
+        },
+        {
           "pattern": "^claude-opus-4-7",
           "thinkingModes": ["adaptive"],
           "efforts": ["low", "medium", "high", "xhigh", "max"],
@@ -24,7 +80,7 @@
         },
         {
           "pattern": "^claude-opus-4-6",
-          "thinkingModes": ["adaptive"],
+          "thinkingModes": ["adaptive", "extended"],
           "efforts": ["low", "medium", "high", "max"],
           "supportsManualBudget": true,
           "supportsTemperature": true,
@@ -32,13 +88,40 @@
           "notes": "xhigh not supported. Manual budget deprecated but functional."
         },
         {
-          "pattern": "^claude-sonnet-4",
-          "thinkingModes": ["adaptive"],
+          "pattern": "^claude-sonnet-4-6",
+          "thinkingModes": ["adaptive", "extended"],
           "efforts": ["low", "medium", "high", "max"],
           "supportsManualBudget": true,
           "supportsTemperature": true,
+          "maxOutputTokens": 128000,
+          "notes": "xhigh not supported (Sonnet 5 added it). Manual budget deprecated but functional."
+        },
+        {
+          "pattern": "^claude-opus-4-5",
+          "thinkingModes": ["extended"],
+          "efforts": [],
+          "supportsManualBudget": true,
+          "supportsTemperature": true,
           "maxOutputTokens": 64000,
-          "notes": "Good cost/performance default."
+          "notes": "Extended thinking only; type:\"adaptive\" returns 400. It is the one extended-only model that also accepts output_config.effort (low/medium/high), but this stack drives it by budget_tokens alone, so no effort tiers are offered."
+        },
+        {
+          "pattern": "^claude-sonnet-4-5",
+          "thinkingModes": ["extended"],
+          "efforts": [],
+          "supportsManualBudget": true,
+          "supportsTemperature": true,
+          "maxOutputTokens": 64000,
+          "notes": "Extended thinking only; type:\"adaptive\" returns 400. No effort parameter."
+        },
+        {
+          "pattern": "^claude-haiku-4-5",
+          "thinkingModes": ["extended"],
+          "efforts": [],
+          "supportsManualBudget": true,
+          "supportsTemperature": true,
+          "maxOutputTokens": 64000,
+          "notes": "Extended thinking only, no effort parameter, no interleaved thinking."
         }
       ]
     },

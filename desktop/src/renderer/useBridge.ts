@@ -15,6 +15,8 @@ import type {
   ConfigMutResult,
   RecommendMaxTokensInput,
   RecommendMaxTokensResult,
+  ModelCapabilitiesInput,
+  ModelCapabilitiesResult,
   ConfigView,
   ConnectionHealth,
   EventsData,
@@ -264,6 +266,13 @@ export async function llmRecommendMaxTokens(
   const api = window.aifight;
   if (api === undefined) return null;
   return api.llmRecommendMaxTokens(input);
+}
+export async function llmModelCapabilities(
+  input: ModelCapabilitiesInput,
+): Promise<ModelCapabilitiesResult | null> {
+  const api = window.aifight;
+  if (api === undefined) return null;
+  return api.llmModelCapabilities(input);
 }
 export async function setLLMKey(profileId: string, apiKey: string): Promise<ConfigMutResult> {
   const api = window.aifight;

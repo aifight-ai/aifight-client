@@ -224,6 +224,19 @@ export function installDemoBridge(): void {
     getLLMConfig: () =>
       Promise.resolve({ configured: true, slug: "default", activeProfile: "demo", routing: { default: "demo" }, profiles: [] }),
     llmRecommendMaxTokens: () => Promise.resolve(null),
+    // A representative current-flagship answer (what the registry returns for
+    // claude-opus-5), rather than null — null makes the Models editor render as if
+    // every model had no effort tiers, which is not a state the real app produces.
+    llmModelCapabilities: () =>
+      Promise.resolve({
+        efforts: ["low", "medium", "high", "xhigh", "max"],
+        storableEfforts: ["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"],
+        isKnownModel: true,
+        defaultEffort: "high",
+        thinkingModes: ["adaptive"],
+        thinkingAlwaysOn: false,
+        maxOutputTokens: 128000,
+      }),
     saveLLMProfile: () => Promise.resolve({ ok: false, error: "demo" }),
     setLLMKey: () => Promise.resolve({ ok: false, error: "demo" }),
     clearLLMKey: () => Promise.resolve({ ok: false, error: "demo" }),
