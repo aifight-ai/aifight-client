@@ -16,6 +16,27 @@ export class RuntimeLocalUrlError extends Error {
   override readonly name = "RuntimeLocalUrlError";
 }
 
+/** Telegram companion settings (non-secret half). Absent = the companion is
+ *  not enabled on this machine, so nothing starts and nothing is polled.
+ *  The bot token itself lives in the top-level `telegramBotToken` field so it
+ *  rides the existing ENCRYPTED_FIELDS pipeline. */
+export interface BridgeTelegramConfig {
+  /** The one chat allowed to talk to this bot; set when pairing succeeds. */
+  readonly chatId: number;
+  /** Match-result notification granularity. */
+  readonly results: "per_match" | "daily" | "both" | "off";
+  /** "HH:MM" in this machine's local time. Default 22:00. */
+  readonly digestAt?: string;
+  readonly alerts: boolean;
+  readonly challengeEvents: boolean;
+  /** Two-way remote control; false = notifications only. */
+  readonly control: boolean;
+  /** Absent = decide from the environment (AIFIGHT_LOCALE / LC_ALL / LANG). */
+  readonly locale?: "zh" | "en";
+  /** Epoch ms; notifications (never alerts) stay quiet until then. */
+  readonly mutedUntil?: number;
+}
+
 export interface BridgeConfig {
   readonly version: 1;
   readonly baseUrl: string;
@@ -40,13 +61,20 @@ export interface BridgeConfig {
   readonly illegalRetryCount?: number;
   readonly autoDailyLimit?: number;
   readonly autoGames?: readonly string[];
+  /** Telegram bot token. Flat on purpose: ENCRYPTED_FIELDS works on top-level
+   *  field names, so this gets encryption-at-rest, redaction and old-secret
+   *  release for free. */
+  readonly telegramBotToken?: string;
+  readonly telegram?: BridgeTelegramConfig;
   readonly updatedAt: string;
 }
 
-export interface RedactedBridgeConfig extends Omit<BridgeConfig, "apiKey" | "runtimeLocalToken" | "claimToken"> {
+export interface RedactedBridgeConfig
+  extends Omit<BridgeConfig, "apiKey" | "runtimeLocalToken" | "claimToken" | "telegramBotToken"> {
   readonly apiKey: string;
   readonly runtimeLocalToken?: string;
   readonly claimToken?: string;
+  readonly telegramBotToken?: string;
 }
 
 export function defaultRuntimeLocalUrl(runtimeType: BridgeRuntimeType): string {
@@ -190,8 +218,9 @@ const ENC_FIELD_PREFIX = "enc:";
 
 /** The credential fields of bridge.json that are encrypted at rest.
  *  claimUrl is included because the claim token is embedded in its last
- *  path segment — leaving it plaintext would void encrypting claimToken. */
-const ENCRYPTED_FIELDS = ["apiKey", "claimToken", "claimUrl"] as const;
+ *  path segment — leaving it plaintext would void encrypting claimToken.
+ *  telegramBotToken is full control of the user's own Telegram bot. */
+const ENCRYPTED_FIELDS = ["apiKey", "claimToken", "claimUrl", "telegramBotToken"] as const;
 
 function isEncryptedField(value: string): boolean {
   return value.startsWith(ENC_FIELD_PREFIX);
@@ -351,6 +380,17 @@ export function readBridgeConfig(): BridgeConfig {
   } catch {
     throw new Error("bridge config is invalid; run `aifight connect <PAIRING_CODE>` or `aifight setup`");
   }
+  // The telegram block is an optional convenience section, not part of the
+  // agent's identity: a hand-edited or half-written one must never brick the
+  // bridge (which is what failing isBridgeConfig would do — the runner would
+  // refuse to start and even `aifight telegram uninstall` could not recover).
+  // Drop it instead; the companion then reads as "not set up".
+  if (parsed !== null && typeof parsed === "object" && "telegram" in parsed) {
+    const record = parsed as Record<string, unknown>;
+    if (record.telegram !== undefined && !isBridgeTelegramConfig(record.telegram)) {
+      delete record.telegram;
+    }
+  }
   if (!isBridgeConfig(parsed)) {
     throw new Error("bridge config is invalid; run connect again");
   }
@@ -446,6 +486,9 @@ export function redactBridgeConfig(config: BridgeConfig): RedactedBridgeConfig {
     ...(config.runtimeLocalToken !== undefined
       ? { runtimeLocalToken: redactSecret(config.runtimeLocalToken) }
       : {}),
+    ...(config.telegramBotToken !== undefined
+      ? { telegramBotToken: redactSecret(config.telegramBotToken) }
+      : {}),
   };
 }
 
@@ -500,8 +543,36 @@ function isBridgeConfig(value: unknown): value is BridgeConfig {
         v.illegalRetryCount >= 0 &&
         v.illegalRetryCount <= 2)) &&
     (v.autoDailyLimit === undefined || (typeof v.autoDailyLimit === "number" && Number.isInteger(v.autoDailyLimit) && v.autoDailyLimit >= 0)) &&
-    (v.autoGames === undefined || (Array.isArray(v.autoGames) && v.autoGames.every((g) => typeof g === "string")))
+    (v.autoGames === undefined || (Array.isArray(v.autoGames) && v.autoGames.every((g) => typeof g === "string"))) &&
+    // On disk this is the "enc:" reference, in memory the plaintext token —
+    // both are strings, so one check covers pre- and post-decrypt validation.
+    (v.telegramBotToken === undefined || typeof v.telegramBotToken === "string") &&
+    (v.telegram === undefined || isBridgeTelegramConfig(v.telegram))
   );
+}
+
+/** Shape check for the optional telegram settings block. Exported so the
+ *  companion and the CLI validate one definition instead of three. */
+export function isBridgeTelegramConfig(value: unknown): value is BridgeTelegramConfig {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const t = value as Record<string, unknown>;
+  return (
+    typeof t.chatId === "number" &&
+    Number.isInteger(t.chatId) &&
+    (t.results === "per_match" || t.results === "daily" || t.results === "both" || t.results === "off") &&
+    (t.digestAt === undefined || (typeof t.digestAt === "string" && isDigestTime(t.digestAt))) &&
+    typeof t.alerts === "boolean" &&
+    typeof t.challengeEvents === "boolean" &&
+    typeof t.control === "boolean" &&
+    (t.locale === undefined || t.locale === "zh" || t.locale === "en") &&
+    (t.mutedUntil === undefined ||
+      (typeof t.mutedUntil === "number" && Number.isFinite(t.mutedUntil) && t.mutedUntil >= 0))
+  );
+}
+
+/** "HH:MM" on a 24-hour clock. */
+export function isDigestTime(raw: string): boolean {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(raw);
 }
 
 function isAllowedRuntimeLocalUrl(raw: string, runtimeType: unknown): boolean {

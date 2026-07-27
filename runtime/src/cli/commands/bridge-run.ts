@@ -20,12 +20,18 @@ import {
   type BridgeRunnerLogEvent,
 } from "../../bridge/runner";
 import { readBridgeConfig, type BridgeConfig } from "../../bridge/config";
+import { automaticJoinOptions } from "../../bridge/auto-join";
 import { checkBridgeUpdate } from "../../bridge/update-check";
 import {
   startBridgeAutoUpdater,
   type BridgeAutoUpdater,
 } from "../../bridge/auto-update";
 import { BridgeServiceError, statusBridgeService } from "../../bridge/service";
+import {
+  notifyBridgeUnavailable,
+  startTelegramCompanion,
+  type TelegramCompanion,
+} from "../../notify/telegram/companion";
 import { RUNTIME_VERSION } from "../../index";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, expectArity } from "../shared";
@@ -141,6 +147,10 @@ export async function runBridgeWithConfig(opts: {
   let lock: LockHandle | null = null;
   let server: ControlServer | null = null;
   let autoUpdater: BridgeAutoUpdater | null = null;
+  // Optional phone companion. Null until it starts (and forever when it is not
+  // configured), so every call site is `?.` — a notification channel must never
+  // be able to stand between the bridge and a match.
+  let telegram: TelegramCompanion | null = null;
   // Resolves if the reconnect loop ever stops for good. Without this the process
   // stays alive around a dead socket: waitForStopSignal only wakes on a signal,
   // so the supervisor sees a healthy process, never restarts it, and the agent is
@@ -156,9 +166,19 @@ export async function runBridgeWithConfig(opts: {
       ...automaticJoinOptions(cfg),
       onLog: (event) => {
         writeBridgeLog(event, env);
+        telegram?.observeLog(event);
         if (event.code === "reconnect.give_up" || event.code === "reconnect.closed") {
           onReconnectDead?.(event.message || event.code);
         }
+      },
+      onServerMessage: (message) => {
+        telegram?.observeServerMessage(message);
+      },
+      // A failed model call does not throw — the provider substitutes its own
+      // move and carries on — so the only place that degradation is visible is
+      // the decision trace.
+      onTrace: (trace) => {
+        telegram?.observeTrace(trace);
       },
     });
   let runner = makeRunner(config);
@@ -198,6 +218,15 @@ export async function runBridgeWithConfig(opts: {
         refusal = cause;
       }
       if (refusal !== null) {
+        // The companion is mounted only after a successful connect, so on this
+        // path there is nothing to observe the refusal — and a service install
+        // can sit here all night. Send the one message directly. Once per
+        // announcement, so standing by does not become a notification loop.
+        if (mismatchAnnouncedAtMs < 0) {
+          await notifyBridgeUnavailable(config, refusalCode(refusal), refusal.message, {
+            ...(env.fetchImpl !== undefined ? { fetchImpl: env.fetchImpl } : {}),
+          });
+        }
         if (process.env.AIFIGHT_SERVICE_RUN !== "1") {
           // Foreground: the operator is watching. Say it once, plainly, and stop
           // — "unexpected error" would read as a bug rather than a choice they
@@ -236,6 +265,20 @@ export async function runBridgeWithConfig(opts: {
     writeToken(token);
     writePort(port);
 
+    // Phone notifications, if this machine has them set up. Returns null when
+    // unconfigured (the default), so nothing starts and nothing is polled.
+    try {
+      telegram = startTelegramCompanion({
+        config,
+        runner,
+        onLog: (event) => writeBridgeLog(event, env),
+        ...(env.fetchImpl !== undefined ? { fetchImpl: env.fetchImpl } : {}),
+      });
+    } catch (cause) {
+      env.stderr(`warning: Telegram companion did not start: ${cause instanceof Error ? cause.message : String(cause)}\n`);
+      telegram = null;
+    }
+
     // R13-F04: unattended auto-update is OPT-IN and OFF by default. A background
     // service silently running `npm install -g` (as whatever user the unit runs
     // as — possibly root) is a supply-chain foothold, so it only runs when the
@@ -265,6 +308,10 @@ export async function runBridgeWithConfig(opts: {
     const shutdown = async (): Promise<void> => {
       autoUpdater?.stop();
       autoUpdater = null;
+      // Bounded internally (a flush budget, not a network wait), so a wedged
+      // Telegram cannot hold the bridge open.
+      await telegram?.stop().catch(() => undefined);
+      telegram = null;
       await server?.close();
       server = null;
       await runner.stop();
@@ -285,6 +332,8 @@ export async function runBridgeWithConfig(opts: {
     return 1;
   } catch (cause) {
     autoUpdater?.stop();
+    await telegram?.stop().catch(() => undefined);
+    telegram = null;
     await server?.close().catch(() => undefined);
     await runner.stop().catch(() => undefined);
     // Clean up OUR files only. When acquireAgentSeat refused because another
@@ -329,7 +378,9 @@ export function isServerRefusal(cause: unknown): cause is Error {
   );
 }
 
-function refusalCode(cause: Error): string {
+/** Doubles as the CommandError code and the phone alert's code — the three
+ *  names are deliberately the same on both sides. */
+function refusalCode(cause: Error): "device_mismatch" | "credential_rejected" | "client_mismatch" {
   if (cause instanceof BridgeDeviceMismatchError) return "device_mismatch";
   if (cause instanceof BridgeCredentialRejectedError) return "credential_rejected";
   return "client_mismatch";
@@ -498,23 +549,6 @@ export function autoUpdateOptedIn(): boolean {
   return v === "1" || v === "true" || v === "yes" || v === "on";
 }
 
-function automaticJoinOptions(config: BridgeConfig): {
-  readonly autoJoinGame?: SupportedGame;
-  readonly autoJoinMode?: string;
-  readonly autoJoinOneShot?: boolean;
-} {
-  const automaticGame = (config.autoDailyLimit ?? 0) > 0
-    ? pickAutomaticGame(config.autoGames)
-    : undefined;
-  return automaticGame === undefined
-    ? {}
-    : {
-        autoJoinGame: automaticGame,
-        autoJoinMode: "ranked",
-        autoJoinOneShot: false,
-      };
-}
-
 function singleRunnerRouter(
   config: BridgeConfig,
   runner: BridgeRunner,
@@ -634,12 +668,6 @@ function runtimeLabel(runtimeType: BridgeConfig["runtimeType"]): string {
     case "direct":
       return "Direct (LLM)";
   }
-}
-
-function pickAutomaticGame(configured: readonly string[] | undefined): SupportedGame {
-  const games = (configured ?? SUPPORTED_GAMES).filter(isSupportedGame);
-  const pool = games.length > 0 ? games : SUPPORTED_GAMES;
-  return pool[Math.floor(Math.random() * pool.length)]! as SupportedGame;
 }
 
 async function detectRunningBridgeService(env: HandlerEnv): Promise<boolean> {

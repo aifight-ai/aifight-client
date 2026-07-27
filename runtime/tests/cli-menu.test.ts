@@ -106,6 +106,19 @@ describe("interactive menu", () => {
     expect(h.helpShown).toBe(false);
   });
 
+  it("telegram is item 10 (not 0, which quits) and dispatches bare", async () => {
+    const h = harness(["10", "q"]);
+    await runInteractiveMenu(h.deps);
+    expect(h.dispatched).toEqual([{ cmd: "telegram", positional: [] }]);
+  });
+
+  it("0 still quits rather than picking the telegram item", async () => {
+    const h = harness(["0"]);
+    const code = await runInteractiveMenu(h.deps);
+    expect(code).toBe(0);
+    expect(h.dispatched).toEqual([]);
+  });
+
   it("full command list calls showHelp", async () => {
     const h = harness(["9", "q"]);
     await runInteractiveMenu(h.deps);

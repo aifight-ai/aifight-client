@@ -1,6 +1,6 @@
 import { formatPublicNo } from "../../account/public-no";
+import { renameAgent, AgentActionError } from "../../bridge/agent-actions";
 import { readBridgeConfig, writeBridgeConfig } from "../../bridge/config";
-import { fetchNoFollow } from "../../net/guarded-fetch.js";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError } from "../shared";
 
@@ -21,43 +21,24 @@ export async function runBridgeRename(args: HandlerArgs, env: HandlerEnv): Promi
   }
 
   const config = readBridgeConfig();
-  const res = await fetchNoFollow(`${config.baseUrl.replace(/\/+$/, "")}/api/agents/me/name`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      "X-API-Key": config.apiKey,
-      "X-AIFight-Client": "cli",
-    },
-    body: JSON.stringify({ name }),
-  }, { fetchImpl: env.fetchImpl ?? globalThis.fetch });
-
-  if (!res.ok) {
-    const body = (await res.json().catch(() => undefined)) as Record<string, unknown> | undefined;
-    const serverMsg = typeof body?.error === "string" ? body.error : undefined;
-    if (res.status === 429) {
-      // Rename cooldown — the server message already includes when it lifts.
-      throw new CommandError("rename_cooldown", serverMsg ?? "you renamed recently; please try again later");
-    }
-    if (res.status === 400) {
-      throw new CommandError("rename_invalid", serverMsg ?? "that name is not allowed");
-    }
-    throw new CommandError("rename_failed", serverMsg ?? `rename failed with HTTP ${res.status}`);
+  let renamed;
+  try {
+    renamed = await renameAgent(config, name, env.fetchImpl ?? globalThis.fetch);
+  } catch (cause) {
+    if (cause instanceof AgentActionError) throw new CommandError(cause.code, cause.message);
+    throw cause;
   }
-
-  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-  const newName = typeof body.name === "string" ? body.name : name;
-  const publicNo = typeof body.public_no === "number" ? body.public_no : undefined;
 
   // Cache the server-authoritative name locally so `aifight status` and the
   // desktop app (shared bridge.json) reflect it immediately (bidirectional sync).
-  writeBridgeConfig({ ...config, agentName: newName, updatedAt: new Date().toISOString() });
+  writeBridgeConfig({ ...config, agentName: renamed.name, updatedAt: new Date().toISOString() });
 
   if (args.jsonMode) {
-    env.stdout(JSON.stringify({ status: "ok", name: newName, public_no: publicNo ?? null }) + "\n");
+    env.stdout(JSON.stringify({ status: "ok", name: renamed.name, public_no: renamed.publicNo ?? null }) + "\n");
     return 0;
   }
-  const idLabel = publicNo !== undefined ? `  (ID ${formatPublicNo(publicNo)})` : "";
-  env.stdout(`Display name set to: ${newName}${idLabel}\n`);
+  const idLabel = renamed.publicNo !== undefined ? `  (ID ${formatPublicNo(renamed.publicNo)})` : "";
+  env.stdout(`Display name set to: ${renamed.name}${idLabel}\n`);
   env.stdout("Synced to the AIFight platform and your dashboard.\n");
   return 0;
 }

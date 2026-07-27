@@ -1,8 +1,17 @@
 import { readBridgeConfig, writeBridgeConfig } from "../../bridge/config";
-import { fetchNoFollow } from "../../net/guarded-fetch.js";
+import {
+  DAILY_CAP_CONFIRM_THRESHOLD,
+  DailyPolicySyncError,
+  SETUP_WIZARD_CAP_MAX,
+  dailyCapNeedsConfirm,
+  syncDailyPolicy,
+} from "../../bridge/daily-policy";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, SUPPORTED_GAMES, UsageError, expectArity, isSupportedGame } from "../shared";
 import { createOnboardIO } from "./onboard-io";
+
+// Re-exported for the CLI surfaces that already import them from here.
+export { DAILY_CAP_CONFIRM_THRESHOLD, SETUP_WIZARD_CAP_MAX, dailyCapNeedsConfirm };
 
 const USAGE = [
   "usage: aifight set daily <N> [--yes]",
@@ -10,22 +19,6 @@ const USAGE = [
   `supported games: ${SUPPORTED_GAMES.join(", ")}`,
   "0 = manual matches only; max 100; caps above 10 ask for confirmation (--yes skips)",
 ].join("\n");
-
-/** Above this many automatic matches per day the CLI asks for an explicit
- *  second confirmation — the daily cap is a token-burn safety valve, and
- *  >10/day means a lot of model calls on the user's own key. Mirrors the
- *  desktop dashboard's CAP_CONFIRM_THRESHOLD; change both together. */
-export const DAILY_CAP_CONFIRM_THRESHOLD = 10;
-
-/** The setup wizard's custom-entry ceiling. Mirrors the desktop dashboard's
- *  CAP_MAX (PlayView.tsx); change both together. This is the client-side
- *  first-run cap — the server ceiling (agent_daily_ranked_cap, admin-tunable)
- *  is the real hard limit and clamps anything higher on the PATCH. */
-export const SETUP_WIZARD_CAP_MAX = 100;
-
-export function dailyCapNeedsConfirm(limit: number): boolean {
-  return limit > DAILY_CAP_CONFIRM_THRESHOLD;
-}
 
 export async function runBridgeSet(
   args: HandlerArgs,
@@ -77,7 +70,12 @@ async function setDaily(raw: string, args: HandlerArgs, env: HandlerEnv): Promis
   }
 
   const config = readBridgeConfig();
-  await syncDailyPolicy(config, limit, env.fetchImpl ?? globalThis.fetch);
+  try {
+    await syncDailyPolicy(config, limit, env.fetchImpl ?? globalThis.fetch);
+  } catch (cause) {
+    if (cause instanceof DailyPolicySyncError) throw new CommandError("policy_sync_failed", cause.message);
+    throw cause;
+  }
   const updated = { ...config, autoDailyLimit: limit, updatedAt: new Date().toISOString() };
   writeBridgeConfig(updated);
 
@@ -155,27 +153,6 @@ export async function onboardDailyCap(env: HandlerEnv): Promise<void> {
   }
 }
 
-async function syncDailyPolicy(
-  config: ReturnType<typeof readBridgeConfig>,
-  limit: number,
-  fetchImpl: typeof fetch,
-): Promise<void> {
-  const body = limit === 0
-    ? { auto_requeue: false }
-    : { max_games_per_day: limit, auto_requeue: true };
-  const res = await fetchNoFollow(`${config.baseUrl}/api/agents/me/policy`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      "X-API-Key": config.apiKey,
-    },
-    body: JSON.stringify(body),
-  }, { fetchImpl });
-  if (!res.ok) {
-    throw new CommandError("policy_sync_failed", await readAPIError(res, `daily policy sync failed with HTTP ${res.status}`));
-  }
-}
-
 function setGames(raw: string, args: HandlerArgs, env: HandlerEnv): number {
   const games = raw.split(",").map((g) => g.trim()).filter((g) => g.length > 0);
   if (games.length === 0) {
@@ -203,13 +180,4 @@ function setGames(raw: string, args: HandlerArgs, env: HandlerEnv): number {
   }
   env.stdout(`Automatic match games set to: ${unique.join(", ")}\n`);
   return 0;
-}
-
-async function readAPIError(res: Response, fallback: string): Promise<string> {
-  const body = await res.json().catch(() => undefined) as unknown;
-  if (body && typeof body === "object") {
-    const error = (body as Record<string, unknown>).error;
-    if (typeof error === "string" && error.length > 0) return error;
-  }
-  return fallback;
 }

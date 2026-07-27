@@ -31,6 +31,7 @@ import { appendUsageRecord } from "../usage/usage-log";
 import { loadAgentProfile, resolveAgentDir } from "../profile/profile-loader";
 import { runSelfReview } from "../review/self-review";
 import { fetchNoFollow } from "../net/guarded-fetch";
+import { envNotifyLocale } from "../notify/locale";
 import type { LLMConfig } from "../profile/config-schema";
 
 export interface BridgeRunnerOptions {
@@ -882,7 +883,10 @@ function formatMatchComplete(config: BridgeConfig, gameOver: MsgGameOver, game?:
   return lines.join("\n");
 }
 
-function resultLabel(agentId: string, gameOver: MsgGameOver): string {
+/** The one place that decides what a finished match says about us —
+ *  "1st place" / "forfeit" / "opponent forfeit" / "draw". Exported so the
+ *  notification layer reports exactly what the bridge log reports. */
+export function resultLabel(agentId: string, gameOver: MsgGameOver): string {
   const player = gameOver.data.players.find((p) => p.agent_id === agentId);
   if (player === undefined) return "completed";
 
@@ -927,13 +931,13 @@ function agentLostMatch(agentId: string, gameOver: MsgGameOver): boolean {
 }
 
 /** Locale for an auto-triggered review (the headless bridge has no UI locale).
- *  Honors AIFIGHT_LOCALE/LC_ALL/LANG; defaults to English. */
+ *  Same environment rule as `aifight review` and the notification channels —
+ *  see notify/locale.ts, which is the only place that rule lives. */
 function envReviewLocale(): string {
-  const v = process.env.AIFIGHT_LOCALE ?? process.env.LC_ALL ?? process.env.LANG ?? "";
-  return /^zh/i.test(v) ? "zh" : "en";
+  return envNotifyLocale();
 }
 
-function fullReplayURL(baseUrl: string, replayPath: string | undefined): string | undefined {
+export function fullReplayURL(baseUrl: string, replayPath: string | undefined): string | undefined {
   if (replayPath === undefined || replayPath.trim() === "") return undefined;
   try {
     return new URL(replayPath, `${baseUrl.replace(/\/+$/, "")}/`).toString();

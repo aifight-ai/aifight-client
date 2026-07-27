@@ -117,6 +117,12 @@ const ITEMS: readonly MenuItem[] = [
       showHelp();
     },
   },
+  {
+    // Not "0" — that is the quit key.
+    key: "10",
+    label: "Telegram — phone notifications & remote control",
+    run: ({ dispatch }) => dispatch("telegram", []).then(() => undefined),
+  },
 ];
 
 function menuText(): string {

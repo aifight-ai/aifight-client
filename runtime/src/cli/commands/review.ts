@@ -7,6 +7,7 @@
 //   aifight review <id> --model X  use profile X for this review only
 //   aifight review <id> --locale zh  write the report in a specific language
 
+import { envNotifyLocale } from "../../notify/locale";
 import { readBridgeConfig } from "../../bridge/config";
 import { loadAgentProfile, resolveAgentDir } from "../../profile/profile-loader";
 import { runSelfReview, type SelfReview } from "../../review/self-review";
@@ -88,10 +89,10 @@ export async function runReview(args: HandlerArgs, env: HandlerEnv): Promise<num
 }
 
 function resolveLocale(flag: string | number | boolean | undefined): string {
+  // --locale wins; otherwise the shared environment rule (one definition for
+  // the CLI, the auto-review, and the notification channels).
   if (typeof flag === "string" && flag.trim() !== "") return flag.trim();
-  const env = process.env.AIFIGHT_LOCALE ?? process.env.LC_ALL ?? process.env.LANG ?? "";
-  if (/^zh/i.test(env)) return "zh";
-  return "en";
+  return envNotifyLocale();
 }
 
 function printReview(env: HandlerEnv, review: unknown, jsonMode: boolean): void {

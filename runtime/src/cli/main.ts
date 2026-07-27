@@ -44,6 +44,7 @@ import { runBridgeService } from "./commands/bridge-service";
 import { runBridgeUninstall } from "./commands/bridge-uninstall";
 import { runBridgeSessions } from "./commands/bridge-sessions";
 import { runBridgeStrategy } from "./commands/bridge-strategy";
+import { runTelegram } from "./commands/telegram";
 import { runConfig } from "./commands/config";
 import { runStats } from "./commands/stats";
 import { runAcceptTerms } from "./commands/accept-terms";
@@ -62,7 +63,7 @@ const KNOWN_COMMANDS: readonly string[] = [
   "version", "doctor", "setup", "connect", "start", "run", "status",
   "update", "service", "sessions", "strategy", "uninstall", "set", "rename",
   "challenge", "accept", "config", "stats", "prices", "record", "review",
-  "accept-terms",
+  "accept-terms", "telegram",
 ];
 
 // ── Public entry ─────────────────────────────────────────────────────
@@ -155,6 +156,10 @@ export async function run(
     { name: "output", type: "number" },
     { name: "cache-hit", type: "number" },
     { name: "currency", type: "string" },
+    // `aifight telegram setup --token-env <NAME>` — headless bot-token input.
+    // Same indirection habit as `config set-key --env`: the raw token never
+    // appears in argv (and therefore never in shell history or `ps`).
+    { name: "token-env", type: "string" },
   ];
   const parsed = parseArgs(tail, FLAG_SPEC);
   const jsonMode = parsed.flags.json === true;
@@ -271,6 +276,8 @@ async function dispatch(
       return runBridgeChallenge(subArgs, env);
     case "accept":
       return runBridgeAccept(subArgs, env);
+    case "telegram":
+      return runTelegram(subArgs, env);
     case "config":
       return runConfig(subArgs, env);
     case "stats":
@@ -335,6 +342,7 @@ function globalUsage(): string {
     "  aifight review <id>               Post-match self-review of a local session (uses your LLM key)",
     "  aifight stats                     Local token usage + estimated cost (this month by default)",
     "  aifight prices <command>          Set per-model token prices used by `aifight stats` (local only)",
+    "  aifight telegram <command>        Phone notifications & remote control via your own Telegram bot",
     "",
     "Manage this machine:",
     "  aifight service <command>         Install or manage aifight.service (persistent / VPS)",
@@ -542,6 +550,28 @@ function commandUsage(positional: readonly string[]): string | undefined {
         "Usage: aifight accept <challenge_url_or_token>",
         "  Accept a challenge URL that someone sent to this human or Agent.",
         "  The local bridge must be online so game_start can be delivered.",
+      ].join("\n");
+    case "telegram":
+      return [
+        "Usage: aifight telegram setup [--token-env <NAME>]",
+        "       aifight telegram status",
+        "       aifight telegram test",
+        "       aifight telegram set <key> <value>",
+        "       aifight telegram mute <1h|today|off>",
+        "       aifight telegram unlink",
+        "       aifight telegram uninstall [--yes]",
+        "  Get match results and alerts on your phone, and control the bridge from the chat window.",
+        "  You create the bot yourself with Telegram's @BotFather; the token is stored encrypted on this",
+        "  machine and messages go straight from here to Telegram — AIFight's servers are not involved.",
+        "  setup walks through BotFather, verifies the token, prints a pairing code to send from your",
+        "  phone, and links that one chat. --token-env reads the token from an environment variable",
+        "  instead of prompting, for machines with no terminal to paste into.",
+        "  test sends one message to the linked chat so you can confirm it arrives.",
+        "  set keys: results (per_match|daily|both|off), digest_at (HH:MM), alerts (on|off),",
+        "            challenge_events (on|off), control (on|off), locale (zh|en|auto)",
+        "  mute silences match results and digests only; alerts always come through.",
+        "  unlink forgets the paired chat but keeps the bot token; uninstall deletes both.",
+        "  Settings are read when the bridge starts — restart the service to apply a change.",
       ].join("\n");
     case "config":
       return [
