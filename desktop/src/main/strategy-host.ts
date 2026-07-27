@@ -56,18 +56,27 @@ export function readStrategy(liveGames: readonly string[]): StrategyReadResult {
   } catch (cause) {
     return { docs: [], maxBytes: MAX_STRATEGY_FILE_BYTES, error: describeError(cause) };
   }
-  const docs: StrategyDoc[] = scopesFor(liveGames).map((scope) => {
+  const docs: StrategyDoc[] = [];
+  for (const scope of scopesFor(liveGames)) {
     const file = fileForScope(agentId, scope);
     let content = "";
     let exists = false;
     try {
       content = fs.readFileSync(file, "utf8");
       exists = true;
-    } catch {
-      // missing file = empty doc (the runtime skips empty/missing strategy).
+    } catch (cause) {
+      // R12 (2026-07-26): only a MISSING file is an empty doc. A real read error
+      // (transient AV/backup lock → EBUSY/EPERM, or EACCES) must NOT masquerade
+      // as empty — the editor would render an empty document and a subsequent
+      // save would silently overwrite the real strategy. Surface it via this
+      // function's existing error channel so the renderer shows "unavailable".
+      if ((cause as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        return { docs: [], maxBytes: MAX_STRATEGY_FILE_BYTES, error: describeError(cause) };
+      }
+      // ENOENT: missing file = empty doc (the runtime skips empty/missing strategy).
     }
-    return { scope, path: file, content, bytes: Buffer.byteLength(content, "utf8"), exists };
-  });
+    docs.push({ scope, path: file, content, bytes: Buffer.byteLength(content, "utf8"), exists });
+  }
   return { agentId, docs, maxBytes: MAX_STRATEGY_FILE_BYTES };
 }
 

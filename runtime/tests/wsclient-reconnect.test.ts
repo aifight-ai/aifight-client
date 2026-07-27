@@ -58,6 +58,7 @@ interface FakeInnerHandle {
   inner: any;
   simulateServerClose: (code: number, reason?: string) => void;
   emitMessage: (msg: unknown) => void;
+  emitError: (err: unknown) => void;
   sentMessages: unknown[];
 }
 
@@ -130,6 +131,9 @@ function makeFakeInner(opts?: { welcome?: object }): FakeInnerHandle {
     },
     emitMessage: (msg: unknown) => {
       for (const h of [...messageHandlers]) h(msg);
+    },
+    emitError: (err: unknown) => {
+      for (const h of [...errorHandlers]) h(err);
     },
   };
 }
@@ -620,6 +624,72 @@ describe("createReconnectingWSClient — handler re-wire + send", () => {
       { type: "queue_joined" },
       { type: "match_confirm_request" },
     ]);
+  });
+
+  // connection-1: the unsubscribe returned by onMessage must stay authoritative
+  // AFTER a reconnect. The pre-fix closure called the inner1 unsub captured at
+  // registration; on inner2 that detached nothing, so the "unsubscribed" handler
+  // kept firing on the live socket.
+  test("case 10b: onMessage unsubscribe stops delivery even after a reconnect", async () => {
+    const h1 = makeFakeInner();
+    const h2 = makeFakeInner();
+    mockedCreate.mockResolvedValueOnce(h1.inner as any);
+    mockedCreate.mockResolvedValueOnce(h2.inner as any);
+
+    const facade = await createReconnectingWSClient({
+      ...baseOpts,
+      jitter: "none",
+    });
+
+    const received: unknown[] = [];
+    const unsub = facade.onMessage((msg) => {
+      received.push(msg);
+    });
+
+    // Reconnect inner1 → inner2, re-wiring the handler onto the new socket.
+    h1.simulateServerClose(1006);
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushMicrotasks();
+    expect(facade.state).toBe("connected");
+
+    // Confirm it is live on inner2 before unsubscribing.
+    h2.emitMessage({ type: "before_unsub" });
+    expect(received).toEqual([{ type: "before_unsub" }]);
+
+    // Unsubscribe AFTER the reconnect, then emit again on the live inner2.
+    unsub();
+    h2.emitMessage({ type: "after_unsub" });
+    expect(received).toEqual([{ type: "before_unsub" }]); // no new delivery
+  });
+
+  // connection-1: same authority requirement for the onError channel.
+  test("case 10c: onError unsubscribe stops delivery even after a reconnect", async () => {
+    const h1 = makeFakeInner();
+    const h2 = makeFakeInner();
+    mockedCreate.mockResolvedValueOnce(h1.inner as any);
+    mockedCreate.mockResolvedValueOnce(h2.inner as any);
+
+    const facade = await createReconnectingWSClient({
+      ...baseOpts,
+      jitter: "none",
+    });
+
+    const errors: unknown[] = [];
+    const unsub = facade.onError((err) => {
+      errors.push(err);
+    });
+
+    h1.simulateServerClose(1006);
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushMicrotasks();
+    expect(facade.state).toBe("connected");
+
+    h2.emitError(new Error("before_unsub"));
+    expect(errors).toHaveLength(1);
+
+    unsub();
+    h2.emitError(new Error("after_unsub"));
+    expect(errors).toHaveLength(1); // no new delivery after unsubscribe
   });
 
   test("case 11: send() in connected state forwards to inner", async () => {

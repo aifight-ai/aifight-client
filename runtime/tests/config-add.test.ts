@@ -13,6 +13,13 @@ import { run } from "../src/cli/main";
 import { resolveProfileSettings, resolveKeyRef } from "../src/cli/commands/config-edit";
 import type { HandlerArgs } from "../src/cli/shared";
 
+// POSIX permission bits are not meaningful on Windows (access is governed by
+// NTFS ACLs), matching the platform split the product itself documents in
+// src/profile/secret-ref.ts. Unlike secret-ref-file-perms.test.ts, whose
+// perms-only cases it.skipIf(isWin) entirely, here only the mode assertion is
+// gated so the managed-path/content checks still run on Windows.
+const isWin = process.platform === "win32";
+
 let prevHome: string | undefined;
 let tmpDir: string;
 
@@ -62,15 +69,36 @@ describe("resolveProfileSettings (D5 defaults)", () => {
     expect(() => resolveProfileSettings("anthropic_messages", "claude-sonnet-4-6", { "max-tokens": 10 }, undefined)).toThrow(/max-tokens/);
   });
 
-  it("compat protocol forces thinking off (no reasoning mode)", () => {
+  it("compat protocol defaults thinking off but no longer forces it", () => {
+    // Default OFF: the endpoint's model may not reason at all.
     const s = resolveProfileSettings("openai_chat_compat", "deepseek-chat", {}, undefined);
     expect(s.thinkingEnabled).toBe(false);
+    // But an explicit opt-in now sticks — the old code force-disabled it AFTER
+    // reading the flag, so a reasoning model behind a proxy could never be
+    // configured with an effort at all.
+    const on = resolveProfileSettings("openai_chat_compat", "gpt-5.6-sol", { thinking: "on", effort: "high" }, undefined);
+    expect(on.thinkingEnabled).toBe(true);
+    expect(on.effort).toBe("high");
   });
 
-  it("accepts a valid effort and rejects one the model does not list", () => {
-    expect(resolveProfileSettings("anthropic_messages", "claude-sonnet-4-6", { effort: "high" }, undefined).effort).toBe("high");
-    // claude-sonnet-4-6 lists [low, medium, high, max] — xhigh is not valid for it
-    expect(() => resolveProfileSettings("anthropic_messages", "claude-sonnet-4-6", { effort: "xhigh" }, undefined)).toThrow(/effort/);
+  it("accepts a listed effort silently and an unlisted-but-storable one with a clamp note", () => {
+    const listed = resolveProfileSettings("anthropic_messages", "claude-sonnet-4-6", { effort: "high" }, undefined);
+    expect(listed.effort).toBe("high");
+    expect(listed.notes).toBeUndefined();
+    // claude-sonnet-4-6 doesn't list xhigh — same rule as the app editor and the
+    // wizard (redesign §4.4): storable ⇒ accept + note, the adapter clamps at send.
+    const unlisted = resolveProfileSettings("anthropic_messages", "claude-sonnet-4-6", { effort: "xhigh" }, undefined);
+    expect(unlisted.effort).toBe("xhigh");
+    expect(unlisted.notes?.join(" ")).toMatch(/clamped/);
+  });
+
+  it("rejects an effort outside the storable set, and never flags auto", () => {
+    // "ultra" would fail config.json's schema after the fact — block it up front.
+    expect(() => resolveProfileSettings("anthropic_messages", "claude-sonnet-4-6", { effort: "ultra" }, undefined)).toThrow(/can save/);
+    // auto = send nothing (provider default): valid everywhere, no clamp note.
+    const auto = resolveProfileSettings("anthropic_messages", "claude-sonnet-4-6", { effort: "auto" }, undefined);
+    expect(auto.effort).toBe("auto");
+    expect(auto.notes).toBeUndefined();
   });
 
   it("is permissive about effort for an unknown/new model (new models keep arriving)", () => {
@@ -138,7 +166,12 @@ describe("resolveKeyRef (D4 key source)", () => {
     const p = (ref as { path: string }).path;
     expect(p).toContain(path.join("agents", "default", "keys", "deepseek.key"));
     expect(fs.readFileSync(p, "utf8").trim()).toBe("sk-secret-xyz");
-    expect((fs.statSync(p).mode & 0o777).toString(8)).toBe("600");
+    // The managed path and its contents are asserted everywhere; only the 0600
+    // mode check is POSIX-only. Node's chmod on Windows can toggle just the
+    // read-only bit, so a 0600 write reads back as 0666 there.
+    if (!isWin) {
+      expect((fs.statSync(p).mode & 0o777).toString(8)).toBe("600");
+    }
   });
 
   it("rejects zero sources and multiple sources", async () => {

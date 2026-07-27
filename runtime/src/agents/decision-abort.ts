@@ -25,12 +25,12 @@ export class DecisionSupersededError extends Error {
 }
 
 /**
- * True when `signal` is the per-decision supersede signal AND it has fired.
- * Because that signal is aborted ONLY on supersede or agent stop (never on the
- * turn-deadline timeout, which is a separate signal), an aborted supersede
- * signal is an unambiguous "discard this decision" marker at any layer that
- * holds it.
+ * True when `signal` has fired with a DecisionSupersededError as its abort
+ * reason — the deliberate supersede/stop cancel. Keying on the reason (R15
+ * 2026-07-26), not on `aborted` alone, keeps the predicate meaningful for a
+ * COMBINED signal (supersede signal + turn-deadline timeout): a timeout abort
+ * carries a different reason and must NOT read as "discard this decision".
  */
 export function isSupersededAbort(signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true;
+  return signal?.aborted === true && signal.reason instanceof DecisionSupersededError;
 }

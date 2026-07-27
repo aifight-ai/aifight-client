@@ -53,6 +53,22 @@ const keychainAvailable: boolean = (() => {
   }
 })();
 
+/** Windows Credential Manager is not safe against concurrent writers, and vitest
+ *  runs test files in parallel processes. Measured here on Windows 11 with eight
+ *  writer processes, each on its own random service name: ~0.5% of setPassword()
+ *  calls report success but never persist, ~4% of entries that were written AND
+ *  read back vanish moments later, and ~1% of deletePassword() calls do not
+ *  stick. The same loop run solo is 0/400 — it is contention on the shared
+ *  vault, not our code: the entry disappears even in the case below where the
+ *  product never touches the keychain at all.
+ *
+ *  So the cases that seed a real entry get a bounded retry ON WINDOWS ONLY. Each
+ *  attempt re-runs beforeEach, hence a fresh home and a fresh service name, so a
+ *  retry re-seeds from scratch rather than inheriting half-lost state. macOS and
+ *  Linux — where this legacy migration path actually ships — keep zero retries,
+ *  so a flake there still fails the suite. */
+const KEYCHAIN_RACE_RETRY = { retry: process.platform === "win32" ? 3 : 0 };
+
 describe("device-id (file fallback)", () => {
   let home: string;
   let prevHome: string | undefined;
@@ -200,6 +216,7 @@ describe("device-id (keychain → file migration, D1)", () => {
 
   it.skipIf(!keychainAvailable)(
     "adopts a legacy keychain secret into device.key (id preserved) and drops the entry",
+    KEYCHAIN_RACE_RETRY,
     () => {
       // Seed a legacy keychain-stored device secret; no device.key yet.
       const legacy = randomBytes(32).toString("hex");
@@ -232,6 +249,7 @@ describe("device-id (keychain → file migration, D1)", () => {
 
   it.skipIf(!keychainAvailable)(
     "an existing device.key wins over a legacy keychain secret (no adoption, entry untouched)",
+    KEYCHAIN_RACE_RETRY,
     () => {
       // Models a concurrent winner: device.key already holds secretF while a
       // stale keychain entry holds a DIFFERENT secretK. The file must win — the

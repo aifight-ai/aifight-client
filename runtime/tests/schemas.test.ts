@@ -15,7 +15,10 @@ import {
 describe("schemas loader", () => {
   it("resolves a valid schemas root", () => {
     const root = findSchemasRoot();
-    expect(root).toMatch(/protocol\/schema$|dist\/schemas$/);
+    // Normalize Windows backslashes to forward slashes so the assertion
+    // is platform-independent — findSchemasRoot itself is unaffected.
+    const normalized = root.replace(/\\/g, "/");
+    expect(normalized).toMatch(/protocol\/schema$|dist\/schemas$/);
   });
 
   it("exposes exactly 18 message types", () => {

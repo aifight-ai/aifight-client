@@ -62,4 +62,16 @@ describe("normalizeAgentProfile", () => {
     expect(normalizeAgentProfile(null)).toEqual({ name: null, stats: null });
     expect(normalizeAgentProfile("nope")).toEqual({ name: null, stats: null });
   });
+
+  // R12 (2026-07-26): JSON.parse("1e400") yields Infinity — a buggy/hostile
+  // server on this remote boundary must not leak a non-finite win rate into the
+  // UI ("Infinity%"). The finiteness guard makes it fall back like every sibling.
+  it("rejects a non-finite overall_win_rate, falling back to wins/total", () => {
+    const out = normalizeAgentProfile({
+      agent: { name: "inf" },
+      summary: { total_games: 10, total_wins: 4, overall_win_rate: Infinity },
+    });
+    expect(Number.isFinite(out.stats?.winRate)).toBe(true);
+    expect(out.stats?.winRate).toBeCloseTo(4 / 10);
+  });
 });

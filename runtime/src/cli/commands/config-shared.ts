@@ -49,15 +49,14 @@ const CANONICAL_PROTOCOLS: ReadonlySet<Protocol> = new Set<Protocol>([
   "openai_chat_compat",
   "deepseek_chat_completions",
   "gemini_generate_content",
-  "gemini_openai_compat",
 ]);
 
 /** The alias whose canonical name equals a compat protocol (needs base-url + model). */
 export function protocolRequiresBaseURLAndModel(protocol: Protocol): boolean {
-  // These protocols have no canonical default base URL / default model — the
-  // user must supply both (D3). openai_chat_compat and gemini_openai_compat are
-  // both "point me at any compatible endpoint" protocols.
-  return protocol === "openai_chat_compat" || protocol === "gemini_openai_compat";
+  // This protocol has no canonical default base URL / default model — the
+  // user must supply both (D3). openai_chat_compat is the "point me at any
+  // compatible endpoint" protocol (Gemini's OpenAI-compat endpoint included).
+  return protocol === "openai_chat_compat";
 }
 
 /** One human line listing the friendly protocol choices for D13 errors. */
@@ -230,6 +229,10 @@ export interface ProfileBuildSettings {
   readonly verbosity?: "low" | "medium" | "high";
   /** Model-specific opt-in feature flags (omitted when empty). */
   readonly features?: Record<string, boolean>;
+  /** Advisory warnings raised while resolving (printed by finishEdit's note
+   *  channel; buildLLMProfile reads fields explicitly, so this never reaches
+   *  config.json). */
+  readonly notes?: readonly string[];
 }
 
 /**

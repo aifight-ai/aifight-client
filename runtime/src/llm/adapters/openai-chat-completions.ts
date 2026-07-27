@@ -9,6 +9,7 @@
 // Default base URL: https://api.openai.com/v1
 
 import type {
+  CanonicalReasoningConfig,
   LLMAdapter,
   LLMProfile,
   DecisionInput,
@@ -39,6 +40,24 @@ export function createOpenAIChatCompletionsAdapter(): LLMAdapter {
   };
 }
 
+
+/**
+ * Canonical effort → Chat Completions `reasoning_effort`, passed through VERBATIM.
+ * `undefined` = omit the field (thinking off, or "auto" = provider default). This
+ * endpoint family used to refuse reasoning outright — a profile that configured an
+ * effort had it silently discarded, so a reasoning model behind a proxy quietly ran
+ * at whatever the endpoint's default was. Pass-through can 400 on an endpoint that
+ * doesn't know the field; that is the endpoint saying no, which is diagnosable —
+ * silence is not. (An endpoint that objects: leave the effort blank.)
+ */
+function passthroughReasoningEffort(reasoning?: CanonicalReasoningConfig): string | undefined {
+  if (!reasoning) return undefined;
+  if (reasoning.mode === "disabled" || reasoning.enabled === false) return undefined;
+  const effort = reasoning.effort;
+  if (effort === undefined || effort === "auto" || effort === "off") return undefined;
+  return effort;
+}
+
 // ─── validateProfile ───────────────────────────────────────────────────────────
 
 function validateProfile(profile: LLMProfile): ValidationResult {
@@ -54,12 +73,10 @@ function validateProfile(profile: LLMProfile): ValidationResult {
   if (!Number.isFinite(profile.maxTokens) || profile.maxTokens <= 0) {
     errors.push("maxTokens must be a positive finite integer");
   }
-  if (profile.reasoning?.enabled) {
-    warnings.push(
-      `Protocol "${PROTOCOL}" does not support thinking/reasoning. ` +
-        `The reasoning config will be ignored.`,
-    );
-  }
+  // Reasoning IS supported here: Chat Completions takes reasoning_effort for
+  // reasoning models (o-series, gpt-5.x). The old blanket "protocol does not
+  // support thinking" refusal silently discarded the configured effort — the
+  // same failure mode that hid the Claude 5 misclassification for weeks.
 
   return { ok: errors.length === 0, errors, warnings };
 }
@@ -129,6 +146,9 @@ async function generateDecision(
     ],
     max_completion_tokens: input.maxTokens,
   };
+
+  const reasoningEffort = passthroughReasoningEffort(input.reasoning ?? profile.reasoning);
+  if (reasoningEffort !== undefined) body.reasoning_effort = reasoningEffort;
 
   // Temperature: only send when explicitly set (not null)
   const temperature = input.temperature ?? profile.temperature;

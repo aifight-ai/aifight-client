@@ -8,6 +8,7 @@ import {
   type AgentDecisionProvider,
   type AgentInstanceNotify,
 } from "../src/agents/agent";
+import { DecisionSupersededError, isSupersededAbort } from "../src/agents/decision-abort";
 import type {
   MsgActionRequest,
   MsgError,
@@ -131,6 +132,7 @@ function makeHarness(opts: Partial<{
   client: FakeReconnectClient;
   autoConfirmMatches: boolean;
   decisionProvider: AgentDecisionProvider;
+  onServerMessage: (message: ServerMessageEnvelope) => void;
 }> = {}) {
   const client = opts.client ?? new FakeReconnectClient();
   const connect = vi.fn(async (_ws: ReconnectingWSClientOptions) => client);
@@ -150,6 +152,7 @@ function makeHarness(opts: Partial<{
     autoConfirmMatches: opts.autoConfirmMatches,
     connect,
     decisionProvider,
+    ...(opts.onServerMessage !== undefined ? { onServerMessage: opts.onServerMessage } : {}),
     onNotify,
     onResult,
     onFallbackRequired,
@@ -536,6 +539,24 @@ describe("AgentInstance", () => {
     expect(calls[0]!.aborted).toBe(true);
   });
 
+  it("F-02: isSupersededAbort keys on the DecisionSupersededError reason, not any abort (R15)", () => {
+    // Unfired / absent signal → false.
+    expect(isSupersededAbort(undefined)).toBe(false);
+    expect(isSupersededAbort(new AbortController().signal)).toBe(false);
+    // Aborted for another reason (e.g. the separate turn-deadline timeout on a
+    // combined signal) must NOT read as "discard this decision quietly".
+    const timedOut = new AbortController();
+    timedOut.abort(new Error("turn deadline"));
+    expect(isSupersededAbort(timedOut.signal)).toBe(false);
+    // The deliberate supersede/stop cancel is the only true case.
+    const superseded = new AbortController();
+    superseded.abort(new DecisionSupersededError("match-1"));
+    expect(isSupersededAbort(superseded.signal)).toBe(true);
+    const stopped = new AbortController();
+    stopped.abort(new DecisionSupersededError("match-1", "stopped"));
+    expect(isSupersededAbort(stopped.signal)).toBe(true);
+  });
+
   it("decision rejection triggers fallback callback and does not send action", async () => {
     const decisionProvider = { decide: vi.fn(async () => { throw new Error("model down"); }) };
     const { agent, client, onFallbackRequired } = makeHarness({ decisionProvider });
@@ -743,6 +764,98 @@ describe("AgentInstance", () => {
 
     expect(client.closeCalls).toBe(1);
   });
+
+  // ─── R15 2026-07-26: stop() ordering — decisions abort before close ───
+
+  it("R15: stop() aborts in-flight decisions even when close() hangs", async () => {
+    const client = new FakeReconnectClient();
+    client.close = () => new Promise<void>(() => {}); // close never settles
+    const { provider, calls } = recordingProvider();
+    const { agent } = makeHarness({ client, decisionProvider: provider });
+    await agent.start();
+    client.emitMessage(gameStart());
+    client.emitMessage(actionRequestWithId("22222222-2222-4222-8222-222222222222", "req-1"));
+    await flushEffects();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.aborted).toBe(false);
+
+    const stopping = agent.stop("host shutdown"); // pends on close forever
+    stopping.catch(() => {});
+
+    // The abort must land synchronously, without waiting out the close.
+    expect(calls[0]!.aborted).toBe(true);
+  });
+
+  it("R15: stop() still aborts decisions and closes the FSM when close() rejects", async () => {
+    const client = new FakeReconnectClient();
+    client.close = async () => {
+      throw new Error("close failed");
+    };
+    const { provider, calls } = recordingProvider();
+    const { agent } = makeHarness({ client, decisionProvider: provider });
+    await agent.start();
+    client.emitMessage(gameStart());
+    client.emitMessage(actionRequestWithId("22222222-2222-4222-8222-222222222222", "req-1"));
+    await flushEffects();
+
+    await expect(agent.stop("bye")).rejects.toThrow("close failed");
+
+    expect(calls[0]!.aborted).toBe(true);
+    expect(agent.snapshot().state?.phase).toBe("closed");
+  });
+
+  // ─── R15 2026-07-26: host callbacks dispatched with isolation — a throwing
+  // hook must never interrupt FSM/effect processing. ───
+
+  it("R15: a throwing onState handler does not block effect processing", async () => {
+    const { agent, client, onNotify } = makeHarness();
+    await agent.start();
+    agent.onState(() => {
+      throw new Error("host bug");
+    });
+
+    expect(() => agent.joinQueue("coup")).not.toThrow();
+    await flushEffects();
+
+    expect(client.sent).toEqual([{ type: "join_queue", data: { game: "coup", mode: "ranked" } }]);
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "agent.host_callback", level: "error" }),
+    );
+  });
+
+  it("R15: a throwing onServerMessage does not stop the FSM from seeing the message", async () => {
+    const onServerMessage = vi.fn(() => {
+      throw new Error("host bug");
+    });
+    const { agent, client, onNotify } = makeHarness({ autoConfirmMatches: true, onServerMessage });
+    await agent.start();
+
+    client.emitMessage(confirmRequest());
+    await flushEffects();
+
+    expect(onServerMessage).toHaveBeenCalledOnce();
+    expect(client.sent).toEqual([
+      { type: "match_confirm", data: { confirm_id: "11111111-1111-4111-8111-111111111111" } },
+    ]);
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "agent.host_callback", level: "error" }),
+    );
+    expect(agent.snapshot().stopped).toBe(false);
+  });
+
+  it("R15: a throwing onNotify is contained (terminal channel)", async () => {
+    const { agent, client, onNotify } = makeHarness();
+    await agent.start();
+    onNotify.mockImplementation(() => {
+      throw new Error("host bug");
+    });
+
+    // #notifyFromClientError → #notify → throwing onNotify must not escape
+    // back into the ws client's error-dispatch loop.
+    expect(() => client.emitError()).not.toThrow();
+    expect(onNotify).toHaveBeenCalled();
+    expect(agent.snapshot().stopped).toBe(false);
+  });
 });
 
 // 审查 F5 (重连重设计 2026-07-25): a stop() landing while start() is still
@@ -773,5 +886,74 @@ describe("AgentInstance — abortable in-flight start", () => {
     started.catch(() => {}); // assertion below re-awaits; avoid unhandledrejection
     await agent.stop("host shutdown");
     await expect(started).rejects.toThrow(/aborted by signal|failed to start/);
+  });
+});
+
+// D1 (windows-loop). The FSM half of this is covered in
+// agent-fsm-phase-derivation.test.ts; this is the OTHER half, and the one that
+// actually swallowed the decision first: #isDecisionCurrent used to require
+// `state.phase === "deciding"`, so a second match starting while a decision was
+// in flight made the finished decision look stale — it was dropped here, with
+// only an `agent.stale_decision` warning, before ever reaching the FSM. The turn
+// then went unanswered and the server judged a forfeit.
+describe("AgentInstance — a concurrent match must not orphan an in-flight decision (D1)", () => {
+  const MATCH_A = "22222222-2222-4222-8222-222222222222";
+  const MATCH_B = "44444444-4444-4444-8444-444444444444";
+
+  it("delivers match A's decision even though match B started meanwhile", async () => {
+    const d = deferred<unknown>();
+    const decisionProvider = { decide: vi.fn(() => d.promise) };
+    const { agent, client, onNotify } = makeHarness({ decisionProvider });
+    await agent.start();
+    client.emitMessage(gameStart(MATCH_A));
+    client.emitMessage(actionRequest(MATCH_A));
+    await flushEffects();
+
+    // Match B starts while A's provider call is still running.
+    client.emitMessage(gameStart(MATCH_B));
+    await flushEffects();
+
+    d.resolve({ type: "income" });
+    await flushEffects();
+
+    expect(
+      client.sent.filter((m) => m.type === "action"),
+      "A's decision must reach the wire; dropping it is the unanswered turn that gets judged a loss",
+    ).toEqual([{ type: "action", match_id: MATCH_A, data: { type: "income" } }]);
+    expect(
+      onNotify.mock.calls.map(([e]) => e.code),
+      "and it must not be reported as stale",
+    ).not.toContain("agent.stale_decision");
+  });
+});
+
+// D2 (windows-loop). The FSM-side recovery is covered in
+// agent-fsm-phase-derivation.test.ts; this pins the wiring — that a throwing
+// socket actually reaches the FSM instead of stopping at a log line.
+describe("AgentInstance — a failed action send is fed back to the FSM (D2)", () => {
+  const MATCH = "22222222-2222-4222-8222-222222222222";
+
+  it("restores the unanswered turn instead of pretending it was submitted", async () => {
+    const d = deferred<unknown>();
+    const decisionProvider = { decide: vi.fn(() => d.promise) };
+    const { agent, client, onNotify } = makeHarness({ decisionProvider });
+    await agent.start();
+    client.emitMessage(gameStart(MATCH));
+    client.emitMessage(actionRequest(MATCH));
+    await flushEffects();
+
+    client.sendImpl = () => {
+      throw new Error("socket closed");
+    };
+    d.resolve({ type: "income" });
+    await flushEffects();
+
+    const state = agent.snapshot().state;
+    expect(
+      state?.pendingActions?.[MATCH] ?? state?.pendingAction,
+      "the agent must not believe it answered a turn the socket never carried",
+    ).toBeTruthy();
+    expect(state?.phase).toBe("deciding");
+    expect(onNotify.mock.calls.map(([e]) => e.code)).toContain("fsm.send_failed");
   });
 });

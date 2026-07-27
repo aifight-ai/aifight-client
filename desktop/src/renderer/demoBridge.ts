@@ -230,13 +230,16 @@ export function installDemoBridge(): void {
     llmModelCapabilities: () =>
       Promise.resolve({
         efforts: ["low", "medium", "high", "xhigh", "max"],
+        protocolEfforts: ["low", "medium", "high", "xhigh", "max"],
         storableEfforts: ["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"],
         isKnownModel: true,
         defaultEffort: "high",
         thinkingModes: ["adaptive"],
         thinkingAlwaysOn: false,
+        thinkingDefaultOn: true,
         maxOutputTokens: 128000,
       }),
+    llmDiscoverModels: () => Promise.resolve(null),
     saveLLMProfile: () => Promise.resolve({ ok: false, error: "demo" }),
     setLLMKey: () => Promise.resolve({ ok: false, error: "demo" }),
     clearLLMKey: () => Promise.resolve({ ok: false, error: "demo" }),

@@ -260,18 +260,25 @@ export class AgentInstance {
     // aborted, not waited out (审查 F5) — see the controller in start().
     this.#startAbort?.abort();
 
-    const client = this.#client;
-    if (client !== null && client.state !== "closed") {
-      await client.close(1000, reason);
-    }
     // R13-F02: cancel any in-flight decisions so their paid provider calls stop
-    // rather than run to completion after the agent is gone.
+    // rather than run to completion after the agent is gone. Runs BEFORE the
+    // close await (R15 2026-07-26): a close() that hangs or throws must never
+    // delay or skip these aborts.
     for (const decision of this.#activeDecisions.values()) {
       decision.controller.abort(new DecisionSupersededError(decision.matchId, "stopped"));
     }
     this.#activeDecisions.clear();
-    if (this.#state !== null) {
-      this.#apply({ type: "stop", reason });
+
+    const client = this.#client;
+    try {
+      if (client !== null && client.state !== "closed") {
+        await client.close(1000, reason);
+      }
+    } finally {
+      // The FSM must record the stop even when close() rejects (R15 2026-07-26).
+      if (this.#state !== null) {
+        this.#apply({ type: "stop", reason });
+      }
     }
   }
 
@@ -347,7 +354,7 @@ export class AgentInstance {
           void this.#handleReadinessCheck(message.data);
           return;
         }
-        this.#opts.onServerMessage?.(message);
+        this.#invokeHostHook("onServerMessage", () => this.#opts.onServerMessage?.(message));
         this.#apply({ type: "ws.message", message, now: this.#now() });
       }),
       client.onReconnect((event) => {
@@ -437,13 +444,13 @@ export class AgentInstance {
   async #runEffect(effect: AgentFSMEffect): Promise<void> {
     switch (effect.type) {
       case "send":
-        this.#send(effect.message);
+        this.#send(effect.message, effect.restoreOnFailure);
         return;
       case "request_decision":
         await this.#requestDecision(effect);
         return;
       case "fallback_required":
-        this.#opts.onFallbackRequired?.(effect);
+        this.#invokeHostHook("onFallbackRequired", () => this.#opts.onFallbackRequired?.(effect));
         this.#notify({
           level: "warning",
           code: "agent.fallback_required",
@@ -452,7 +459,9 @@ export class AgentInstance {
         });
         return;
       case "record_result":
-        this.#opts.onResult?.(effect.gameOver, effect.game !== undefined ? { game: effect.game } : {});
+        this.#invokeHostHook("onResult", () =>
+          this.#opts.onResult?.(effect.gameOver, effect.game !== undefined ? { game: effect.game } : {}),
+        );
         return;
       case "notify":
         this.#notify(effect);
@@ -473,7 +482,7 @@ export class AgentInstance {
     }
   }
 
-  #send(message: WSClientMessage): void {
+  #send(message: WSClientMessage, restoreOnFailure?: MsgActionRequest): void {
     const client = this.#requireClient();
     try {
       client.send(message);
@@ -485,6 +494,19 @@ export class AgentInstance {
         message: `Failed to send ${message.type}: ${stringifyCause(e)}`,
         cause: new AgentInstanceEffectError(`send ${message.type} failed`, e),
       });
+      // D2 (windows-loop): tell the FSM. This used to stop at the log line, so
+      // the FSM went on believing the message had gone out — for an `action`
+      // that means the agent thinks it answered, the server never got an answer,
+      // and the turn times out into a judged loss. Feeding it back lets the FSM
+      // put the turn back and re-open the duplicate gate for a redelivery.
+      if (this.#state !== null && this.#state.phase !== "closed") {
+        this.#apply({
+          type: "send.failed",
+          message,
+          ...(restoreOnFailure !== undefined ? { restore: restoreOnFailure } : {}),
+          cause: e,
+        });
+      }
     }
   }
 
@@ -551,16 +573,28 @@ export class AgentInstance {
     }
   }
 
+  // D1 (windows-loop): every term here must be PER MATCH. This used to require
+  // `state.phase === "deciding"`, and phase is one scalar shared by all
+  // concurrent matches — so another match's game_start (or a queue join) lowered
+  // it and this match's finished, already-paid-for decision was dropped as
+  // "stale" before it ever reached the FSM, leaving the turn unanswered for the
+  // server to judge a forfeit.
+  //
+  // Now that phase is derived, that term would be redundant rather than harmful
+  // (a pending action derives "deciding"), so this change is defence in depth,
+  // not a second independent fix — the state-machine change alone closes the
+  // bug. What the term was actually protecting is kept explicitly below: do not
+  // feed a decision to an agent that has been stopped.
   #isDecisionCurrent(token: number, matchId: string): boolean {
     const state = this.#state;
+    if (this.#stopped || state === null || state.phase === "closed") return false;
     const active = this.#activeDecisions.get(matchId);
     const pendingAction =
-      state?.pendingActions?.[matchId] ??
-      (state?.pendingAction?.data.match_id === matchId ? state.pendingAction : undefined);
+      state.pendingActions?.[matchId] ??
+      (state.pendingAction?.data.match_id === matchId ? state.pendingAction : undefined);
     return (
       active?.token === token &&
       active.matchId === matchId &&
-      state?.phase === "deciding" &&
       pendingAction !== undefined
     );
   }
@@ -598,7 +632,7 @@ export class AgentInstance {
   #emitState(): void {
     const snapshot = this.snapshot();
     for (const handler of [...this.#stateHandlers]) {
-      handler(snapshot);
+      this.#invokeHostHook("onState", () => handler(snapshot));
     }
   }
 
@@ -619,8 +653,33 @@ export class AgentInstance {
     });
   }
 
+  /** Dispatch one host callback with isolation (R15 2026-07-26): hosts run
+   *  arbitrary code in these hooks, and a throw must never escape into the
+   *  FSM/effect pipeline — it would drop queued effects (e.g. #apply's
+   *  #emitState runs before #enqueueEffects) or surface as an unhandled
+   *  rejection. Failures are contained and reported through #notify. */
+  #invokeHostHook(hook: string, fn: () => void): void {
+    try {
+      fn();
+    } catch (cause) {
+      this.#notify({
+        level: "error",
+        code: "agent.host_callback",
+        message: `Host callback ${hook} failed: ${stringifyCause(cause)}`,
+        cause,
+      });
+    }
+  }
+
   #notify(event: AgentInstanceNotify): void {
-    this.#opts.onNotify?.(event);
+    try {
+      this.#opts.onNotify?.(event);
+    } catch {
+      // Terminal channel (R15 2026-07-26): a throwing onNotify has nowhere
+      // further to report and must not break its caller — #notify is invoked
+      // from error paths (effect-queue catch, ws error handlers) where a
+      // throw would become an unhandled rejection or kill the dispatch loop.
+    }
   }
 
   #now(): number {

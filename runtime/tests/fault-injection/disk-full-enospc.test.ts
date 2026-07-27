@@ -61,8 +61,10 @@ function expectNoLeakedTmpFiles(): void {
 
 describe("M5-01 disk full — ENOSPC injected at openSync", () => {
   it("writeToken under ENOSPC → RuntimeFilesWriteError(write_failed), errno preserved, no tmp leak", () => {
+    // Match on basename so the predicate is path-separator agnostic
+    // (Windows openSync sees backslash-joined paths from path.join).
     const handle = injectFsOpenSyncError(
-      (p) => p.includes("/token."),
+      (p) => path.basename(p).startsWith("token."),
       "ENOSPC",
     );
 
@@ -89,7 +91,7 @@ describe("M5-01 disk full — ENOSPC injected at openSync", () => {
 
   it("writePort under ENOSPC → wraps consistently (not raw throw)", () => {
     const handle = injectFsOpenSyncError(
-      (p) => p.includes("/port."),
+      (p) => path.basename(p).startsWith("port."),
       "ENOSPC",
     );
 
@@ -111,7 +113,7 @@ describe("M5-01 disk full — ENOSPC injected at openSync", () => {
 
   it("writePid under ENOSPC → same wrap; pid path appears in error.filePath", () => {
     const handle = injectFsOpenSyncError(
-      (p) => p.includes("/pid."),
+      (p) => path.basename(p).startsWith("pid."),
       "ENOSPC",
     );
 

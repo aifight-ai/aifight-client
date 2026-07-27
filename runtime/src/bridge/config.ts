@@ -340,7 +340,17 @@ export function readBridgeConfig(): BridgeConfig {
     throw cause;
   }
 
-  const parsed = JSON.parse(raw) as unknown;
+  // R13 (2026-07-26): wrap the parse like readStoredFieldRefs does — corruption
+  // is an expected state. A raw SyntaxError would otherwise reach the CLI catchall
+  // with the wrong exit class, and modern V8 embeds a source excerpt near the
+  // error position, which for a pre-F10 plaintext bridge.json could echo an apiKey
+  // fragment to stderr. Deliberately no { cause } / parser message for that reason.
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error("bridge config is invalid; run `aifight connect <PAIRING_CODE>` or `aifight setup`");
+  }
   if (!isBridgeConfig(parsed)) {
     throw new Error("bridge config is invalid; run connect again");
   }
@@ -440,7 +450,11 @@ export function redactBridgeConfig(config: BridgeConfig): RedactedBridgeConfig {
 }
 
 function redactSecret(secret: string): string {
-  if (secret.length <= 8) return "***";
+  // R13 (2026-07-26): only show head+tail when at least 12 chars stay hidden.
+  // Token lengths are platform-chosen and validated nowhere; a short (9-16 char)
+  // token previously had 50-89% of its characters preserved in redactBridgeConfig
+  // output, which archiveReplacedBridgeConfig persists to disk indefinitely.
+  if (secret.length < 20) return "***";
   return `${secret.slice(0, 4)}...${secret.slice(-4)}`;
 }
 

@@ -98,10 +98,12 @@ describe("direct-llm self-heal (Batch C)", () => {
 
   it("skips self-heal when too little turn budget remains (F2)", async () => {
     process.env.K = "sk-test";
-    // timeoutMs below the self-heal budget floor → a second full model call
-    // could blow the turn deadline, so we skip it and surface the truncation.
+    // timeoutMs 12s minus the 5s submit margin leaves 7s of call budget: enough
+    // for the first call (≥ the 1s viability floor) but below the self-heal
+    // budget floor (10s) → a second full model call could blow the turn
+    // deadline, so we skip it and surface the truncation.
     const { adapter, maxTokensSeen } = scriptedAdapter("anthropic_messages", [{ truncated: true }, {}]);
-    const out = (await makeProvider(adapter, config(OPUS)).decide({ ...req(), timeoutMs: 5000 })) as { selfHealed?: unknown; truncated?: boolean };
+    const out = (await makeProvider(adapter, config(OPUS)).decide({ ...req(), timeoutMs: 12000 })) as { selfHealed?: unknown; truncated?: boolean };
     expect(maxTokensSeen).toEqual([32000]); // no retry issued
     expect(out.selfHealed).toBeUndefined();
     expect(out.truncated).toBe(true);
@@ -163,10 +165,10 @@ describe("direct-llm self-heal (Batch C)", () => {
     // lands within the turn, not how the client spends it).
     expect(clampDecisionTimeout(9_999_999, 30_000)).toBe(30_000); // requestMs is tighter
     expect(clampDecisionTimeout(180_000, 30_000)).toBe(30_000); // requestMs is tighter
-    expect(clampDecisionTimeout(180_000, 300_000)).toBe(180_000); // server deadline is tighter
+    expect(clampDecisionTimeout(180_000, 300_000)).toBe(175_000); // server deadline is tighter (minus 5s submit margin)
     // no profile timeout → the server deadline governs, capped by the global ceiling
     expect(clampDecisionTimeout(9_999_999, undefined)).toBe(600_000);
-    expect(clampDecisionTimeout(180_000, undefined)).toBe(180_000);
+    expect(clampDecisionTimeout(180_000, undefined)).toBe(175_000);
     // server 0 ("no deadline") → the profile timeout is the fallback (never unbounded)
     expect(clampDecisionTimeout(0, 45_000)).toBe(45_000);
     // server 0 and no profile → global hard cap, never unbounded
@@ -174,10 +176,11 @@ describe("direct-llm self-heal (Batch C)", () => {
 
     // Codex MEDIUM: a POSITIVE server deadline is authoritative and must NOT be
     // rounded UP to the floor — flooring a near-deadline retry back to 1s would
-    // spend a paid call the platform has already timed out. min(requestMs, server)
-    // exactly, even below the floor (the caller then skips a sub-viable call).
-    expect(clampDecisionTimeout(50, 300_000)).toBe(50); // near-deadline retry → tiny, not 1_000
-    expect(clampDecisionTimeout(1, 1)).toBe(1); // server present → not floored (was 1_000)
+    // spend a paid call the platform has already timed out. R13: the 5s submit
+    // margin comes off the server budget first (floored at 0, never negative);
+    // a sub-viable result is then skipped by the caller, never rounded up.
+    expect(clampDecisionTimeout(50, 300_000)).toBe(0); // near-deadline retry → margin floors to 0, not 1_000
+    expect(clampDecisionTimeout(1, 1)).toBe(0); // server present → not floored (margin eats the 1ms)
     // The floor still guards the no-server case (a tiny/zero requestMs governing).
     expect(clampDecisionTimeout(0, 1)).toBe(1_000);
     expect(clampDecisionTimeout(0, 200)).toBe(1_000);

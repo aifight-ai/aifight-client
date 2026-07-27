@@ -102,6 +102,10 @@ export async function installBridgeService(
 ): Promise<BridgeServiceInstallResult> {
   const target = await resolveBridgeServiceTarget(deps);
   const execFile = deps.execFile ?? defaultServiceExecFile;
+  // R15 (2026-07-26): a re-install overwrites the existing (possibly working)
+  // unit/plist before the service manager accepts the new one. Snapshot it so
+  // a failed install can roll back instead of destroying the working service.
+  const previous = snapshotServiceFile(target.unitPath);
   writeServiceFile(target);
 
   try {
@@ -136,10 +140,11 @@ export async function installBridgeService(
         "(see the User=/Group= note in the generated unit). Automatic self-update is off by default.",
     };
   } catch (e) {
-    await cleanupAfterInstallFailure(target, deps);
+    const restored = await cleanupAfterInstallFailure(target, deps, previous);
     throw new BridgeServiceError(
       "service_install_failed",
-      `failed to install ${AIFIGHT_SERVICE_NAME}: ${firstErrorLine(e)}`,
+      `failed to install ${AIFIGHT_SERVICE_NAME}: ${firstErrorLine(e)}` +
+        (restored ? " (the previous service file was restored)" : ""),
       "The bridge can still run in the foreground with `aifight run`.",
     );
   }
@@ -169,7 +174,13 @@ export async function startBridgeService(deps: BridgeServiceDeps = {}): Promise<
   const execFile = deps.execFile ?? defaultServiceExecFile;
   if (target.platform === "darwin-launchd-user") {
     await execFile("launchctl", ["bootstrap", launchdDomain(deps), target.unitPath]).catch(() => undefined);
-    await kickstartLaunchdBestEffort(deps);
+    // R13 (2026-07-26): `service start` must be idempotent. kickstart -k
+    // (kickstartLaunchdBestEffort) KILLS a running instance before restarting —
+    // on macOS that drops the WS mid-match and forfeits by disconnect, whereas
+    // the Linux path below (`systemctl start`) is a no-op on an active unit. Use
+    // the check-first, plain-kickstart helper so an already-running service is
+    // left untouched. -k stays reserved for `service restart`.
+    await ensureLaunchdRunningBestEffort(deps);
     return target;
   }
   await execFile("systemctl", [...systemctlArgs(target.platform), "start", AIFIGHT_SERVICE_NAME]);
@@ -469,20 +480,63 @@ async function enableLingerBestEffort(
   }
 }
 
+interface ServiceFileSnapshot {
+  readonly text: string;
+  readonly mode: number;
+}
+
+/** Read the current unit/plist before a re-install overwrites it. Returns
+ *  undefined on a fresh install (or unreadable file) → nothing to restore. */
+function snapshotServiceFile(unitPath: string): ServiceFileSnapshot | undefined {
+  try {
+    return {
+      text: fs.readFileSync(unitPath, "utf8"),
+      mode: fs.statSync(unitPath).mode & 0o777,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function restoreServiceFile(unitPath: string, previous: ServiceFileSnapshot): boolean {
+  try {
+    writeAtomic(unitPath, previous.text, previous.mode);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Returns true when a pre-existing service file was restored (rollback),
+ *  false when the fresh/broken file was simply removed. All service-manager
+ *  calls here are best-effort — the original install error is what surfaces. */
 async function cleanupAfterInstallFailure(
   target: BridgeServiceTarget,
   deps: BridgeServiceDeps,
-): Promise<void> {
+  previous?: ServiceFileSnapshot,
+): Promise<boolean> {
   const execFile = deps.execFile ?? defaultServiceExecFile;
   if (target.platform === "darwin-launchd-user") {
     await execFile("launchctl", ["bootout", launchdDomain(deps), target.unitPath]).catch(() => undefined);
+    if (previous && restoreServiceFile(target.unitPath, previous)) {
+      // Bring the restored (previously working) job back up, best-effort.
+      await execFile("launchctl", ["bootstrap", launchdDomain(deps), target.unitPath]).catch(() => undefined);
+      return true;
+    }
     fs.rmSync(target.unitPath, { force: true });
-    return;
+    return false;
   }
   const systemctl = systemctlArgs(target.platform);
   await execFile("systemctl", [...systemctl, "disable", "--now", AIFIGHT_SERVICE_NAME]).catch(() => undefined);
+  if (previous && restoreServiceFile(target.unitPath, previous)) {
+    await execFile("systemctl", [...systemctl, "daemon-reload"]).catch(() => undefined);
+    // Re-enable the restored (previously working) unit, best-effort.
+    await execFile("systemctl", [...systemctl, "enable", "--now", AIFIGHT_SERVICE_NAME]).catch(() => undefined);
+    return true;
+  }
   fs.rmSync(target.unitPath, { force: true });
   await execFile("systemctl", [...systemctl, "daemon-reload"]).catch(() => undefined);
+  return false;
 }
 
 async function resolveAifightExec(deps: BridgeServiceDeps): Promise<string> {
@@ -556,13 +610,22 @@ async function assertCommandWorks(
   }
 }
 
-function quoteSystemdExecPath(p: string): string {
-  if (!/[\s"\\]/.test(p)) return p;
-  return `"${p.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+export function quoteSystemdExecPath(p: string): string {
+  // R13 (2026-07-26): systemd expands %-specifiers in ExecStart= (even inside
+  // quotes), so a literal % must be doubled — BEFORE the no-quote early return,
+  // since a %-only path would otherwise bypass all escaping. Precedent: the
+  // launchd plist path already applies its format's xmlEscape.
+  // Exported for unit testing (the escaping rule needs an oracle independent
+  // of the unit-file assembly).
+  const escaped = p.replace(/%/g, "%%");
+  if (!/[\s"\\]/.test(escaped)) return escaped;
+  return `"${escaped.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-function quoteSystemdEnvironment(key: string, value: string): string {
-  return `Environment="${key}=${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+export function quoteSystemdEnvironment(key: string, value: string): string {
+  // Environment= values are also %-specifier expanded; double literal % first.
+  // Exported for unit testing (same reason as quoteSystemdExecPath).
+  return `Environment="${key}=${value.replace(/%/g, "%%").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
 function writeAtomic(filePath: string, text: string, mode: number): void {

@@ -15,6 +15,7 @@ import { buildAppMenu } from "./menu";
 import { loadWindowState, persistWindowState } from "./window-state";
 import { getFlag, setFlag } from "./ui-flags";
 import { initUpdater, checkForUpdates, downloadUpdate, quitAndInstall } from "./updater";
+import { createQuitIntent } from "./quit-intent";
 import { IPC } from "../shared/ipc";
 
 // A stable product name for the macOS app menu, About panel, and userData folder.
@@ -59,9 +60,14 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 // Set on before-quit so the window's "close" handler can tell a real exit
 // (tray "Quit" / ⌘Q / app menu) from a close-to-tray, and let it through.
-let isQuitting = false;
+// D6b: no longer a bare one-way boolean — a failed quitAndInstall (macOS
+// Squirrel failure path) used to leave it stuck true for the rest of the
+// session, turning every later ✕ into a real window close. quit-intent.ts owns
+// the latch semantics; the updater error sink below rolls back ONLY the
+// install-requested half.
+const quitIntent = createQuitIntent();
 app.on("before-quit", () => {
-  isQuitting = true;
+  quitIntent.markRealQuit();
 });
 
 // Single instance: a second launch (double-click while already running in the
@@ -104,7 +110,7 @@ registerBridgeIpc(bridgeHost);
 // lockfile so they can never both connect (the server would otherwise evict them
 // in turn, forever). before-quit gives us no chance to await bridgeHost.stop(),
 // so this is the synchronous half: two unlink syscalls, no I/O worth waiting on.
-// Registered as its OWN listener — the isQuitting one above is declared before
+// Registered as its OWN listener — the quit-intent one above is declared before
 // bridgeHost exists, and quit-time cleanup should not ride on window bookkeeping.
 app.on("before-quit", () => {
   bridgeHost.releaseAgentSeatSync();
@@ -137,9 +143,11 @@ ipcMain.handle(IPC.updateInstall, (event) => {
   // "Restart & update" is a real exit, not a close-to-tray. Without this flag the
   // window's close handler would preventDefault + hide, so electron-updater's
   // quit-to-install never completes and the app merely vanishes to the tray
-  // (the update then only applies on the next genuine quit). Setting isQuitting
-  // lets the quit through so the update installs and the app relaunches now.
-  isQuitting = true;
+  // (the update then only applies on the next genuine quit). Setting the
+  // install intent lets the quit through so the update installs and the app
+  // relaunches now — and unlike a real quit, this intent is ROLLED BACK by the
+  // updater error sink if the install fails and no quit ever happens (D6b).
+  quitIntent.markInstallRequested();
   quitAndInstall();
 });
 
@@ -204,10 +212,10 @@ function createWindow(): void {
 
   // Closing the window (red X / Alt+F4) hides it to the tray / menu bar rather
   // than quitting, so the bridge keeps the agent online in the background. A real
-  // exit (tray "Quit" / ⌘Q / app menu) sets isQuitting via before-quit, which lets
+  // exit (tray "Quit" / ⌘Q / app menu) marks the quit intent via before-quit, which lets
   // this close proceed. Telegram/Slack-style background behavior.
   mainWindow.on("close", (event) => {
-    if (!isQuitting && mainWindow !== null) {
+    if (!quitIntent.isQuitting() && mainWindow !== null) {
       event.preventDefault();
       mainWindow.hide();
       maybeShowBackgroundHint();
@@ -246,7 +254,7 @@ function createTray(): void {
       {
         label: "Quit AIFight",
         click: () => {
-          isQuitting = true;
+          quitIntent.markRealQuit();
           app.quit();
         },
       },
@@ -285,7 +293,15 @@ app.whenReady().then(async () => {
 
   // Auto-update: forward the updater lifecycle to the renderer; check on launch
   // (packaged builds only — see updater.ts).
-  initUpdater((status) => broadcast(IPC.updateStatus, status));
+  initUpdater((status) => {
+    // D6b: the recommended reset point. Every updater error flows through this
+    // sink, including the macOS Squirrel quitAndInstall failure — which is the
+    // one that strands the quit latch (windows were told to close, no quit
+    // followed). Only the install-requested half is rolled back; see
+    // quit-intent.ts for why a real quit must stay untouchable here.
+    if (status.state === "error") quitIntent.onUpdaterError();
+    broadcast(IPC.updateStatus, status);
+  });
 
   createWindow();
   createTray();

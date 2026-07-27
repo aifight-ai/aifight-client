@@ -8,8 +8,9 @@
 // - File secrets must be chmod 0600
 // - env_file paths must be explicitly configured
 
-import { readFile, lstat, writeFile, mkdir, chmod } from "node:fs/promises";
+import { readFile, lstat, writeFile, mkdir, chmod, rename, rm } from "node:fs/promises";
 import type { Stats } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
 import { homedir } from "node:os";
 
@@ -195,9 +196,24 @@ export async function storeSecretFile(
 ): Promise<void> {
   const resolved = expandHome(filePath);
   await mkdir(dirname(resolved), { recursive: true, mode: 0o700 });
-  await writeFile(resolved, value + "\n", { mode: 0o600 });
-  // Ensure permissions even if file already existed
-  await chmod(resolved, 0o600);
+  // R13 (2026-07-26): write atomically (unique tmp + rename), matching every
+  // other durable writer in the tree (account/credentials.ts, bridge/config.ts,
+  // daemon/runtime-files-write.ts). A bare in-place writeFile truncates first, so
+  // a crash mid-write destroys the only copy of the key, and a concurrent
+  // mid-match reader can catch the truncate window (empty-file throw → failed
+  // turn). rename is atomic (all-or-nothing) and replaces a symlink at the target
+  // rather than following it (consistent with resolveFile's no-symlink gate).
+  const tmp = `${resolved}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    await writeFile(tmp, value + "\n", { mode: 0o600, flag: "wx" });
+    // writeFile's mode is masked by umask; re-assert 0600 on the fresh tmp before
+    // it becomes the live key (POSIX only — Windows ignores mode bits).
+    if (process.platform !== "win32") await chmod(tmp, 0o600);
+    await rename(tmp, resolved);
+  } catch (cause) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw cause;
+  }
 }
 
 /**

@@ -39,7 +39,7 @@ const ANTHROPIC_VERSION = "2023-06-01";
 // family — a duplicated fact drifts, a looked-up one cannot.
 //
 //   adaptive → thinking:{type:"adaptive"} + output_config:{effort}
-//   extended → thinking:{type:"enabled", budget_tokens:N}   (4.5 generation, 3.7)
+//   extended → thinking:{type:"enabled", budget_tokens:N}   (Opus 4.1, 4.5 generation)
 //
 // Claude 4.7 and later REJECT type:"enabled" with HTTP 400, so for a model the
 // registry has never heard of, ADAPTIVE is the right guess: an unrecognized id is
@@ -148,8 +148,11 @@ function buildRequestBody(
   // C1 (prompt-cache): carry the system prompt as a single text block with a
   // cache_control breakpoint at its end, so the (tools→)system prefix is
   // cacheable on api.anthropic.com. A prefix below the model's minimum
-  // cacheable length (Opus 4.8 = 4096, Fable 5 = 2048 tokens) silently won't
-  // cache — expected for most users' short system prompts (cache spec §10.1-B2);
+  // cacheable length silently won't cache — and that minimum is NOT monotonic by
+  // generation (per the prompt-caching docs, verified 2026-07-26: Opus 5 and
+  // Fable 5 = 512, Opus 4.8 = 1024, Opus 4.7 = 2048, Opus 4.6 and Haiku 4.5 =
+  // 4096), so it cannot be inferred from the model id. Expected for most users'
+  // short system prompts (cache spec §10.1-B2);
   // long-strategy users benefit immediately. Empty system → omit the field.
   if (input.systemPrompt) {
     body.system = [
@@ -174,14 +177,22 @@ function buildRequestBody(
     return body;
   }
 
-  switch (thinkingShapeFor(profile.model)) {
-    case "adaptive":
+  const shape = thinkingShapeFor(profile.model);
+  switch (shape) {
+    case "adaptive": {
       // Adaptive thinking + effort. display "omitted" is fine and faster — we only
       // need the final action text, not a thinking summary.
       body.thinking = { type: "adaptive", display: reasoning?.display ?? "omitted" };
-      body.output_config = { effort: clampEffortForModel(mapEffort(effort) ?? "high", profile.model) };
+      // No tier picked / "auto" → omit output_config so Anthropic's own default
+      // applies (documented as identical to effort:"high" today, and free to
+      // evolve with the API). An explicit tier is clamped per the registry.
+      const mapped = mapEffort(effort);
+      if (mapped !== undefined) {
+        body.output_config = { effort: clampEffortForModel(mapped, profile.model) };
+      }
       // Thinking active → leave temperature unset (Anthropic requirement).
       break;
+    }
     case "extended": {
       // 4.5 generation and older: manual extended thinking via enabled + budget_tokens.
       const budget = Math.max(1024, reasoning?.budgetTokens ?? 4096);
@@ -189,9 +200,19 @@ function buildRequestBody(
       // Manual thinking also requires temperature unset.
       break;
     }
-    default:
+    case "none":
       // Registry says this model cannot think at all: plain request.
       if (input.temperature !== null) body.temperature = input.temperature;
+      break;
+    default: {
+      // If Anthropic ever ships a third thinking wire shape, thinkingShapeFor
+      // gains a member and this stops compiling. Falling through to the plain
+      // request instead would drop the user's whole reasoning config in silence —
+      // the failure mode this adapter already survived once.
+      const _exhaustive: never = shape;
+      void _exhaustive;
+      if (input.temperature !== null) body.temperature = input.temperature;
+    }
   }
 
   return body;
@@ -330,7 +351,13 @@ function parseResponse(raw: AnthropicResponse): {
   let reasoningSummary: string | undefined;
   let fullThinking = "";
 
-  for (const block of raw.content) {
+  // A 200 body from a non-conforming proxy may be {}/null/scalar with no
+  // `content` array. Guard before iterating so the missing-text path throws a
+  // classified AdapterError('invalid_response') below, not a raw TypeError —
+  // mirrors redact()'s `response.content ?? []` guard in this file.
+  const blocks = Array.isArray(raw?.content) ? raw.content : [];
+
+  for (const block of blocks) {
     if (block.type === "text") {
       text += (block as AnthropicTextBlock).text;
     } else if (block.type === "thinking") {
@@ -349,9 +376,9 @@ function parseResponse(raw: AnthropicResponse): {
     reasoningSummary = fullThinking;
   }
 
-  const stopReason = normalizeAnthropicStop(raw.stop_reason);
+  const stopReason = normalizeAnthropicStop(raw?.stop_reason ?? null);
 
-  if (isContentFilterReason(raw.stop_reason)) {
+  if (isContentFilterReason(raw?.stop_reason)) {
     throw new AdapterError("content_filter", PROTOCOL, "Anthropic declined the request (stop_reason: refusal)");
   }
 
@@ -368,22 +395,6 @@ function parseResponse(raw: AnthropicResponse): {
   }
 
   return { text: text.trim(), reasoningSummary, ...(stopReason ? { stopReason } : {}) };
-}
-
-// ─── Approximate pricing (USD per 1M tokens, as of 2025-Q3) ─────────
-
-const PRICING: Record<string, { input: number; output: number; cached?: number }> = {
-  "claude-opus-4": { input: 15, output: 75, cached: 1.5 },
-  "claude-sonnet-4": { input: 3, output: 15, cached: 0.3 },
-  "claude-haiku-3": { input: 0.25, output: 1.25, cached: 0.03 },
-};
-
-function findPricing(model: string) {
-  for (const [key, price] of Object.entries(PRICING)) {
-    if (model.includes(key)) return price;
-  }
-  // Unknown model — return zero so we don't crash
-  return { input: 0, output: 0, cached: 0 };
 }
 
 // ─── Adapter implementation ──────────────────────────────────────────
@@ -520,30 +531,28 @@ export function createAnthropicMessagesAdapter(): LLMAdapter {
     },
 
     estimateUsage(output: DecisionOutput, profile: LLMProfile): UsageRecord {
-      const pricing = findPricing(profile.model);
-      const inputTokens = output.inputTokens ?? 0;
-      const outputTokens = output.outputTokens ?? 0;
-      const cachedTokens = output.cachedTokens ?? 0;
-      const cacheWriteTokens = output.cacheWriteTokens ?? 0;
-
-      const billableInput = inputTokens - cachedTokens - cacheWriteTokens;
-      const estimatedCostUSD =
-        (Math.max(0, billableInput) * pricing.input +
-          (cachedTokens * (pricing.cached ?? pricing.input)) +
-          cacheWriteTokens * pricing.input +
-          outputTokens * pricing.output) /
-        1_000_000;
-
+      // B8 (windows-loop, 2026-07-26): no built-in price table, per the owner
+      // decision that this codebase ships no hardcoded prices. The table that
+      // used to live here was also wrong by construction — its newest entry was
+      // "claude-opus-4" at 2025-Q3 rates, so every Claude 4.5+/5 model matched
+      // NOTHING and the fallback computed a cost of exactly $0.00.
+      //
+      // Nothing consumed the number (checked: no reader anywhere in the repo).
+      // The cost users actually see comes from their own `aifight prices` table
+      // via usage/stats.ts, over the separate persisted UsageRecord, which has no
+      // cost field at all — so this was a wrong answer nobody was even reading.
+      // Token counts below are real and unaffected; this now matches every other
+      // adapter (OpenAI Responses, DeepSeek): report usage, leave pricing alone.
       return {
         protocol: PROTOCOL,
         providerLabel: "Anthropic",
         model: profile.model,
-        inputTokens,
-        outputTokens,
+        inputTokens: output.inputTokens ?? 0,
+        outputTokens: output.outputTokens ?? 0,
         reasoningTokens: output.reasoningTokens,
-        cachedTokens,
-        cacheWriteTokens,
-        estimatedCostUSD,
+        cachedTokens: output.cachedTokens ?? 0,
+        cacheWriteTokens: output.cacheWriteTokens ?? 0,
+        estimatedCostUSD: undefined,
         latencyMs: output.latencyMs,
         timestamp: new Date().toISOString(),
       };

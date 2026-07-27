@@ -31,7 +31,9 @@ describe("loadTranscript helper", () => {
     expect(t.entries.length).toBe(38);
     expect(t.category).toBe("happy_path");
     expect(t.name).toBe("happy_path/texas_holdem_4player.jsonl");
-    expect(t.absPath.endsWith("happy_path/texas_holdem_4player.jsonl")).toBe(true);
+    // absPath uses the platform's native separator (backslash on Windows);
+    // normalise to POSIX before comparing against the POSIX-style suffix.
+    expect(t.absPath.replace(/\\/g, "/").endsWith("happy_path/texas_holdem_4player.jsonl")).toBe(true);
     expect(t.bytes).toBeGreaterThan(0);
   });
 
@@ -232,7 +234,9 @@ describe("transcripts corpus health", () => {
 
   it("TRANSCRIPTS_ROOT resolves under repo root", () => {
     // Sanity check: helper export points at protocol/transcripts/.
-    expect(TRANSCRIPTS_ROOT).toMatch(/protocol\/transcripts$/);
+    // TRANSCRIPTS_ROOT uses the platform's native separator (backslash on
+    // Windows); normalise to POSIX before matching the POSIX-style regex.
+    expect(TRANSCRIPTS_ROOT.replace(/\\/g, "/")).toMatch(/protocol\/transcripts$/);
   });
 });
 

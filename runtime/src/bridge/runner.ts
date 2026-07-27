@@ -270,6 +270,13 @@ export class BridgeRunner {
   #matchContext = new MatchContextTracker();
   /** R13-F08: last credential observed on disk — logs rotation exactly once. */
   #lastKnownApiKey: string;
+  /** R15 (2026-07-26): connection-state subscribers registered before start()
+   *  produced a connected agent. They used to get a no-op unsubscribe and never
+   *  a snapshot; now start() attaches them once the reconnect client exists. */
+  readonly #pendingConnHandlers = new Set<{
+    readonly handler: ReconnectStateHandler;
+    unsubscribe: (() => void) | null;
+  }>();
   #manualSeries: {
     readonly game: "texas_holdem" | "liars_dice" | "coup";
     readonly mode?: string;
@@ -391,8 +398,21 @@ export class BridgeRunner {
         this.#log("error", "bridge.credential_rejected", CREDENTIAL_REJECTED_MESSAGE);
         throw new BridgeCredentialRejectedError(CREDENTIAL_REJECTED_MESSAGE, { cause: err });
       }
+      // R13 (2026-07-26): any other fatal first-connect error (protocol-version
+      // skew, invalid welcome, non-mismatch 4xx) must also clear #agent, or a
+      // host that retries start() on the same runner hits the `#agent !== null`
+      // short-circuit at start() and gets a success-shaped snapshot of a dead
+      // agent that never connected. The three special-cased resets above prove
+      // retry-on-same-runner is a supported pattern; this is the missing arm.
+      this.#agent = null;
       throw err;
     }
+    // R15 (2026-07-26): attach subscribers that arrived before the connection
+    // existed; each gets the facade's immediate snapshot fire on attach.
+    for (const entry of this.#pendingConnHandlers) {
+      entry.unsubscribe = agent.onConnectionStateChange(entry.handler);
+    }
+    this.#pendingConnHandlers.clear();
     this.#log("info", "bridge.connected", `Connected ${this.#opts.config.agentName}`);
     void this.#warnIfTermsPending();
     if (this.#opts.autoJoinGame) {
@@ -462,11 +482,22 @@ export class BridgeRunner {
   }
 
   /** Connection-state projection (P4) — hosts derive their UI phase from
-   *  THESE snapshots, never by narrating the log stream. */
+   *  THESE snapshots, never by narrating the log stream. Subscribing before
+   *  start() completes is allowed: the handler is buffered and attached (with
+   *  the facade's immediate snapshot fire) once the connection exists. */
   onConnectionStateChange(handler: ReconnectStateHandler): () => void {
     const agent = this.#agent;
-    if (agent === null) return () => {};
-    return agent.onConnectionStateChange(handler);
+    // connectionSnapshot() is null exactly while the reconnect client does not
+    // exist yet (before start() / start() in flight) — attaching then throws.
+    if (agent !== null && agent.connectionSnapshot() !== null) {
+      return agent.onConnectionStateChange(handler);
+    }
+    const entry = { handler, unsubscribe: null as (() => void) | null };
+    this.#pendingConnHandlers.add(entry);
+    return () => {
+      this.#pendingConnHandlers.delete(entry);
+      entry.unsubscribe?.();
+    };
   }
 
   connectionSnapshot(): ReconnectStateSnapshot | null {
@@ -489,7 +520,11 @@ export class BridgeRunner {
       /* keep the cached key */
     }
     try {
-      const res = await fetch(url, {
+      // R13 (2026-07-26): X-API-Key is secret-bearing, so use the no-follow guard
+      // like the sibling #warnIfTermsPending — a 3xx to a foreign origin would
+      // otherwise replay the platform key to that origin. fetchNoFollow throws on
+      // any redirect; the catch below maps that to null (probe unavailable).
+      const res = await fetchNoFollow(url, {
         method: "GET",
         headers: {
           "X-API-Key": apiKey,

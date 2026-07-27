@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { clearAdapters, registerBuiltinAdapters, requireAdapter } from "../src/llm/adapter-registry";
 import type { CanonicalReasoningConfig, LLMProfile } from "../src/llm/adapters/types";
+import { loadCapabilityRegistry } from "../src/llm/capabilities/validate-capabilities";
 import { resolveLLMProfile } from "../src/llm/resolve-profile";
 import type { LLMProfile as ConfigLLMProfile } from "../src/profile/config-schema";
 
@@ -177,6 +178,37 @@ function genConfig(body: Record<string, unknown>): Record<string, unknown> {
   return body.generationConfig as Record<string, unknown>;
 }
 
+// B5. Which thinking parameter a Gemini model takes is declared once, as
+// `thinkingParam` in model-capabilities.json. The adapter used to decide it again
+// with its own id regexes — a second hand-maintained discriminator, which is the
+// shape of drift that misclassified the whole Claude 5 family. The regexes are now
+// only the unlisted-model fallback, and this walks the registry to prove the
+// declared parameter is the one that actually reaches the wire: a future entry the
+// adapter does not honour fails here instead of shipping.
+describe("gemini adapter: the registry decides the thinking parameter", () => {
+  // Turn a registry pattern into an id that matches it (same trick as Go's
+  // repModelID in compat_contract_test.go).
+  function representativeId(pattern: string): string {
+    return pattern
+      .replace(/^\^/, "")
+      .replace(/\\\./g, ".")
+      .replace(/\.\*/g, "-x-")
+      .replace(/\(([^)|]+)(\|[^)]*)?\)/g, "$1");
+  }
+
+  it("every listed gemini model emits the parameter its entry declares", async () => {
+    const models = loadCapabilityRegistry().protocols["gemini_generate_content"]?.models ?? [];
+    expect(models.length).toBeGreaterThan(0);
+    for (const entry of models) {
+      if (entry.thinkingParam === undefined) continue;
+      const id = representativeId(entry.pattern);
+      const body = await callGemini(id, { enabled: true, effort: "high" });
+      const thinking = genConfig(body).thinkingConfig as Record<string, unknown>;
+      expect(Object.keys(thinking), `${id} (pattern ${entry.pattern})`).toEqual([entry.thinkingParam]);
+    }
+  });
+});
+
 describe("gemini adapter: per-model thinking", () => {
   it("gemini-2.5* + effort high -> thinkingConfig.thinkingBudget (token count)", async () => {
     const b = await callGemini("gemini-2.5-pro", { enabled: true, effort: "high" });
@@ -198,9 +230,35 @@ describe("gemini adapter: per-model thinking", () => {
     expect(genConfig(b).thinkingConfig).toEqual({ thinkingLevel: "low" });
   });
 
+  it("gemini-3 Pro clamps minimal to low (Pro rejects minimal; matches Go NormalizeGeminiThinkingLevel)", async () => {
+    const b = await callGemini("gemini-3.1-pro", { enabled: true, thinkingLevel: "minimal" });
+    expect(genConfig(b).thinkingConfig).toEqual({ thinkingLevel: "low" });
+  });
+
+  it("gemini-3 flash keeps minimal (flash/lite accept it)", async () => {
+    const b = await callGemini("gemini-3-flash", { enabled: true, effort: "minimal" });
+    expect(genConfig(b).thinkingConfig).toEqual({ thinkingLevel: "minimal" });
+  });
+
   it("non-thinking Gemini (2.0) ignores reasoning -> no thinkingConfig", async () => {
+    // 2.0/1.x are a CLOSED backward set that really has no thinking API.
     const b = await callGemini("gemini-2.0-flash", { enabled: true, effort: "high" });
     expect(genConfig(b).thinkingConfig).toBeUndefined();
+  });
+
+  it("an unrecognized Gemini gets the newest shape instead of silent drop", async () => {
+    // Same policy as unknown Claude → adaptive: unknown ⇒ newest wire shape.
+    // The old fallback ignored reasoning entirely, which is how a whole model
+    // generation can lose its configured effort without anyone noticing.
+    const b = await callGemini("gemini-4-pro", { enabled: true, effort: "high" });
+    expect(genConfig(b).thinkingConfig).toEqual({ thinkingLevel: "high" });
+  });
+
+  it("auto (or no tier) on a thinkingLevel Gemini omits thinkingConfig", async () => {
+    const b = await callGemini("gemini-3.6-flash", { enabled: true, effort: "auto" });
+    expect(genConfig(b).thinkingConfig).toBeUndefined();
+    const b2 = await callGemini("gemini-3.6-flash", { enabled: true });
+    expect(genConfig(b2).thinkingConfig).toBeUndefined();
   });
 
   it("reasoning disabled -> no thinkingConfig", async () => {
@@ -296,10 +354,12 @@ describe("Claude 5 family reasoning shape", () => {
     }
   });
 
-  // Both directions of the 400: 4.7+ reject type:"enabled", the 4.5 generation
+  // Both directions of the 400: 4.7+ reject type:"enabled", the manual-only set
   // rejects type:"adaptive". The registry's thinkingModes is what keeps them apart.
-  it("keeps the 4.5 generation on manual budget_tokens", async () => {
-    for (const model of ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"]) {
+  // Opus 4.1 is in this list because it is the oldest still-callable Claude
+  // (retires 2026-08-05) and was the last one missing from the registry.
+  it("keeps the manual-thinking-only set on budget_tokens", async () => {
+    for (const model of ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-1"]) {
       const body = await callAnthropic(model, { enabled: true, budgetTokens: 8000 }, 0.7);
       expect(body.thinking, model).toEqual({ type: "enabled", budget_tokens: 8000 });
       expect(body, model).not.toHaveProperty("output_config");
@@ -339,5 +399,122 @@ describe("Claude 5 family reasoning shape", () => {
     expect(body).not.toHaveProperty("thinking");
     expect(body).not.toHaveProperty("output_config");
     expect(body.temperature).toBe(0.7);
+  });
+});
+
+// ── 2026-07-26 batch: chat pass-through, responses max, auto tier ──
+
+function stubJSONCapture(responseText: string): { body: () => Record<string, unknown> } {
+  let captured: Record<string, unknown> = {};
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: unknown, init: unknown) => {
+      captured = JSON.parse((init as { body: string }).body);
+      return { ok: true, status: 200, text: async () => responseText, json: async () => JSON.parse(responseText) } as unknown as Response;
+    }),
+  );
+  return { body: () => captured };
+}
+
+function chatResponse(): string {
+  return JSON.stringify({
+    choices: [{ message: { content: "OK" }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 1, completion_tokens: 1 },
+  });
+}
+
+async function callChat(protocol: "openai_chat_completions" | "openai_chat_compat", model: string, reasoning?: CanonicalReasoningConfig) {
+  await registerBuiltinAdapters();
+  const adapter = requireAdapter(protocol);
+  const cap = stubJSONCapture(chatResponse());
+  await adapter.generateDecision(
+    { systemPrompt: "s", userPrompt: "u", maxTokens: 1024, temperature: 0.7, reasoning },
+    {
+      profileId: "p", displayName: "p", protocol, model, apiKey: "sk",
+      baseURL: "https://proxy.example.com/v1",
+      temperature: 0.7, maxTokens: 1024,
+      timeouts: { requestMs: 1000 }, retries: { maxAttempts: 1 },
+    },
+  );
+  return cap.body();
+}
+
+// The user-visible regression this batch fixes: both chat protocols REFUSED
+// reasoning outright ("Protocol does not support thinking"), so a reasoning model
+// behind a compat proxy silently ran at the endpoint's default effort. Verbatim
+// pass-through can 400 on an endpoint that doesn't know the field — loud and
+// diagnosable, unlike the silence it replaces.
+describe("chat protocols: reasoning_effort pass-through", () => {
+  for (const protocol of ["openai_chat_completions", "openai_chat_compat"] as const) {
+    it(`${protocol} forwards a configured effort verbatim`, async () => {
+      const body = await callChat(protocol, "gpt-5.6-sol", { enabled: true, effort: "max" });
+      expect(body.reasoning_effort).toBe("max");
+    });
+
+    it(`${protocol} sends nothing for auto / unset / disabled`, async () => {
+      expect((await callChat(protocol, "gpt-5.6-sol", { enabled: true, effort: "auto" })).reasoning_effort).toBeUndefined();
+      expect((await callChat(protocol, "gpt-5.6-sol", { enabled: true })).reasoning_effort).toBeUndefined();
+      expect((await callChat(protocol, "gpt-5.6-sol", { enabled: false, effort: "high" })).reasoning_effort).toBeUndefined();
+      expect((await callChat(protocol, "gpt-4o")).reasoning_effort).toBeUndefined();
+    });
+  }
+});
+
+function responsesEffortResponse(): string {
+  return JSON.stringify({
+    output: [{ type: "message", content: [{ type: "output_text", text: "OK" }] }],
+    usage: { input_tokens: 1, output_tokens: 1 },
+  });
+}
+
+async function callResponsesEffort(model: string, reasoning?: CanonicalReasoningConfig) {
+  await registerBuiltinAdapters();
+  const adapter = requireAdapter("openai_responses");
+  const cap = stubJSONCapture(responsesEffortResponse());
+  await adapter.generateDecision(
+    { systemPrompt: "s", userPrompt: "u", maxTokens: 1024, temperature: null, reasoning },
+    {
+      profileId: "p", displayName: "p", protocol: "openai_responses", model, apiKey: "sk",
+      baseURL: "https://api.openai.com/v1",
+      temperature: null, maxTokens: 1024,
+      timeouts: { requestMs: 1000 }, retries: { maxAttempts: 1 },
+    },
+  );
+  return cap.body();
+}
+
+describe("openai responses: max tier routing (GPT-5.6)", () => {
+  it("gpt-5.6 keeps max — the first OpenAI ladder that has it", async () => {
+    const body = await callResponsesEffort("gpt-5.6-sol", { enabled: true, effort: "max" });
+    expect((body.reasoning as Record<string, unknown>).effort).toBe("max");
+  });
+
+  it("gpt-5.5 clamps max down to its highest listed tier (xhigh)", async () => {
+    const body = await callResponsesEffort("gpt-5.5", { enabled: true, effort: "max" });
+    expect((body.reasoning as Record<string, unknown>).effort).toBe("xhigh");
+  });
+
+  it("auto / unset omit the effort key so the provider default applies", async () => {
+    // GPT-5.4's API default is none — the validateProfile warning covers that;
+    // "auto" means the provider decides, so the adapter must not editorialize.
+    const b1 = await callResponsesEffort("gpt-5.5", { enabled: true, effort: "auto" });
+    expect((b1.reasoning as Record<string, unknown>).effort).toBeUndefined();
+    const b2 = await callResponsesEffort("gpt-5.5", { enabled: true });
+    expect((b2.reasoning as Record<string, unknown>).effort).toBeUndefined();
+  });
+
+  it("an unlisted model passes the tier through untouched", async () => {
+    const body = await callResponsesEffort("gpt-6-imaginary", { enabled: true, effort: "max" });
+    expect((body.reasoning as Record<string, unknown>).effort).toBe("max");
+  });
+});
+
+describe("anthropic: the auto tier", () => {
+  it("auto / unset omit output_config so Anthropic's default applies", async () => {
+    const b1 = await callAnthropic("claude-opus-5", { enabled: true, effort: "auto" }, null);
+    expect(b1.thinking).toMatchObject({ type: "adaptive" });
+    expect(b1).not.toHaveProperty("output_config");
+    const b2 = await callAnthropic("claude-opus-5", { enabled: true }, null);
+    expect(b2).not.toHaveProperty("output_config");
   });
 });

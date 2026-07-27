@@ -16,12 +16,15 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 import type { HandlerArgs, HandlerEnv } from "../shared.js";
 import { CommandError, UsageError } from "../shared.js";
 import { resolveAgentDir, ensureAgentDir } from "../../profile/profile-loader.js";
 import {
+  DEFAULT_MAX_TOKENS,
   validateConfig,
+  STORABLE_REASONING_EFFORTS,
   type LLMConfig,
   type LLMProfile,
   type Protocol,
@@ -48,7 +51,7 @@ import {
   type ProfileBuildSettings,
 } from "./config-shared.js";
 
-const DEFAULT_MAX_TOKENS = 32000;
+// DEFAULT_MAX_TOKENS comes from config-schema (D16 single source, 32000).
 const MIN_MAX_TOKENS = 256;
 // Per-call request timeout is user-set in whole seconds; a turn is 300s, so a
 // longer wait is pointless. Stored in the profile as ms (seconds × 1000).
@@ -113,7 +116,8 @@ export async function runConfigAdd(args: HandlerArgs, env: HandlerEnv): Promise<
   const setActive = boolFlag(args.flags, "use") || (await shouldBecomeActive(existing));
   const config = mergeProfile(existing, profileId, profile, setActive);
 
-  return finishEdit({ slug, profileId, config, action: "add", setActive, args, env, ...(rec.note ? { notes: [rec.note] } : {}) });
+  const addNotes = [...(resolvedSettings.notes ?? []), ...(rec.note ? [rec.note] : [])];
+  return finishEdit({ slug, profileId, config, action: "add", setActive, args, env, ...(addNotes.length > 0 ? { notes: addNotes } : {}) });
 }
 
 // ─── update ──────────────────────────────────────────────────────────
@@ -189,7 +193,8 @@ export async function runConfigUpdate(args: HandlerArgs, env: HandlerEnv): Promi
 
   // D7: re-test only when something connectivity-relevant changed.
   const changed = keySourceGiven || newModel !== current.model || newBaseURL !== current.baseURL;
-  return finishEdit({ slug, profileId, config, action: "update", setActive, args, env, skipTest: !changed, ...(rec.note ? { notes: [rec.note] } : {}) });
+  const updNotes = [...(settings.notes ?? []), ...(rec.note ? [rec.note] : [])];
+  return finishEdit({ slug, profileId, config, action: "update", setActive, args, env, skipTest: !changed, ...(updNotes.length > 0 ? { notes: updNotes } : {}) });
 }
 
 /** Extract the editable settings from a stored profile (for update's base). */
@@ -341,9 +346,13 @@ export function resolveProfileSettings(
   base: ProfileBuildSettings | undefined,
 ): ProfileBuildSettings {
   const caps = resolveModelCapabilities(protocol, model);
+  const notes: string[] = [];
 
   // ── thinking ──
-  let thinkingEnabled = base?.thinkingEnabled ?? true; // D5: on by default
+  // D5: on by default — except pass-through protocols (chat families), whose
+  // endpoint's model may not reason at all; there the default is off and an
+  // explicit --thinking on opts in.
+  let thinkingEnabled = base?.thinkingEnabled ?? caps.thinkingDefaultOn;
   const thinking = onOffFlag(flags, "thinking");
   if (!thinking.ok) {
     throw configError("config_bad_thinking", {
@@ -372,16 +381,21 @@ export function resolveProfileSettings(
       });
     }
     const norm = normalizeEffort(effortRaw.toLowerCase());
-    const allowed = caps.efforts.map((e) => normalizeEffort(e));
-    // Only the capability registry can authoritatively reject an effort, and
-    // only for a model it actually knows. New models keep arriving with their
-    // own effort vocabularies — for an unknown model, accept the value as given
-    // and let the auto-test be the source of truth rather than blocking it.
-    if (caps.isKnownModel && allowed.length > 0 && !allowed.includes(norm)) {
+    // The closed storable set is the only hard gate (redesign §4.4) — a value
+    // outside it would fail config.json's schema after the fact, so block it
+    // here with the full list instead.
+    if (!STORABLE_REASONING_EFFORTS.includes(norm)) {
       throw configError("config_bad_effort", {
-        problem: `effort "${effortRaw}" is not valid for model "${model}"`,
-        valid: `Supported effort levels: ${allowed.join(", ")}`,
+        problem: `effort "${effortRaw}" isn't a level this app can save`,
+        valid: `Levels: ${STORABLE_REASONING_EFFORTS.join(", ")} (auto = the provider's default).`,
       });
+    }
+    // Same rule as the app editor and the wizard: a storable tier the model's
+    // own list lacks is CLAMPED at send time, not rejected — per-model lists
+    // annotate, they don't gate. "auto" sends nothing, so it never clamps.
+    const allowed = caps.efforts.map((e) => normalizeEffort(e));
+    if (norm !== "auto" && caps.isKnownModel && allowed.length > 0 && !allowed.includes(norm)) {
+      notes.push(`${model} doesn't list effort "${norm}" — it will be clamped when sent (listed: ${allowed.join(", ")}).`);
     }
     effort = norm;
   }
@@ -502,6 +516,7 @@ export function resolveProfileSettings(
     temperature,
     ...(verbosity ? { verbosity } : {}),
     ...(features && Object.keys(features).length > 0 ? { features } : {}),
+    ...(notes.length > 0 ? { notes } : {}),
   };
 }
 
@@ -686,9 +701,18 @@ export async function writeValidatedConfig(slug: string, config: LLMConfig): Pro
   }
   await ensureAgentDir(slug);
   const configPath = path.join(resolveAgentDir(slug), "config.json");
-  const tmp = `${configPath}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(config, null, 2) + "\n", "utf8");
-  await fs.rename(tmp, configPath);
+  // R13 (2026-07-26): unique tmp name + rm-on-failure, matching the sibling
+  // writeConfigJson (cli/commands/config.ts). Two concurrent writers sharing one
+  // fixed ".tmp" could rename a torn file into place (this file was missed by
+  // that earlier sweep) and any throw left config.json.tmp behind.
+  const tmp = `${configPath}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify(config, null, 2) + "\n", "utf8");
+    await fs.rename(tmp, configPath);
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 // ─── small pure helpers ──────────────────────────────────────────────

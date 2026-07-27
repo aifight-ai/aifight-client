@@ -80,6 +80,24 @@ describe("strategy scopes follow the live list", () => {
     expect(w.ok).toBe(false);
   });
 
+  // R12 (2026-07-26): only a MISSING file is an empty doc. A real read error must
+  // surface, not masquerade as empty — otherwise the editor shows a blank doc and
+  // a subsequent save silently overwrites the real strategy.
+  it("🔒 a non-ENOENT read error surfaces as an error, not a silently-empty doc", () => {
+    freshHome();
+    writeBridgeConfig(validConfig());
+    expect(writeStrategy([...LIVE], "global", "# my real global strategy").ok).toBe(true);
+    // Replace the file with a directory of the same name → readFileSync throws
+    // EISDIR (a non-ENOENT error) deterministically on every platform.
+    const globalPath = readStrategy([...LIVE]).docs.find((d) => d.scope === "global")!.path;
+    fs.rmSync(globalPath);
+    fs.mkdirSync(globalPath);
+
+    const r = readStrategy([...LIVE]);
+    expect(r.error).toBeDefined();
+    expect(r.docs).toEqual([]); // must NOT present an empty editable doc
+  });
+
   it("🔒 rejects path-unsafe scopes regardless of the list (traversal gate)", () => {
     freshHome();
     writeBridgeConfig(validConfig());

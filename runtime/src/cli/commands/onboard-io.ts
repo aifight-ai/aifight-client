@@ -7,7 +7,7 @@ import type { OnboardIO } from "./onboard-llm.js";
 import type { Protocol } from "../../profile/config-schema.js";
 import { storeSecretFile } from "../../profile/secret-ref.js";
 import { runConfigProbe } from "./config-probe.js";
-import { fetchNoFollow } from "../../net/guarded-fetch.js";
+import { discoverModelsForProtocol } from "../../llm/discover-models.js";
 
 const CTRL_C = String.fromCharCode(3); // ETX
 const CTRL_D = String.fromCharCode(4); // EOT
@@ -87,61 +87,9 @@ export async function discoverModels(
   env: HandlerEnv,
   input: { protocol: Protocol; baseURL: string; apiKey: string },
 ): Promise<string[] | null> {
-  const fetchImpl = env.fetchImpl ?? globalThis.fetch;
-  if (typeof fetchImpl !== "function") return null;
-
-  const parseIds = (json: unknown): string[] => {
-    const out: string[] = [];
-    const data = (json as { data?: unknown })?.data;
-    if (Array.isArray(data)) {
-      for (const m of data) {
-        const id = (m as { id?: unknown })?.id;
-        if (typeof id === "string") out.push(id);
-      }
-    }
-    return out;
-  };
-
-  const attempt = async (url: string, headers: Record<string, string>): Promise<string[] | null> => {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8000);
-    try {
-      // Guard the credential-bearing discovery GET against redirect-based key
-      // exfiltration. Model-discovery legitimately follows same-origin redirects
-      // (e.g. /models → /v1/models), so allow a bounded few; cross-origin is
-      // always refused. The injected fetchImpl is threaded through unchanged.
-      const res = await fetchNoFollow(
-        url,
-        { method: "GET", headers, signal: ctrl.signal },
-        { allowSameOriginRedirects: true, fetchImpl },
-      );
-      if (!res.ok) return null;
-      const ids = parseIds(await res.json());
-      return ids.length > 0 ? ids : null;
-    } catch {
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
-  };
-
-  const base = input.baseURL.replace(/\/+$/, "");
-  try {
-    if (input.protocol === "anthropic_messages") {
-      return await attempt(`${base}/v1/models`, {
-        "x-api-key": input.apiKey,
-        "anthropic-version": "2023-06-01",
-      });
-    }
-    if (input.protocol === "openai_responses" || input.protocol === "openai_chat_compat") {
-      const bearer = { Authorization: `Bearer ${input.apiKey}` };
-      return (await attempt(`${base}/models`, bearer)) ?? (await attempt(`${base}/v1/models`, bearer));
-    }
-    // gemini_generate_content and others: skip discovery (different shape).
-    return null;
-  } catch {
-    return null;
-  }
+  // Implementation lives in llm/discover-models.ts so the desktop app can reuse
+  // it over IPC without importing CLI terminal machinery.
+  return discoverModelsForProtocol({ ...(env.fetchImpl ? { fetchImpl: env.fetchImpl } : {}) }, input);
 }
 
 /** Build the real-terminal OnboardIO used by `aifight setup` / `aifight config` in a TTY. */

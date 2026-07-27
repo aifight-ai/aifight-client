@@ -495,7 +495,14 @@ export function createDeepSeekChatCompletionsAdapter(): LLMAdapter {
         ? await streamChatCompletions(profile.baseURL, profile.apiKey, body, input.signal)
         : await postChatCompletions(profile.baseURL, profile.apiKey, body, input.signal);
 
-      const choice = data.choices?.[0];
+      // A 200 body that is the literal JSON `null` (from a non-conforming
+      // proxy) makes `data.choices` throw a raw TypeError. Guard the base
+      // object so a null/malformed body falls through to the classified
+      // invalid_response error below, matching the siblings' isObject() guard.
+      const choice =
+        data && typeof data === "object"
+          ? (data as DeepSeekResponse).choices?.[0]
+          : undefined;
       if (!choice) {
         throw new AdapterError(
           "invalid_response",

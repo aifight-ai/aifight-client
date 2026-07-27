@@ -46,7 +46,6 @@ export const SUPPORTED_PROTOCOLS = [
   "openai_chat_compat",
   "deepseek_chat_completions",
   "gemini_generate_content",
-  "gemini_openai_compat",
 ] as const;
 
 export type LLMProtocol = (typeof SUPPORTED_PROTOCOLS)[number];

@@ -44,7 +44,6 @@ function previewFor(game: string, ev: MatchEvent): string {
     case "check":
       return "Pot control on a dry board. My range is capped here; betting only folds out worse and gets called by better.";
     case "raise":
-    case "bet":
       return "Value-raise: I hold the nut draw plus two overcards, fold equity is high, and I'm happy to get it in.";
     case "fold":
       return "I'm behind the range being represented. Preserve the stack and wait for a higher-EV spot.";

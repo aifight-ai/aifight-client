@@ -159,6 +159,12 @@ export async function loadAgentProfile(agentDir: string): Promise<AgentProfileRe
       `config.json validation failed: ${configResult.errors.join("; ")}`,
     );
   }
+  // R15 (2026-07-26): non-fatal schema warnings (e.g. a routing entry for a
+  // game this build doesn't know yet) are logged, never thrown — the config
+  // must keep loading.
+  for (const warning of configResult.warnings) {
+    console.warn(`aifight: config.json at ${configPath}: ${warning}`);
+  }
   const configHash = crypto.createHash("sha256").update(configRaw, "utf8").digest("hex");
 
   // ── identity.json (optional) ────────────────────────────────────

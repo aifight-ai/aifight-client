@@ -47,6 +47,12 @@ export interface ProtocolCapability {
   supportsTemperature: boolean | string;
   supportsJSONMode: boolean;
   supportsThinking: boolean;
+  /**
+   * False for pass-through protocols (the OpenAI chat families) where whether the
+   * ENDPOINT reasons is unknowable statically: thinking stays available but editors
+   * should default it OFF. Absent = thinking defaults on where supported.
+   */
+  defaultThinkingEnabled?: boolean;
   supportsReasoningSummary: boolean;
   /** Request parameter name for the token limit, e.g. "max_tokens". */
   maxTokensParam: string;
@@ -284,8 +290,26 @@ export interface ResolvedModelCapabilities {
   canDisableThinking: boolean;
   /** The model always reasons and offers no non-thinking mode. */
   thinkingAlwaysOn: boolean;
+  /**
+   * What a fresh profile's thinking toggle should be. False for the pass-through
+   * chat protocols, where an effort is forwarded verbatim IF configured but the
+   * endpoint's model may not reason at all — defaulting on there would send
+   * reasoning_effort to gpt-4o-style models and 400. Never true when the model
+   * cannot think.
+   */
+  thinkingDefaultOn: boolean;
   /** Effort levels valid for this model (model.efforts ?? protocol.effortValues). */
   efforts: string[];
+  /**
+   * The PROTOCOL-wide tier vocabulary, independent of the model. UIs render this
+   * as the pickable chips and use `efforts` only to ANNOTATE (e.g. "max" renders
+   * for every Responses model but gpt-5.5 gets a "sent as xhigh" note) — gating
+   * the chips on the per-model list is how a registry gap turns into a UI that
+   * won't offer tiers the model actually has.
+   */
+  protocolEfforts: string[];
+  /** Protocol-specific thinking parameter for this model (e.g. "thinkingBudget"). */
+  thinkingParam?: string;
   /**
    * Thinking wire shapes the model accepts, e.g. ["adaptive"] | ["extended"].
    * Empty for a model the registry doesn't list — callers must NOT read that as
@@ -363,7 +387,9 @@ export function resolveModelCapabilities(
       supportsThinking: false,
       canDisableThinking: false,
       thinkingAlwaysOn: false,
+      thinkingDefaultOn: false,
       efforts: [],
+      protocolEfforts: [],
       thinkingModes: [],
       thinkingModesKnown: false,
       storableEfforts: STORABLE_REASONING_EFFORTS,
@@ -399,7 +425,10 @@ export function resolveModelCapabilities(
     supportsThinking,
     canDisableThinking,
     thinkingAlwaysOn,
+    thinkingDefaultOn: supportsThinking && proto.defaultThinkingEnabled !== false,
     efforts,
+    protocolEfforts: (proto.effortValues ?? []).slice(),
+    ...(entry?.thinkingParam !== undefined ? { thinkingParam: entry.thinkingParam } : {}),
     thinkingModes: (entry?.thinkingModes ?? []).slice(),
     thinkingModesKnown: entry?.thinkingModes !== undefined,
     storableEfforts: STORABLE_REASONING_EFFORTS,

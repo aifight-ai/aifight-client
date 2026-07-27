@@ -33,7 +33,8 @@ as advisory.
 
 ## 2. Turn timeout
 
-- **Default:** 3 minutes (`hub.go:227`).
+- **Default:** 5 minutes (`Hub.turnTimeout` seeded in `NewHub`,
+  `internal/hub/hub.go`; hot-tunable at runtime via `runtime_settings`).
 - **Overridable:** `TURN_TIMEOUT` env var on the server side (e.g.
   `5m`, `10m`, `30s`). Runtime learns the effective value from
   [`action_request.data.timeout_ms`](../schema/messages/server_action_request.schema.json) (milliseconds).
@@ -70,10 +71,12 @@ heads-up match where removing either player empties the game):
 - Remaining player(s) are awarded the win; Glicko-2 rating update
   applies.
 
-**Plan correction (plan §5.8 / CLAUDE.md):** CLAUDE.md describes
-turn timeout as 5 min and previously stated Liar's Dice did not
-implement the drop handler; deployed code is 3 min default and all
-three flagship games implement it. This spec follows the code.
+**History note:** the default was cut to 3 min by the 2026-04-16
+security audit, then raised back to 5 min by the timing redesign
+(`docs/LLM_REQUEST_AND_MATCH_TIMING_RULES.md` §2). The authoritative
+value is the code/schema (`server_action_request.schema.json`:
+300000 ms); runtimes MUST trust `action_request.data.timeout_ms`
+over any prose. All three flagship games implement the drop handler.
 
 ### What runtime should do before expiry
 

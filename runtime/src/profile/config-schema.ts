@@ -25,8 +25,7 @@ export type Protocol =
   | "openai_chat_completions"
   | "openai_chat_compat"
   | "deepseek_chat_completions"
-  | "gemini_generate_content"
-  | "gemini_openai_compat";
+  | "gemini_generate_content";
 
 /** Reasoning/thinking effort level. "auto" lets the provider decide. */
 export type ReasoningEffort =
@@ -224,7 +223,8 @@ export interface LLMProfile {
 export interface RoutingConfig {
   /** Profile name used when no per-game route is configured. */
   default: string;
-  /** Optional per-game overrides. Keys are GameType values. */
+  /** Optional per-game overrides. Keys are GameType values; a key this build
+   *  doesn't recognize validates as a warning, not an error (forward compat). */
   byGame?: Partial<Record<GameType, string>>;
   /**
    * Profile name to fall back to when the primary profile fails (rate limit,
@@ -285,9 +285,13 @@ export interface LLMConfig {
 // Validation helpers (no external dependencies)
 // ---------------------------------------------------------------------------
 
+// R15 (2026-07-26): `warnings` is a non-fatal channel present on both arms —
+// forward-compat issues (e.g. a routing entry for a game this build doesn't
+// know yet) surface there without failing the whole config. `errors` semantics
+// are unchanged.
 type ValidationResult =
-  | { ok: true; config: LLMConfig }
-  | { ok: false; errors: string[] };
+  | { ok: true; config: LLMConfig; warnings: string[] }
+  | { ok: false; errors: string[]; warnings: string[] };
 
 const VALID_PROTOCOLS = new Set<string>([
   "anthropic_messages",
@@ -296,7 +300,6 @@ const VALID_PROTOCOLS = new Set<string>([
   "openai_chat_compat",
   "deepseek_chat_completions",
   "gemini_generate_content",
-  "gemini_openai_compat",
 ]);
 
 /**
@@ -539,8 +542,16 @@ function validateProfile(raw: unknown, path: string, errors: string[]): void {
           `${path}.thinking.effort: must be one of [${[...VALID_REASONING_EFFORTS].join(", ")}]`
         );
       }
-      if (th.maxReasoningTokens !== undefined && typeof th.maxReasoningTokens !== "number") {
-        errors.push(`${path}.thinking.maxReasoningTokens: must be a number if present`);
+      // R13 (2026-07-26): bounds-validate at load like every other numeric field
+      // (R13-F06). A bare typeof check let Infinity (JSON.parse("1e999")),
+      // negatives, and fractionals through the fail-loud gate, then blow up
+      // mid-match at the provider (JSON.stringify(Infinity)=null / provider 400).
+      if (th.maxReasoningTokens !== undefined) {
+        validateBoundedNumber(th.maxReasoningTokens, `${path}.thinking.maxReasoningTokens`, errors, {
+          min: 1,
+          max: MAX_REQUEST_MAX_TOKENS,
+          integer: true,
+        });
       }
     }
   }
@@ -623,7 +634,8 @@ function validateRouting(
   raw: unknown,
   profileNames: Set<string>,
   path: string,
-  errors: string[]
+  errors: string[],
+  warnings: string[]
 ): void {
   if (!isObject(raw)) {
     errors.push(`${path}: must be an object`);
@@ -643,9 +655,15 @@ function validateRouting(
       errors.push(`${path}.byGame: must be an object if present`);
     } else {
       for (const [game, profileName] of Object.entries(raw.byGame)) {
-        if (!VALID_GAME_TYPES.has(game)) {
-          errors.push(
-            `${path}.byGame: unknown game "${game}". Valid: [${[...VALID_GAME_TYPES].join(", ")}]`
+        if (game.trim() === "") {
+          errors.push(`${path}.byGame: game name must be a non-empty string`);
+        } else if (!VALID_GAME_TYPES.has(game)) {
+          // R15 (2026-07-26): unknown game names WARN instead of failing the
+          // whole config — the server can ship a game this build doesn't know
+          // yet, and a valid config routing it must keep loading (CLI and
+          // desktop share this schema). Shape violations stay errors.
+          warnings.push(
+            `${path}.byGame: unknown game "${game}" (this build knows [${[...VALID_GAME_TYPES].join(", ")}]) — route ignored until the game is supported`
           );
         }
         if (typeof profileName !== "string" || !(profileName as string).trim()) {
@@ -711,6 +729,9 @@ function validateSelfReview(
  *
  * Returns `{ ok: true, config }` on success, or
  * `{ ok: false, errors }` with a list of human-readable messages on failure.
+ * Both arms also carry `warnings`: non-fatal, forward-compat notices (e.g. a
+ * routing entry for a game this build doesn't know) that callers should log
+ * but must not treat as failure.
  *
  * Example:
  * ```ts
@@ -725,9 +746,10 @@ function validateSelfReview(
  */
 export function validateConfig(raw: unknown): ValidationResult {
   const errors: string[] = [];
+  const warnings: string[] = [];
 
   if (!isObject(raw)) {
-    return { ok: false, errors: ["config: must be a JSON object"] };
+    return { ok: false, errors: ["config: must be a JSON object"], warnings: [] };
   }
 
   // schemaVersion
@@ -772,7 +794,7 @@ export function validateConfig(raw: unknown): ValidationResult {
     if (raw.routing === undefined) {
       errors.push("routing: required field missing");
     } else {
-      validateRouting(raw.routing, profileNames, "routing", errors);
+      validateRouting(raw.routing, profileNames, "routing", errors, warnings);
     }
 
     // selfReview (optional) — model must reference a known profile
@@ -782,10 +804,10 @@ export function validateConfig(raw: unknown): ValidationResult {
   }
 
   if (errors.length > 0) {
-    return { ok: false, errors };
+    return { ok: false, errors, warnings };
   }
 
-  return { ok: true, config: raw as unknown as LLMConfig };
+  return { ok: true, config: raw as unknown as LLMConfig, warnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -793,8 +815,24 @@ export function validateConfig(raw: unknown): ValidationResult {
 // ---------------------------------------------------------------------------
 
 /**
- * A minimal valid LLMConfig that uses Claude claude-sonnet-4-6 via the
- * Anthropic Messages API, reading the API key from the ANTHROPIC_API_KEY
+ * Default model for a fresh Claude profile. Single source shared by
+ * DEFAULT_CONFIG below and the onboarding wizard's Claude entry
+ * (ONBOARD_PROVIDERS), so the starter template and the wizard can never
+ * drift a model generation apart again.
+ */
+export const DEFAULT_CLAUDE_MODEL = "claude-sonnet-5";
+
+/**
+ * Default max output tokens. AIFight is a reasoning arena, so generous output
+ * room is the default (D16, CLI_LLM_CONFIG_COMMANDS_SPEC.md). Single source
+ * shared by DEFAULT_CONFIG, the wizard, `config add`/`update`, and
+ * resolve-profile's fallback when a profile omits request.maxTokens.
+ */
+export const DEFAULT_MAX_TOKENS = 32000;
+
+/**
+ * A minimal valid LLMConfig that uses the current default Claude model via
+ * the Anthropic Messages API, reading the API key from the ANTHROPIC_API_KEY
  * environment variable. Suitable as a starter template or fallback.
  */
 export const DEFAULT_CONFIG: LLMConfig = {
@@ -806,10 +844,10 @@ export const DEFAULT_CONFIG: LLMConfig = {
       protocol: "anthropic_messages",
       baseURL: "https://api.anthropic.com",
       apiKeyRef: { type: "env", name: "ANTHROPIC_API_KEY" },
-      model: "claude-sonnet-4-6",
+      model: DEFAULT_CLAUDE_MODEL,
       request: {
         temperature: null,
-        maxTokens: 32000,
+        maxTokens: DEFAULT_MAX_TOKENS,
         responseFormat: "json",
         stream: "auto",
       },

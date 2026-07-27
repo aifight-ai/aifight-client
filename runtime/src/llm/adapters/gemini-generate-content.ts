@@ -24,6 +24,7 @@ import type {
   CanonicalReasoningConfig,
 } from "./types.js";
 import { AdapterError } from "./types.js";
+import { resolveModelCapabilities } from "../capabilities/validate-capabilities.js";
 import { looksLikeTokenLimit, computeTruncated } from "./token-limit.js";
 import { parseRetryAfterMs, isContentFilterReason } from "./error-class.js";
 import { boundedErrorBody } from "./redact.js";
@@ -44,13 +45,22 @@ function validateProfile(profile: LLMProfile): ValidationResult {
   if (!Number.isFinite(profile.maxTokens) || profile.maxTokens <= 0) {
     errors.push("maxTokens must be a positive finite integer");
   }
-  // Thinking is wired for gemini-2.5* (thinkingBudget) and gemini-3* (thinkingLevel);
-  // other Gemini models silently lack a thinking API. Warn rather than drop quietly.
-  if (wantsThinking(profile.reasoning) && geminiThinkingFamily(profile.model) === null) {
-    warnings.push(
-      `Model "${profile.model}" is not a known thinking-capable Gemini model ` +
-        `(gemini-2.5* uses thinkingBudget, gemini-3* uses thinkingLevel); the reasoning config will be ignored.`,
-    );
+  // gemini-2.5* uses thinkingBudget, gemini-3* uses thinkingLevel. Two distinct
+  // off-path cases: a LEGACY generation (2.0/1.x) really has no thinking API, so
+  // the config is ignored with a warning; an UNRECOGNIZED id gets the newest
+  // shape (thinkingLevel) rather than having its reasoning silently dropped.
+  if (wantsThinking(profile.reasoning)) {
+    if (isLegacyNonThinkingGemini(profile.model)) {
+      warnings.push(
+        `Model "${profile.model}" is not a known thinking-capable Gemini model ` +
+          `(2.0/1.x have no thinking API); the reasoning config will be ignored.`,
+      );
+    } else if (!/^gemini-(3|2\.5)/i.test(profile.model)) {
+      warnings.push(
+        `Model "${profile.model}" is not a Gemini generation this build recognizes; ` +
+          `thinking will be sent in the newest shape (thinkingConfig.thinkingLevel).`,
+      );
+    }
   }
   return { ok: errors.length === 0, errors, warnings };
 }
@@ -93,7 +103,13 @@ async function generateDecision(
   profile: LLMProfile,
   _continuationState?: unknown,
 ): Promise<DecisionOutput> {
-  const baseURL = (profile.baseURL && profile.baseURL.length > 0 ? profile.baseURL : DEFAULT_BASE_URL).replace(/\/+$/, "");
+  // The /v1beta version path is appended below, so a stored baseURL that
+  // already ends in /v1beta (older onboarding wizards wrote the official URL
+  // with it baked in) is stripped first — otherwise the request URL doubles
+  // into /v1beta/v1beta/… and 404s.
+  const baseURL = (profile.baseURL && profile.baseURL.length > 0 ? profile.baseURL : DEFAULT_BASE_URL)
+    .replace(/\/+$/, "")
+    .replace(/\/v1beta$/, "");
   if (input.signal?.aborted) {
     throw new AdapterError("aborted", PROTOCOL, "request aborted before send");
   }
@@ -250,10 +266,41 @@ function redact(raw: unknown): unknown {
 // config test` probe against the current Gemini API before relying on them in
 // production; model APIs evolve.
 
-function geminiThinkingFamily(model: string): "gemini-3" | "gemini-2.5" | null {
-  if (/^gemini-3/i.test(model)) return "gemini-3";
-  if (/^gemini-2\.5/i.test(model)) return "gemini-2.5";
-  return null;
+/**
+ * Which thinking parameter this model takes on the wire.
+ *
+ * Named after the wire shape rather than the generation on purpose: the shape is
+ * the thing the request builder needs, and "gemini-3" was only ever a proxy for it.
+ *
+ * The registry's `thinkingParam` is the source of truth; the id regexes below are
+ * ONLY the fallback for a model it has never heard of. They used to be the primary
+ * test, which made this a second hand-maintained discriminator sitting alongside
+ * model-capabilities.json — the same duplicated-fact setup that let the whole
+ * Claude 5 family be misclassified (see anthropic-messages.ts).
+ */
+function geminiThinkingShape(model: string): "thinkingLevel" | "thinkingBudget" | "none" {
+  switch (resolveModelCapabilities(PROTOCOL, model).thinkingParam) {
+    case "thinkingLevel":
+      return "thinkingLevel";
+    case "thinkingBudget":
+      return "thinkingBudget";
+  }
+  // Unlisted model — fall back to the id's shape.
+  if (/^gemini-3/i.test(model)) return "thinkingLevel";
+  if (/^gemini-2\.5/i.test(model)) return "thinkingBudget";
+  // Closed BACKWARD set: generations that really have no thinking API. Nothing
+  // released after 2.5 will ever join this list.
+  if (isLegacyNonThinkingGemini(model)) return "none";
+  // Unknown id → the NEWEST wire shape (thinkingLevel), the same policy as the
+  // Anthropic adapter's unknown→adaptive: an unrecognized model is far more likely
+  // to be newer than this build than older than 2.5, and a wrong guess is a loud
+  // 400 — the old "unknown ⇒ ignore reasoning" default dropped the configured
+  // effort in silence (exactly how the Claude 5 misclassification stayed hidden).
+  return "thinkingLevel";
+}
+
+function isLegacyNonThinkingGemini(model: string): boolean {
+  return /^gemini-(2\.0|1)/i.test(model);
 }
 
 function wantsThinking(reasoning: CanonicalReasoningConfig | undefined): boolean {
@@ -273,6 +320,8 @@ function effortToThinkingLevel(
   effort: CanonicalReasoningConfig["effort"],
 ): "minimal" | "low" | "medium" | "high" {
   switch (effort) {
+    case undefined:
+      return "high";
     case "off":
     case "minimal":
       return "minimal";
@@ -285,13 +334,39 @@ function effortToThinkingLevel(
     case "xhigh":
     case "max":
       return "high";
-    default:
+    default: {
+      // A new canonical tier must be mapped deliberately, not absorbed here: this
+      // switch is a real translation into Gemini's own enum, so silently landing a
+      // new tier on "high" would make it indistinguishable from asking for high.
+      // The runtime fallback stays for a value that reaches here despite the types
+      // (a hand-edited config.json).
+      const _exhaustive: never = effort;
+      void _exhaustive;
       return "high";
+    }
   }
+}
+
+/** Clamp a thinkingLevel into the registry's per-model set (model-capabilities.json).
+ *  Gemini 3 Pro does not accept "minimal" — only the flash/lite variants do — so on a
+ *  Pro model minimal clamps DOWN to low, matching Go NormalizeGeminiThinkingLevel so a
+ *  bot and an app-configured agent on the same model reason at the same level. For a
+ *  model the registry doesn't list, the value is sent AS-IS (let the API judge). */
+function clampThinkingLevelForModel(
+  level: "minimal" | "low" | "medium" | "high",
+  model: string,
+): "minimal" | "low" | "medium" | "high" {
+  const caps = resolveModelCapabilities(PROTOCOL, model);
+  if (!caps.isKnownModel || caps.efforts.length === 0) return level;
+  if (caps.efforts.includes(level)) return level;
+  return level === "minimal" ? "low" : "high";
 }
 
 function effortToThinkingBudget(effort: CanonicalReasoningConfig["effort"]): number {
   switch (effort) {
+    case undefined:
+    case "off":
+      return -1; // dynamic: let Gemini choose
     case "minimal":
       return 1024;
     case "low":
@@ -304,8 +379,13 @@ function effortToThinkingBudget(effort: CanonicalReasoningConfig["effort"]): num
     case "xhigh":
     case "max":
       return 24576;
-    default:
-      return -1; // dynamic: let Gemini choose
+    default: {
+      // Same reasoning as effortToThinkingLevel: a new tier needs its own budget
+      // decided, not the dynamic default silently standing in for it.
+      const _exhaustive: never = effort;
+      void _exhaustive;
+      return -1;
+    }
   }
 }
 
@@ -315,16 +395,30 @@ function buildThinkingConfig(
   reasoning: CanonicalReasoningConfig | undefined,
 ): Record<string, unknown> | null {
   if (!wantsThinking(reasoning)) return null;
-  const family = geminiThinkingFamily(model);
-  if (family === "gemini-3") {
+  // Unknown Gemini model → the NEWEST wire shape (thinkingLevel), same policy as
+  // the Anthropic adapter's unknown→adaptive: an unrecognized id is far more
+  // likely to be newer than this build than older than 2.5, and a wrong guess is
+  // a loud 400 — the old "unknown ⇒ ignore reasoning" default dropped the user's
+  // effort in silence (exactly how the Claude 5 misclassification hid).
+  const shape = geminiThinkingShape(model);
+  if (shape === "none") return null; // legacy generation: no thinking API at all
+  if (shape === "thinkingLevel") {
+    // "auto" (or no tier picked) = send no explicit level; Gemini's own default
+    // thinking applies. An explicit tier maps onto the thinkingLevel enum.
+    if (reasoning?.thinkingLevel === undefined &&
+        (reasoning?.effort === undefined || reasoning?.effort === "auto")) {
+      return null;
+    }
     const level = reasoning?.thinkingLevel ?? effortToThinkingLevel(reasoning?.effort);
-    return { thinkingLevel: level };
+    return { thinkingLevel: clampThinkingLevelForModel(level, model) };
   }
-  if (family === "gemini-2.5") {
+  if (shape === "thinkingBudget") {
     const budget = reasoning?.thinkingBudget ?? reasoning?.budgetTokens ?? effortToThinkingBudget(reasoning?.effort);
     return { thinkingBudget: budget };
   }
-  return null; // unknown family: caller's validateProfile already warned
+  const _exhaustive: never = shape;
+  void _exhaustive;
+  return null;
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────

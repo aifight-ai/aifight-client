@@ -3,6 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { autoUpdateOptedIn } from "../src/cli/commands/bridge-run";
@@ -68,7 +69,7 @@ describe("R13-F04 pinned install command", () => {
 describe("R13-F04 system (root) unit hardening", () => {
   let root: string;
   beforeEach(() => {
-    root = fs.mkdtempSync("/tmp/aifight-systemd-install-");
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "aifight-systemd-install-"));
     fs.mkdirSync(path.join(root, "bin"), { recursive: true });
     fs.writeFileSync(path.join(root, "bin", "node"), "#!/bin/sh\n", { mode: 0o755 });
     fs.writeFileSync(path.join(root, "bin", "aifight"), "#!/bin/sh\n", { mode: 0o755 });

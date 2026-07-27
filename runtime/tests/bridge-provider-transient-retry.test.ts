@@ -4,7 +4,7 @@
 // / token_limit) falls straight through to the deterministic fallback with no
 // wasted call. The failure trace carries the classification.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   buildBridgeDecisionProvider,
@@ -164,6 +164,50 @@ describe("bridge provider transient retry (Batch A)", () => {
     const { onTrace } = collectTraces();
     await buildBridgeDecisionProvider(provider, { onTrace }).decide(makeCtx());
     expect(calls).toBe(1);
+  });
+
+  // decision-session-1: a transient retry that begins partway through the turn
+  // must be bounded to the budget that ACTUALLY remains — not re-granted the
+  // original full turn duration, which lets a slow retry overrun the deadline
+  // and forfeit the deterministic fallback. The first attempt still gets the
+  // full budget; only the retry is clamped to the remaining time.
+  it("bounds a transient retry to the REMAINING turn budget, not the full duration", async () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.now();
+      const budgetMs = 60_000;
+      const requests: BridgeRuntimeDecisionRequest[] = [];
+      let call = 0;
+      const provider: BridgeRuntimeProvider = {
+        name: "slow-then-ok",
+        async decide(req) {
+          requests.push(req);
+          call++;
+          if (call === 1) {
+            // The first paid call burns most of the turn budget before failing
+            // transiently (45s of a 60s turn gone).
+            vi.setSystemTime(start + 45_000);
+            throw ae("server_error", "HTTP 503");
+          }
+          return '{"action":"call"}';
+        },
+      };
+
+      const decidePromise = buildBridgeDecisionProvider(provider, {}).decide(makeCtx(budgetMs));
+      // Let the (sub-second) backoff sleep elapse so the retry fires.
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await decidePromise;
+
+      expect(requests).toHaveLength(2);
+      // First attempt: full turn budget.
+      expect(requests[0]!.timeoutMs).toBe(budgetMs);
+      // Retry: bounded to the ~15s that remained, never the original 60s.
+      expect(requests[1]!.timeoutMs).toBeLessThanOrEqual(15_000);
+      expect(requests[1]!.timeoutMs).toBeGreaterThan(13_000);
+      expect(result).toMatchObject({ action: { type: "call" }, decision: { source: "model" } });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // R13-F02: the supersede AbortSignal on the decision context reaches the

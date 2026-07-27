@@ -1,10 +1,17 @@
 // D3 — renderer→main IPC handlers (request/response via ipcMain.handle).
 //
-// Only these three control channels are registered, so the renderer's reachable
-// surface is an explicit allowlist. All take no arguments and return a
-// secret-free BridgeStatus, so there is no injection surface and nothing
-// sensitive crosses the boundary. Main→renderer event streams (status/log/
-// trace/server-message) are pushed from main.ts via the host callbacks.
+// Every channel here registers through the local `handle` wrapper, so it runs
+// ONLY for the top frame of our trusted renderer page (authorizeIpcSender); a
+// renderer-side injection or a stray frame gets a rejected invoke, never a
+// privileged action. Many channels DO carry renderer-supplied arguments into
+// privileged actions (config:set-key takes a raw API key, strategy:write writes
+// files, cli:op runs a CLI operation, avatar:upload takes raw bytes), so those
+// arguments are UNTRUSTED and each handler must validate them here or delegate
+// to a validating host (cli-host / config-host / strategy-host). Secrets (API
+// keys, claim/SSO handoff URLs) never cross back to the renderer. Main→renderer
+// event streams (status/log/trace/server-message) are pushed from main.ts via
+// the host callbacks. (The four update* / focusWindow channels live in main.ts,
+// hand-guarded with the same authorizeIpcSender check.)
 
 import { app, ipcMain, shell, type IpcMainInvokeEvent } from "electron";
 
@@ -22,11 +29,15 @@ import {
   getConfig,
   recommendMaxTokensForFamily,
   modelCapabilitiesForFamily,
+  discoverModelsForFamily,
   saveProfile,
   setActive,
   setKey,
   setRoute,
 } from "./config-host";
+
+// Renderer caps avatar uploads at 6MB (AvatarPicker); allow headroom, reject above.
+const MAX_AVATAR_UPLOAD_BYTES = 8 * 1024 * 1024;
 
 export function registerBridgeIpc(host: BridgeHost): void {
   // Every renderer→main handler goes through this wrapper so it runs ONLY for a
@@ -90,11 +101,20 @@ export function registerBridgeIpc(host: BridgeHost): void {
   handle(IPC.avatarSet, (_e, presetId: unknown) =>
     host.setAgentAvatar(typeof presetId === "string" && presetId !== "" ? presetId : null));
   handle(IPC.avatarClear, () => host.clearAgentAvatar());
-  handle(IPC.avatarUpload, (_e, bytes: unknown, contentType: unknown) =>
-    host.uploadAgentAvatar(
-      bytes instanceof ArrayBuffer ? bytes : new ArrayBuffer(0),
-      typeof contentType === "string" ? contentType : "",
-    ));
+  handle(IPC.avatarUpload, (_e, bytes: unknown, contentType: unknown) => {
+    // R12 (2026-07-26): validate on the privileged side of the boundary. The
+    // only other size cap lives in the renderer (AvatarPicker, 6MB) — the wrong
+    // side of the trust model this file defends. Without this, a compromised/
+    // buggy renderer could hand main a multi-GB ArrayBuffer (structured-clone +
+    // Blob copies → main-process OOM) and ship authenticated junk uploads.
+    if (!(bytes instanceof ArrayBuffer) || bytes.byteLength === 0 || bytes.byteLength > MAX_AVATAR_UPLOAD_BYTES) {
+      return Promise.resolve({ ok: false, error: "invalid avatar payload" });
+    }
+    if (typeof contentType !== "string" || !/^image\/(png|jpe?g|webp|gif)$/i.test(contentType)) {
+      return Promise.resolve({ ok: false, error: "unsupported avatar content type" });
+    }
+    return host.uploadAgentAvatar(bytes, contentType);
+  });
 
   // Public ranking board (no auth). scope = "all" (cross-game) or a live game name.
   handle(IPC.leaderboardGet, (_e, scope: unknown) =>
@@ -206,6 +226,7 @@ export function registerBridgeIpc(host: BridgeHost): void {
   handle(IPC.configGet, () => getConfig());
   handle(IPC.configRecommendMaxTokens, (_e, input: unknown) => recommendMaxTokensForFamily(input as never));
   handle(IPC.configModelCapabilities, (_e, input: unknown) => modelCapabilitiesForFamily(input as never));
+  handle(IPC.configDiscoverModels, (_e, input: unknown) => discoverModelsForFamily("default", input as never));
   handle(IPC.configSaveProfile, (_e, input: unknown) => saveProfile("default", input as never));
   handle(IPC.configSetKey, (_e, profileId: unknown, apiKey: unknown) => setKey("default", profileId, apiKey));
   handle(IPC.configClearKey, (_e, profileId: unknown) => clearKey("default", profileId));

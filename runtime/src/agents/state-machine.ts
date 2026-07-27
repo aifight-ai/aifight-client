@@ -42,6 +42,14 @@ export interface AgentFSMState {
   readonly autoConfirmMatches: boolean;
   readonly queue?: { readonly game: string; readonly mode: string; readonly one_shot?: boolean };
   readonly pendingConfirm?: MsgMatchConfirmRequest["data"];
+  /**
+   * D1: set once we have SENT match_confirm and are waiting for game_start —
+   * i.e. the "matching" phase. Without it that fact would live only in the
+   * `phase` scalar, and phase is now a derived projection (see derivePhase), so
+   * it has to be recoverable from real state. Single-slot on purpose, same as
+   * `queue`/`pendingConfirm`: the server gives an agent one queue entry.
+   */
+  readonly confirmed?: { readonly confirmId: string; readonly game: string; readonly mode: string };
   readonly activeMatch?: AgentFSMActiveMatch;
   readonly activeMatches?: Readonly<Record<string, AgentFSMActiveMatch>>;
   readonly pendingAction?: MsgActionRequest;
@@ -101,12 +109,23 @@ export type AgentFSMInput =
   | { type: "ws.message"; message: ServerMessageEnvelope; now?: number }
   | { type: "decision.ready"; action: unknown; matchId?: string; usage?: AgentDecisionWireUsage; decision?: AgentDecisionWireDecision }
   | { type: "decision.failed"; reason: unknown; matchId?: string }
+  /**
+   * D2: an outbound message could not be handed to the socket. Without this the
+   * FSM believed every send succeeded — see sendFailed() for what that cost.
+   */
+  | { type: "send.failed"; message: WSClientMessage; restore?: MsgActionRequest; cause: unknown }
   | { type: "reconnect.event"; event: ReconnectEvent }
   | { type: "reconnect.close"; info: ReconnectCloseInfo }
   | { type: "stop"; reason?: string };
 
 export type AgentFSMEffect =
-  | { type: "send"; message: WSClientMessage }
+  /**
+   * D2: `restoreOnFailure` is the action_request this message answers. Effects
+   * run on a serialized queue, so the send happens strictly AFTER the state
+   * update that produced it — carrying the payload here is what lets a failed
+   * send be undone without parking it in FSM state for the gap in between.
+   */
+  | { type: "send"; message: WSClientMessage; restoreOnFailure?: MsgActionRequest }
   | { type: "request_decision"; actionRequest: MsgActionRequest; matchId: string; game?: string; requestId?: string }
   | { type: "fallback_required"; actionRequest: MsgActionRequest; reason: unknown }
   | { type: "record_result"; gameOver: MsgGameOver; game?: string }
@@ -159,6 +178,8 @@ export function transitionAgentFSM(
       return decisionReady(state, input.action, input.matchId, input.usage, input.decision);
     case "decision.failed":
       return decisionFailed(state, input.reason, input.matchId);
+    case "send.failed":
+      return sendFailed(state, input.message, input.restore, input.cause);
     case "reconnect.event":
       return reconnectEvent(state, input.event);
     case "reconnect.close":
@@ -178,43 +199,52 @@ function joinQueue(state: AgentFSMState, game: string, mode?: string, oneShot?: 
     ...(oneShot === true ? { one_shot: true } : {}),
   };
   return ok(
-    {
+    withDerivedPhase({
       ...state,
-      phase: "queuing",
       queue,
       pendingConfirm: undefined,
+      confirmed: undefined,
       lastGameOver: undefined,
-    },
+    }),
     [{ type: "send", message: { type: "join_queue", data: queue } }],
   );
 }
 
 function leaveQueue(state: AgentFSMState): AgentFSMTransition {
-  if (state.phase !== "queuing" && state.phase !== "confirming" && state.phase !== "matching") {
+  // D1: ask about the QUEUE, not about the aggregate phase. Now that phase
+  // reports the most important thing, an agent that is playing one match while
+  // queued for another reads "in_match" — and the old phase test would have
+  // refused to let it leave that queue.
+  if (!state.queue && !state.pendingConfirm && !state.confirmed) {
     return warn(state, "fsm.not_queued", "Ignoring leave_queue because agent is not queued");
   }
   return ok(
-    {
+    withDerivedPhase({
       ...state,
-      phase: "connected",
       queue: undefined,
       pendingConfirm: undefined,
-    },
+      confirmed: undefined,
+    }),
     [{ type: "send", message: { type: "leave_queue" } }],
   );
 }
 
 function confirmMatch(state: AgentFSMState, confirmId?: string): AgentFSMTransition {
   const id = confirmId ?? state.pendingConfirm?.confirm_id;
-  if (!id || state.phase !== "confirming") {
+  // D1: the pending confirm itself is the precondition, not the phase.
+  if (!id || !state.pendingConfirm) {
     return warn(state, "fsm.no_pending_confirm", "Ignoring match confirmation without a pending confirm request");
   }
   return ok(
-    {
+    withDerivedPhase({
       ...state,
-      phase: "matching",
       pendingConfirm: undefined,
-    },
+      confirmed: {
+        confirmId: id,
+        game: state.pendingConfirm.game,
+        mode: normalizeMode(state.pendingConfirm.mode),
+      },
+    }),
     [{ type: "send", message: { type: "match_confirm", data: { confirm_id: id } } }],
   );
 }
@@ -228,7 +258,7 @@ function applyServerMessage(
     case "queue_joined":
       return queueJoined(state, message as MsgQueueJoined);
     case "queue_left":
-      return ok({ ...state, phase: derivePhase({ ...state, queue: undefined, pendingConfirm: undefined }), queue: undefined, pendingConfirm: undefined });
+      return ok(withDerivedPhase({ ...state, queue: undefined, pendingConfirm: undefined, confirmed: undefined }));
     case "match_confirm_request":
       return matchConfirmRequest(state, message as MsgMatchConfirmRequest);
     case "match_cancelled":
@@ -253,15 +283,17 @@ function applyServerMessage(
 }
 
 function queueJoined(state: AgentFSMState, msg: MsgQueueJoined): AgentFSMTransition {
-  return ok({
-    ...state,
-    phase: "queuing",
-    queue: {
-      game: msg.data.game,
-      mode: normalizeMode(msg.data.mode),
-      ...(msg.data.one_shot === true ? { one_shot: true } : {}),
-    },
-  });
+  return ok(
+    withDerivedPhase({
+      ...state,
+      confirmed: undefined,
+      queue: {
+        game: msg.data.game,
+        mode: normalizeMode(msg.data.mode),
+        ...(msg.data.one_shot === true ? { one_shot: true } : {}),
+      },
+    }),
+  );
 }
 
 function matchConfirmRequest(
@@ -275,22 +307,22 @@ function matchConfirmRequest(
   };
   if (state.autoConfirmMatches) {
     return ok(
-      {
+      withDerivedPhase({
         ...state,
-        phase: "matching",
         queue,
         pendingConfirm: undefined,
-      },
+        confirmed: { confirmId: msg.data.confirm_id, game: queue.game, mode: queue.mode },
+      }),
       [{ type: "send", message: { type: "match_confirm", data: { confirm_id: msg.data.confirm_id } } }],
     );
   }
   return ok(
-    {
+    withDerivedPhase({
       ...state,
-      phase: "confirming",
       queue,
       pendingConfirm: msg.data,
-    },
+      confirmed: undefined,
+    }),
     [
       notify(
         "info",
@@ -311,22 +343,22 @@ function matchCancelled(state: AgentFSMState, msg: MsgMatchCancelled): AgentFSMT
         ? { game: msg.data.game, mode: normalizeMode(msg.data.mode) }
         : fallbackQueue;
     return ok(
-      {
+      withDerivedPhase({
         ...state,
-        phase: queue ? "queuing" : derivePhase({ ...state, queue: undefined, pendingConfirm: undefined }),
         queue,
         pendingConfirm: undefined,
-      },
+        confirmed: undefined,
+      }),
       [notify("warning", "fsm.match_cancelled", `Match cancelled: ${msg.data.reason}`)],
     );
   }
   return ok(
-    {
+    withDerivedPhase({
       ...state,
-      phase: derivePhase({ ...state, queue: undefined, pendingConfirm: undefined }),
       queue: undefined,
       pendingConfirm: undefined,
-    },
+      confirmed: undefined,
+    }),
     [notify("warning", "fsm.match_cancelled", `Match cancelled: ${msg.data.reason}`)],
   );
 }
@@ -356,14 +388,18 @@ function gameStart(state: AgentFSMState, msg: MsgGameStart, now?: number): Agent
     ...existingMatches,
     [activeMatch.sessionId]: activeMatch,
   };
-  return ok({
-    ...state,
-    phase: "in_match",
-    queue: undefined,
-    pendingConfirm: undefined,
-    activeMatch,
-    activeMatches,
-  });
+  // D1: derived, NOT `phase: "in_match"`. Hard-writing it here is the exact
+  // step that used to discard another match's in-flight decision as stale.
+  return ok(
+    withDerivedPhase({
+      ...state,
+      queue: undefined,
+      pendingConfirm: undefined,
+      confirmed: undefined,
+      activeMatch,
+      activeMatches,
+    }),
+  );
 }
 
 function gameState(state: AgentFSMState, msg: MsgGameState): AgentFSMTransition {
@@ -377,16 +413,19 @@ function gameState(state: AgentFSMState, msg: MsgGameState): AgentFSMTransition 
     );
   }
   return ok(
-    { ...state, phase: Object.keys(activeMatches).length > 0 ? derivePhase({ ...state, activeMatches }) : state.phase },
+    Object.keys(activeMatches).length > 0 ? withDerivedPhase({ ...state, activeMatches }) : state,
     [notify("info", "fsm.game_state", "Received game state update")],
   );
 }
 
 function actionRequest(state: AgentFSMState, msg: MsgActionRequest): AgentFSMTransition {
-  if (state.phase !== "in_match" && state.phase !== "deciding") {
+  const activeMatches = normalizeActiveMatches(state);
+  // D1: ask whether we hold ANY match, not what the aggregate phase says — a
+  // phase test here rejected turns of a live match whenever a queue/confirm
+  // event for a DIFFERENT match had lowered the scalar.
+  if (Object.keys(activeMatches).length === 0) {
     return warn(state, "fsm.action_request_out_of_phase", "Ignoring action_request outside an active match");
   }
-  const activeMatches = normalizeActiveMatches(state);
   const activeMatch = activeMatches[msg.data.match_id];
   if (!activeMatch) {
     return warn(
@@ -422,15 +461,14 @@ function actionRequest(state: AgentFSMState, msg: MsgActionRequest): AgentFSMTra
       ? { ...(state.lastRequestIds ?? {}), [matchId]: requestId }
       : state.lastRequestIds;
   return ok(
-    {
+    withDerivedPhase({
       ...state,
-      phase: "deciding",
       activeMatch,
       activeMatches,
       pendingAction: msg,
       pendingActions,
       ...(lastRequestIds !== undefined ? { lastRequestIds } : {}),
-    },
+    }),
     [
       {
         type: "request_decision",
@@ -469,7 +507,11 @@ function decisionReady(
   const id = matchId ?? state.pendingAction?.data.match_id;
   const pendingActions = normalizePendingActions(state);
   const pendingAction = id ? pendingActions[id] ?? (state.pendingAction?.data.match_id === id ? state.pendingAction : undefined) : undefined;
-  if (state.phase !== "deciding" || !id || !pendingAction) {
+  // D1: a pending action for THIS match is the precondition. The old
+  // `phase !== "deciding"` term is now redundant (a pending action derives that
+  // phase) AND was the bug: another match's event could lower the scalar and
+  // this decision — already paid for — was thrown away.
+  if (!id || !pendingAction) {
     return warn(state, "fsm.no_pending_action", "Ignoring decision result without a pending action_request");
   }
   const nextPendingActions = { ...pendingActions };
@@ -477,17 +519,18 @@ function decisionReady(
   const activeMatches = normalizeActiveMatches(state);
   const nextPendingAction = selectPendingAction(nextPendingActions);
   return ok(
-    {
+    withDerivedPhase({
       ...state,
-      phase: derivePhase({ ...state, activeMatches, pendingAction: nextPendingAction, pendingActions: nextPendingActions }),
       activeMatch: selectActiveMatch(activeMatches, id),
       activeMatches: emptyRecordAsUndefined(activeMatches),
       pendingAction: nextPendingAction,
       pendingActions: emptyRecordAsUndefined(nextPendingActions),
-    },
+    }),
     [
       {
         type: "send",
+        // D2: if this never reaches the socket, put the turn back.
+        restoreOnFailure: pendingAction,
         message: {
           type: "action",
           match_id: pendingAction.data.match_id,
@@ -510,10 +553,83 @@ function decisionFailed(state: AgentFSMState, reason: unknown, matchId?: string)
   const id = matchId ?? state.pendingAction?.data.match_id;
   const pendingActions = normalizePendingActions(state);
   const pendingAction = id ? pendingActions[id] ?? (state.pendingAction?.data.match_id === id ? state.pendingAction : undefined) : undefined;
-  if (state.phase !== "deciding" || !id || !pendingAction) {
+  // D1: same as decisionReady — the pending action is the precondition.
+  if (!id || !pendingAction) {
     return warn(state, "fsm.no_pending_action", "Ignoring decision failure without a pending action_request");
   }
-  return ok(state, [{ type: "fallback_required", actionRequest: pendingAction, reason }]);
+  // R15 2026-07-26: forget this match's last request_id on failure — otherwise
+  // a server redelivery of the same request_id would be swallowed by the
+  // duplicate gate (see actionRequest) and the agent would lose its retry.
+  const nextLastRequestIds = pruneRecord(state.lastRequestIds, id);
+  return ok(
+    {
+      ...state,
+      ...(nextLastRequestIds !== undefined ? { lastRequestIds: nextLastRequestIds } : { lastRequestIds: undefined }),
+    },
+    [{ type: "fallback_required", actionRequest: pendingAction, reason }],
+  );
+}
+
+// D2 (windows-loop, 2026-07-26). AgentInstance used to swallow a failed send:
+// it logged and moved on, so the FSM went on believing the message had gone out.
+// For an `action` that is the whole game — decisionReady has ALREADY cleared the
+// match's pending action, so the agent thinks it answered, the server never got
+// an answer, and the turn times out into a judged loss. A network blip was
+// enough.
+//
+// Recovery has two halves and BOTH are required:
+//   - put the pending action back, because we do still owe an answer (and the
+//     phase derives back to "deciding", which is the honest report); and
+//   - drop this match's lastRequestId, or the server's redelivery of the SAME
+//     request_id hits actionRequest's duplicate gate (pending action present +
+//     same id) and is swallowed — which would wedge the match permanently,
+//     strictly worse than the bug being fixed.
+//
+// Non-action sends (join_queue, match_confirm, leave_queue) have no per-match
+// bookkeeping to undo; they are reported and left to the caller/server to retry.
+function sendFailed(
+  state: AgentFSMState,
+  message: WSClientMessage,
+  restore: MsgActionRequest | undefined,
+  cause: unknown,
+): AgentFSMTransition {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  if (message.type !== "action") {
+    return warn(
+      state,
+      "fsm.send_failed",
+      `Failed to send ${message.type}: ${detail}`,
+    );
+  }
+  const matchId = message.match_id;
+  const pendingActions = normalizePendingActions(state);
+  if (!restore || pendingActions[matchId] !== undefined) {
+    // Nothing to restore (or the match already has a newer request in flight,
+    // which supersedes the one we failed to answer).
+    return warn(
+      state,
+      "fsm.send_failed",
+      `Failed to send action for session ${matchId}: ${detail}`,
+    );
+  }
+  return ok(
+    withDerivedPhase({
+      ...state,
+      pendingActions: { ...pendingActions, [matchId]: restore },
+      pendingAction: restore,
+      ...(() => {
+        const pruned = pruneRecord(state.lastRequestIds, matchId);
+        return pruned !== undefined ? { lastRequestIds: pruned } : { lastRequestIds: undefined };
+      })(),
+    }),
+    [
+      notify(
+        "error",
+        "fsm.send_failed",
+        `Failed to send action for session ${matchId} (${detail}); the turn is still owed — awaiting the server's redelivery`,
+      ),
+    ],
+  );
 }
 
 function gameOver(state: AgentFSMState, msg: MsgGameOver): AgentFSMTransition {
@@ -535,25 +651,18 @@ function gameOver(state: AgentFSMState, msg: MsgGameOver): AgentFSMTransition {
   // grow without bound across a long-lived agent's many matches.
   const nextLastRequestIds = pruneRecord(state.lastRequestIds, msg.data.session_id);
   return ok(
-    {
+    withDerivedPhase({
       ...state,
-      phase: derivePhase({
-        ...state,
-        activeMatch: undefined,
-        activeMatches: nextActiveMatches,
-        pendingAction: nextPendingAction,
-        pendingActions: nextPendingActions,
-        queue: undefined,
-      }),
       queue: undefined,
       pendingConfirm: undefined,
+      confirmed: undefined,
       activeMatch: selectActiveMatch(nextActiveMatches),
       activeMatches: emptyRecordAsUndefined(nextActiveMatches),
       pendingAction: nextPendingAction,
       pendingActions: emptyRecordAsUndefined(nextPendingActions),
       ...(nextLastRequestIds !== undefined ? { lastRequestIds: nextLastRequestIds } : { lastRequestIds: undefined }),
       lastGameOver: msg,
-    },
+    }),
     [{
       type: "record_result",
       gameOver: msg,
@@ -694,6 +803,26 @@ function selectPendingAction(pendingActions: Record<string, MsgActionRequest>): 
   return lastKey ? pendingActions[lastKey] : undefined;
 }
 
+// D1 (windows-loop, 2026-07-26). `phase` is a SCALAR but this FSM runs several
+// matches at once (activeMatches / pendingActions are keyed by match_id). One
+// scalar cannot hold every match's progress, so any match's event used to
+// overwrite every other match's — and two guards read that scalar, which turned
+// the overwrite into a lost turn:
+//
+//   1. match A's action_request  → phase "deciding", A's provider call starts
+//   2. match B's game_start      → phase hard-set to "in_match"
+//   3. A's decision comes back   → phase is not "deciding" → discarded as stale
+//   4. A never answers           → server turn timeout → judged a loss
+//
+// Reachable on default settings, with no error anywhere. Joining a queue while
+// a match is running was enough to trigger it too.
+//
+// The priority order below is the fix: a phase that means "there is work in
+// flight" outranks one that means "waiting around", so the phase always reports
+// the most important thing and no other match's event can lower it.
+// DO NOT reorder these — swapping deciding/in_match revives the bug outright.
+//
+// See docs/agent-bridge/AGENT_FSM_PHASE_DERIVATION_DESIGN.md.
 function derivePhase(state: AgentFSMState): AgentPhase {
   if (Object.keys(normalizePendingActions(state)).length > 0) {
     return "deciding";
@@ -704,10 +833,27 @@ function derivePhase(state: AgentFSMState): AgentPhase {
   if (state.pendingConfirm) {
     return "confirming";
   }
+  if (state.confirmed) {
+    return "matching";
+  }
   if (state.queue) {
     return "queuing";
   }
   return "connected";
+}
+
+/**
+ * The single place `phase` is decided. Every transition that changes a
+ * phase-relevant field returns through here instead of writing a literal.
+ *
+ * `closed` is the one phase that stays hard-written: it is a true terminal
+ * state, not implied by any field. transitionAgentFSM short-circuits on it at
+ * the top, so a closed FSM never reaches a derive site anyway — this guard is
+ * belt-and-braces.
+ */
+function withDerivedPhase(state: AgentFSMState): AgentFSMState {
+  if (state.phase === "closed") return state;
+  return { ...state, phase: derivePhase(state) };
 }
 
 function ok(state: AgentFSMState, effects: readonly AgentFSMEffect[] = []): AgentFSMTransition {

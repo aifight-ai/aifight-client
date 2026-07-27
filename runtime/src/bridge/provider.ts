@@ -437,10 +437,24 @@ export function buildBridgeDecisionProvider(
       const maxAttempts = 1 + clampTransientRetryCount(declaredTransientRetries);
       let callIndex = 0;
       let raw: string | LegalAction | undefined;
+      // The first attempt uses the full turn budget (requestWithStrategy.timeoutMs).
+      // A transient retry that begins partway through the turn must be bounded to
+      // the budget that ACTUALLY remains: direct-llm-provider treats req.timeoutMs
+      // as a fresh per-call wall-time budget, so re-passing the original full
+      // duration would let a slow retry run past the server turn deadline — the
+      // turn is scored a timeout and the deterministic fallback is never submitted
+      // in time (decision-session-1). Mirrors the illegal-retry loop below.
+      let attemptTimeoutMs: number | undefined;
       while (callIndex < maxAttempts) {
         callIndex++;
         try {
-          const out = unwrapDecideOutput(await runtimeProvider.decide(requestWithStrategy));
+          const out = unwrapDecideOutput(
+            await runtimeProvider.decide(
+              attemptTimeoutMs !== undefined
+                ? { ...requestWithStrategy, timeoutMs: attemptTimeoutMs }
+                : requestWithStrategy,
+            ),
+          );
           raw = out.raw;
           emitUsage(out.usage, false);
           opts.onTrace?.({
@@ -484,6 +498,17 @@ export function buildBridgeDecisionProvider(
             break; // not enough turn budget left for a backoff plus a fresh call
           }
           if (delay > 0) await sleep(delay);
+          // Bound the retry to the turn budget that remains AFTER the backoff so a
+          // slow paid call cannot overrun the turn deadline. The guard above leaves
+          // > MIN_TRANSIENT_RETRY_BUDGET_MS here unless the clock jumped during the
+          // sleep (laptop suspend/resume); direct-llm-provider cleanly refuses a
+          // too-small budget ("doomed paid call"), degrading to the fallback instead
+          // of a late, forfeited call. R14 audit: floor at 1, NOT 0 — 0 is this
+          // codebase's "no deadline" sentinel, so an already-expired deadline would
+          // otherwise hand the retry an UNBOUNDED budget; 1ms takes the server-
+          // deadline path downstream and is refused as doomed.
+          attemptTimeoutMs =
+            deadlineMs === undefined ? undefined : Math.max(1, deadlineMs - Date.now());
         }
       }
 

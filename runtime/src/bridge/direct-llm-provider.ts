@@ -53,6 +53,15 @@ const MIN_SELF_HEAL_BUDGET_MS = 10_000;
 const GLOBAL_DECISION_HARD_CAP_MS = 600_000; // 10 min absolute ceiling per call
 const MIN_DECISION_TIMEOUT_MS = 1_000; // floor so a call always gets some time
 
+// R13 (2026-07-26): headroom reserved before the server turn deadline for
+// computing + transmitting the deterministic fallback. Without it a hung/slow
+// model call aborts exactly at the deadline, so the fallback is submitted late
+// and the platform scores a timeout (possibly a forfeit) even though a legal
+// fallback was ready — the exact outcome the retry-budgeting exists to prevent.
+// A result that drops below MIN_DECISION_TIMEOUT_MS is skipped upstream as a
+// doomed paid call, consistent with the "never round UP to the floor" policy.
+const SUBMIT_MARGIN_MS = 5_000;
+
 // Local storage cap for captured reasoning text (config.captureReasoning).
 // DeepSeek returns the FULL chain of thought; bound it before it reaches the
 // session log so a single decisions.jsonl line stays small.
@@ -410,7 +419,11 @@ export function clampDecisionTimeout(serverMs: number, profileRequestMs: number 
     // flooring a near-deadline retry back to MIN_DECISION_TIMEOUT_MS would spend a
     // paid call the platform has already timed out. min(requestMs, server) exactly
     // (spec §1/§3). The caller skips the call when this is too small to be useful.
-    const base = hasReq ? Math.min(serverMs, profileRequestMs!) : serverMs;
+    // Reserve submission headroom, floored at 0 (never negative). A result below
+    // MIN_DECISION_TIMEOUT_MS is skipped by the caller as a doomed paid call, so
+    // 0 correctly means "no time to call — go straight to the fallback".
+    const serverBudget = Math.max(0, serverMs - SUBMIT_MARGIN_MS);
+    const base = hasReq ? Math.min(serverBudget, profileRequestMs!) : serverBudget;
     return Math.min(base, GLOBAL_DECISION_HARD_CAP_MS);
   }
   // No server deadline (server 0 = "no deadline"): requestMs governs, or the hard

@@ -48,9 +48,15 @@ class FakeReconnectClient implements ReconnectingWSClient {
   nextRetryAt: number | null = null;
   connectedAtMs: number | null = null;
   parkedReason: ReconnectStateSnapshot["parkedReason"] = null;
+  readonly stateHandlers = new Set<(snap: ReconnectStateSnapshot) => void>();
   onStateChange(handler: (snap: ReconnectStateSnapshot) => void): () => void {
+    // Mirror the real facade: track the handler, fire the standing snapshot
+    // immediately, return a real unsubscribe.
+    this.stateHandlers.add(handler);
     handler(this.snapshot());
-    return () => {};
+    return () => {
+      this.stateHandlers.delete(handler);
+    };
   }
   snapshot(): ReconnectStateSnapshot {
     return {
@@ -597,6 +603,57 @@ describe("BridgeRunner", () => {
 
     const caught = await runner.start().catch((e: unknown) => e);
     expect(caught).not.toBeInstanceOf(BridgeCredentialRejectedError);
+  });
+
+  it("a generic fatal start error resets the runner so a retry can dial again (R14 audit pin)", async () => {
+    const client = new FakeReconnectClient();
+    let attempts = 0;
+    const connect = vi.fn(async (_opts: ReconnectingWSClientOptions) => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new WSHandshakeError(503, "upstream down", "handshake failed with 503");
+      }
+      return client;
+    });
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      connect,
+      sessionStore: false,
+    });
+
+    await expect(runner.start()).rejects.toThrow();
+    // Pre-R13 the failed start left a dead agent behind, so this returned its
+    // success-shaped snapshot without dialing; the reset arm must dial again.
+    await runner.start();
+    expect(connect).toHaveBeenCalledTimes(2);
+  });
+
+  it("buffers connection-state subscribers registered before start() and attaches them on connect (R15)", async () => {
+    const client = new FakeReconnectClient();
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      connect: vi.fn(async () => client),
+      sessionStore: false,
+    });
+
+    const snaps: ReconnectStateSnapshot[] = [];
+    const unsubscribe = runner.onConnectionStateChange((snap) => snaps.push(snap));
+    expect(snaps).toHaveLength(0);
+
+    await runner.start();
+    // Attached on start: the facade's immediate snapshot fire reaches the early
+    // subscriber. Pre-R15 the subscription was silently dropped (no-op
+    // unsubscribe, no snapshots ever).
+    expect(snaps).toHaveLength(1);
+    expect(snaps[0]?.state).toBe("connected");
+
+    // And the returned unsubscribe is the real one, not a no-op.
+    unsubscribe();
+    expect(client.stateHandlers.size).toBe(0);
   });
 
   it("connects normally on the machine that set the home up", async () => {

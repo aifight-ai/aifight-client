@@ -22,10 +22,14 @@ describe("exchangePairingCode", () => {
       now: () => new Date("2026-05-06T00:00:00Z"),
     });
 
-    expect(fetchImpl).toHaveBeenCalledWith("https://aifight.ai/api/bridge/pair", expect.objectContaining({
+    // fetchNoFollow passes a URL object (not a string) and adds redirect/signal
+    // fields — compare the URL by value and the init as a subset.
+    const [calledUrl, calledInit] = vi.mocked(fetchImpl).mock.calls[0];
+    expect(String(calledUrl)).toBe("https://aifight.ai/api/bridge/pair");
+    expect(calledInit).toMatchObject({
       method: "POST",
       body: JSON.stringify({ pairing_code: "aifp_abc" }),
-    }));
+    });
     // A legacy agent reporting runtime_type "openclaw" is coerced to direct-LLM.
     expect(cfg).toMatchObject({
       agentId: "agent-1",
@@ -36,6 +40,17 @@ describe("exchangePairingCode", () => {
       runtimeModel: "direct",
       updatedAt: "2026-05-06T00:00:00.000Z",
     });
+  });
+
+  it("refuses a redirect on the pairing exchange and never re-sends the code (R14 audit pin)", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(null, { status: 302, headers: { Location: "https://evil.example/pair" } }),
+    ) as unknown as typeof fetch;
+
+    await expect(exchangePairingCode({ pairingCode: "aifp_abc", fetchImpl }))
+      .rejects.toThrow(/redirect/);
+    // The one-time code must not be replayed to the redirect target.
+    expect(vi.mocked(fetchImpl)).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces server pairing errors without leaking request body", async () => {

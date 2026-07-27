@@ -5,6 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import {
@@ -17,7 +18,7 @@ import {
 let root: string;
 
 beforeEach(() => {
-  root = fs.mkdtempSync("/tmp/aifight-launchd-install-");
+  root = fs.mkdtempSync(path.join(os.tmpdir(), "aifight-launchd-install-"));
   fs.mkdirSync(path.join(root, "bin"), { recursive: true });
   // realExecutablePath() requires real, executable files on disk.
   fs.writeFileSync(path.join(root, "bin", "node"), "#!/bin/sh\n", { mode: 0o755 });
@@ -121,6 +122,69 @@ describe("launchd install — no kickstart-race warning (⑤)", () => {
     expect(result.warning).toBeDefined();
     expect(result.warning).toMatch(/installed and set to start automatically/);
     expect(result.warning).not.toMatch(/kickstart|Command failed|did not complete cleanly/);
+  });
+});
+
+// R15 (2026-07-26): a failed re-install must restore the previous (working)
+// unit/plist instead of deleting it — a broken upgrade may not destroy an
+// installed service.
+describe("re-install rollback (R15)", () => {
+  it("launchd: failed re-install restores the previous plist and re-bootstraps it", async () => {
+    const plistPath = path.join(root, "ai.aifight.service.plist");
+    fs.writeFileSync(plistPath, "OLD-PLIST\n", { mode: 0o600 });
+
+    const { exec, calls } = mockLaunchctl({ bootstrapFails: true });
+    await expect(installBridgeService(baseDeps(exec))).rejects.toMatchObject({
+      code: "service_install_failed",
+      message: expect.stringContaining("previous service file was restored"),
+    });
+
+    expect(fs.readFileSync(plistPath, "utf8")).toBe("OLD-PLIST\n");
+    // install bootstrap (failed) + best-effort bootstrap of the restored plist
+    const bootstraps = calls.filter((c) => c[0] === "launchctl" && c[1] === "bootstrap");
+    expect(bootstraps).toHaveLength(2);
+  });
+
+  it("systemd user: failed re-install restores the previous unit and re-enables it", async () => {
+    const unitPath = path.join(root, "aifight.service");
+    fs.writeFileSync(unitPath, "OLD-UNIT\n");
+
+    let enableCalls = 0;
+    const exec: ServiceExecFile = async (file, args) => {
+      if (file === "systemctl" && args.includes("enable")) {
+        enableCalls += 1;
+        if (enableCalls === 1) throw execError("Failed to enable unit: access denied");
+      }
+      return { stdout: "", stderr: "" };
+    };
+
+    await expect(
+      installBridgeService({
+        platform: "linux",
+        uid: 1000,
+        homeDir: path.join(root, "home"),
+        runtimeHome: path.join(root, "runtime"),
+        nodeExec: path.join(root, "bin", "node"),
+        aifightExec: path.join(root, "bin", "aifight"),
+        systemdUserUnitPath: unitPath,
+        execFile: exec,
+      }),
+    ).rejects.toMatchObject({
+      code: "service_install_failed",
+      message: expect.stringContaining("previous service file was restored"),
+    });
+
+    expect(fs.readFileSync(unitPath, "utf8")).toBe("OLD-UNIT\n");
+    // best-effort re-enable of the restored unit ran during rollback
+    expect(enableCalls).toBe(2);
+  });
+
+  it("fresh-install failure (no previous file) still removes the broken plist", async () => {
+    const { exec } = mockLaunchctl({ bootstrapFails: true });
+    const err = await installBridgeService(baseDeps(exec)).catch((e) => e as Error);
+    expect(err).toMatchObject({ code: "service_install_failed" });
+    expect(String((err as Error).message)).not.toContain("restored");
+    expect(fs.existsSync(path.join(root, "ai.aifight.service.plist"))).toBe(false);
   });
 });
 

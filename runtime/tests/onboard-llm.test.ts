@@ -4,8 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 
-import { onboardDirectLLM, type OnboardIO } from "../src/cli/commands/onboard-llm.js";
-import { validateConfig } from "../src/profile/config-schema.js";
+import { ONBOARD_PROVIDERS, onboardDirectLLM, type OnboardIO } from "../src/cli/commands/onboard-llm.js";
+import { DEFAULT_CONFIG, validateConfig } from "../src/profile/config-schema.js";
+import { protocolDefaultBaseURL } from "../src/llm/resolve-profile.js";
 import type { HandlerEnv } from "../src/cli/shared.js";
 
 // Drives onboardDirectLLM with scripted answers so the decision flow is
@@ -125,7 +126,9 @@ describe("onboardDirectLLM", () => {
     // schema, so a CLI-written config must pass validateConfig (and vice versa).
     expect(validateConfig(cfg).ok).toBe(true);
     // ...and the key lives in the shared `keys/` dir the desktop also uses.
-    expect(Object.keys(stored)[0]).toContain("/keys/");
+    // path.sep, not a literal "/": the path comes from path.join, so on Windows
+    // it is separated by backslashes.
+    expect(Object.keys(stored)[0]).toContain(`${path.sep}keys${path.sep}`);
     // key stored to a 0600 file, never echoed
     expect(Object.values(stored)).toContain("sk-ant-xyz");
     expect(out()).not.toContain("sk-ant-xyz");
@@ -196,9 +199,10 @@ describe("onboardDirectLLM", () => {
 
   it("retries after a failed probe, then succeeds", async () => {
     const { io } = makeIO({
-      // per attempt: provider, baseURL, model, effort. Thinking (on), advanced
-      // (no) and re-enter (yes) all take their defaults from an empty yesno script.
-      lines: ["1", "", "", "", "1", "", "", ""],
+      // per attempt: provider, baseURL, model, effort, SUMMARY (Enter = save).
+      // Thinking (on), advanced (no) and re-enter (yes) all take their defaults
+      // from an empty yesno script.
+      lines: ["1", "", "", "", "", "1", "", "", "", ""],
       hidden: ["bad-key", "good-key"],
       models: null,
       probe: [false, true],
@@ -271,9 +275,11 @@ describe("onboardDirectLLM", () => {
     expect(readConfig().profiles[readConfig().activeProfile].request.maxTokens).toBe(32000);
   });
 
-  it("skips the thinking prompt for a non-thinking provider (OpenAI-compatible)", async () => {
+  it("offers the thinking toggle on OpenAI-compatible, defaulting OFF", async () => {
     const { io } = makeIO({
-      // provider 3 (compat): baseURL required, model; no thinking/effort prompts.
+      // provider 3 (compat): baseURL required, model; the thinking toggle now
+      // appears (pass-through since 2026-07-26) — Enter accepts the OFF default,
+      // so no effort prompt follows.
       lines: ["3", "https://api.deepseek.com/v1", "deepseek-chat"],
       hidden: ["sk-d"],
       models: null,
@@ -395,5 +401,114 @@ describe("onboardDirectLLM", () => {
       if (prevAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = prevAnthropic;
     }
+  });
+});
+
+// Anti-drift guards: the wizard's Enter-accepts defaults and the non-wizard
+// paths (config init's DEFAULT_CONFIG scaffold, resolve-profile's baseURL
+// fallback) must be the SAME facts, not hand-synced copies.
+//   - drift-6: the Gemini official URL carried /v1beta while the adapter
+//     appends /v1beta itself → doubled request path for wizard users.
+//   - drift-12: DEFAULT_CONFIG shipped claude-sonnet-4-6 while the wizard
+//     shipped claude-sonnet-5 → config-init users parked a generation behind.
+describe("ONBOARD_PROVIDERS defaults stay aligned with the non-wizard paths", () => {
+  it("every provider's official base URL equals the resolve-profile default", () => {
+    for (const provider of ONBOARD_PROVIDERS) {
+      if (provider.officialBaseURL === undefined) continue; // compat: user-supplied
+      expect(provider.officialBaseURL, provider.id).toBe(protocolDefaultBaseURL(provider.protocol));
+    }
+  });
+
+  it("the wizard's Claude default model equals DEFAULT_CONFIG's starter model", () => {
+    const claude = ONBOARD_PROVIDERS.find((p) => p.id === "claude");
+    expect(claude?.defaultModel).toBe(DEFAULT_CONFIG.profiles["claude-default"]!.model);
+  });
+});
+
+// ── The 2026-07-26 phase machine: back-navigation + the summary hub ──
+
+describe("onboard wizard navigation", () => {
+  beforeEach(() => {
+    prevHome = process.env.AIFIGHT_HOME;
+    home = path.join(os.tmpdir(), `aifight-onboard-${randomBytes(4).toString("hex")}`);
+    process.env.AIFIGHT_HOME = home;
+    fs.mkdirSync(agentDir(), { recursive: true });
+  });
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.AIFIGHT_HOME;
+    else process.env.AIFIGHT_HOME = prevHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("b at the model prompt returns to the key step (fresh key wins)", async () => {
+    const { io, stored } = makeIO({
+      // provider, baseURL, model="b" (→ back to key), model again, effort, summary
+      lines: ["1", "", "b", "", "", ""],
+      hidden: ["first-key", "second-key"],
+      models: null,
+      probe: [true],
+    });
+    const { env } = captureEnv();
+    expect(await onboardDirectLLM({ slug: SLUG, env, io })).toBe("configured");
+    // The re-entered key overwrote the first one on disk.
+    const paths = Object.keys(stored);
+    expect(paths).toHaveLength(1);
+    expect(stored[paths[0]!]).toBe("second-key");
+  });
+
+  it("summary '2' jumps to the model step, then returns to the summary", async () => {
+    const { io } = makeIO({
+      // provider, baseURL, model(default), effort, summary=2 → model edit → summary save
+      lines: ["1", "", "", "", "2", "claude-opus-4-8", ""],
+      hidden: ["sk-x"],
+      models: null,
+      probe: [true],
+    });
+    const { env, out } = captureEnv();
+    expect(await onboardDirectLLM({ slug: SLUG, env, io })).toBe("configured");
+    const cfg = readConfig();
+    expect(cfg.profiles[cfg.activeProfile].model).toBe("claude-opus-4-8");
+    // The jump went model → summary directly, not back through settings: the
+    // effort menu printed exactly once. (Prompt QUESTIONS don't reach stdout in
+    // this harness — the menu header does.)
+    expect(out().split("Reasoning effort:").length - 1).toBe(1);
+  });
+
+  it("q at the summary cancels without writing a profile", async () => {
+    const { io } = makeIO({
+      lines: ["1", "", "", "", "q"],
+      hidden: ["sk-x"],
+      models: null,
+      probe: [],
+    });
+    const { env, out } = captureEnv();
+    expect(await onboardDirectLLM({ slug: SLUG, env, io })).toBe("failed");
+    expect(out()).toContain("Cancelled");
+  });
+
+  it("Enter on the effort prompt stores an explicit high (owner default)", async () => {
+    const { io } = makeIO({
+      lines: ["1", "", "", "", ""],
+      hidden: ["sk-x"],
+      models: null,
+      probe: [true],
+    });
+    const { env } = captureEnv();
+    expect(await onboardDirectLLM({ slug: SLUG, env, io })).toBe("configured");
+    const cfg = readConfig();
+    expect(cfg.profiles[cfg.activeProfile].thinking.effort).toBe("high");
+  });
+
+  it("the auto tier is accepted and stored as auto", async () => {
+    const { io } = makeIO({
+      lines: ["1", "", "", "auto", ""],
+      hidden: ["sk-x"],
+      models: null,
+      probe: [true],
+    });
+    const { env } = captureEnv();
+    expect(await onboardDirectLLM({ slug: SLUG, env, io })).toBe("configured");
+    const cfg = readConfig();
+    expect(cfg.profiles[cfg.activeProfile].thinking.effort).toBe("auto");
   });
 });

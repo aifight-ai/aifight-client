@@ -18,6 +18,7 @@ import {
   type ProfileInput,
   type RecommendMaxTokensInput,
   type ModelCapabilitiesInput,
+  type DiscoverModelsInput,
   type UpdateStatus,
 } from "../shared/ipc";
 
@@ -70,6 +71,7 @@ const api: AifightBridgeApi = {
   getLLMConfig: () => ipcRenderer.invoke(IPC.configGet),
   llmRecommendMaxTokens: (input: RecommendMaxTokensInput) => ipcRenderer.invoke(IPC.configRecommendMaxTokens, input),
   llmModelCapabilities: (input: ModelCapabilitiesInput) => ipcRenderer.invoke(IPC.configModelCapabilities, input),
+  llmDiscoverModels: (input: DiscoverModelsInput) => ipcRenderer.invoke(IPC.configDiscoverModels, input),
   saveLLMProfile: (input: ProfileInput) => ipcRenderer.invoke(IPC.configSaveProfile, input),
   setLLMKey: (profileId: string, apiKey: string) => ipcRenderer.invoke(IPC.configSetKey, profileId, apiKey),
   clearLLMKey: (profileId: string) => ipcRenderer.invoke(IPC.configClearKey, profileId),

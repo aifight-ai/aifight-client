@@ -209,14 +209,15 @@ Timers:
   window →  `match_cancelled` with `reason:"confirmation_timeout"`
   (self-timeout) or `reason:"opponent_not_ready"` / `reason:"opponent_disconnected"`
   (peer failure). `player_declined` is NOT a produced reason.
-- **Turn timeout**: 3 min by default
-  (`hub.go:227`, `TurnTimeout = 3 * time.Minute`). Overridable via
-  `TURN_TIMEOUT` environment variable. Expiry triggers forfeit — see
+- **Turn timeout**: 5 min by default (`Hub.turnTimeout` seeded in
+  `NewHub`, `internal/hub/hub.go`; schema documents 300000 ms).
+  Overridable via `TURN_TIMEOUT` environment variable and hot-tunable
+  via `runtime_settings`. Expiry triggers forfeit — see
   [`03-error-handling.md`](./03-error-handling.md).
 
-**Plan correction:** plan §5.8 and CLAUDE.md mention a 5-minute turn
-timeout; the deployed default is **3 minutes**. The spec follows the
-code.
+**Authority note:** runtimes learn the effective value from
+`action_request.data.timeout_ms` — trust that field over any prose
+copy of the number (see [`03-error-handling.md`](./03-error-handling.md) §2).
 
 ## 6. Reconnect resequencing
 

@@ -115,6 +115,13 @@ function sendEffect(effects: readonly AgentFSMEffect[]) {
   return effects.find((effect) => effect.type === "send");
 }
 
+/** The wire message alone. That is the contract; the send effect's envelope also
+ *  carries internal bookkeeping (D2's restoreOnFailure) that never ships. */
+function sentMessage(effects: readonly AgentFSMEffect[]) {
+  const effect = sendEffect(effects);
+  return effect?.type === "send" ? effect.message : undefined;
+}
+
 function notifyEffect(effects: readonly AgentFSMEffect[]) {
   return effects.find((effect) => effect.type === "notify");
 }
@@ -191,12 +198,9 @@ describe("Agent FSM", () => {
 
     expect(out.state.phase).toBe("matching");
     expect(out.state.pendingConfirm).toBeUndefined();
-    expect(sendEffect(out.effects)).toEqual({
-      type: "send",
-      message: {
-        type: "match_confirm",
-        data: { confirm_id: "11111111-1111-4111-8111-111111111111" },
-      },
+    expect(sentMessage(out.effects)).toEqual({
+      type: "match_confirm",
+      data: { confirm_id: "11111111-1111-4111-8111-111111111111" },
     });
   });
 
@@ -310,13 +314,10 @@ describe("Agent FSM", () => {
 
     expect(out.state.phase).toBe("in_match");
     expect(out.state.pendingAction).toBeUndefined();
-    expect(sendEffect(out.effects)).toEqual({
-      type: "send",
-      message: {
-        type: "action",
-        match_id: "22222222-2222-4222-8222-222222222222",
-        data: { type: "fold" },
-      },
+    expect(sentMessage(out.effects)).toEqual({
+      type: "action",
+      match_id: "22222222-2222-4222-8222-222222222222",
+      data: { type: "fold" },
     });
   });
 
@@ -333,14 +334,11 @@ describe("Agent FSM", () => {
       usage,
     });
 
-    expect(sendEffect(out.effects)).toEqual({
-      type: "send",
-      message: {
-        type: "action",
-        match_id: "22222222-2222-4222-8222-222222222222",
-        data: { type: "fold" },
-        usage,
-      },
+    expect(sentMessage(out.effects)).toEqual({
+      type: "action",
+      match_id: "22222222-2222-4222-8222-222222222222",
+      data: { type: "fold" },
+      usage,
     });
   });
 
@@ -356,14 +354,11 @@ describe("Agent FSM", () => {
       action: { type: "fold" },
     });
 
-    expect(sendEffect(out.effects)).toEqual({
-      type: "send",
-      message: {
-        type: "action",
-        match_id: "22222222-2222-4222-8222-222222222222",
-        data: { type: "fold" },
-        request_id: "req-abc-123",
-      },
+    expect(sentMessage(out.effects)).toEqual({
+      type: "action",
+      match_id: "22222222-2222-4222-8222-222222222222",
+      data: { type: "fold" },
+      request_id: "req-abc-123",
     });
   });
 
@@ -380,14 +375,11 @@ describe("Agent FSM", () => {
       decision,
     });
 
-    expect(sendEffect(out.effects)).toEqual({
-      type: "send",
-      message: {
-        type: "action",
-        match_id: "22222222-2222-4222-8222-222222222222",
-        data: { type: "fold" },
-        decision,
-      },
+    expect(sentMessage(out.effects)).toEqual({
+      type: "action",
+      match_id: "22222222-2222-4222-8222-222222222222",
+      data: { type: "fold" },
+      decision,
     });
   });
 
@@ -614,13 +606,10 @@ describe("Agent FSM", () => {
     expect(readyA.state.phase).toBe("deciding");
     expect(readyA.state.pendingActions?.["session-a"]).toBeUndefined();
     expect(readyA.state.pendingActions?.["session-b"]).toBe(requestB);
-    expect(sendEffect(readyA.effects)).toEqual({
-      type: "send",
-      message: {
-        type: "action",
-        match_id: "session-a",
-        data: { type: "fold" },
-      },
+    expect(sentMessage(readyA.effects)).toEqual({
+      type: "action",
+      match_id: "session-a",
+      data: { type: "fold" },
     });
   });
 
@@ -673,6 +662,29 @@ describe("Agent FSM", () => {
       });
       expect(dup.effects.some((e) => e.type === "request_decision")).toBe(false);
       expect(notifyEffect(dup.effects)).toMatchObject({ code: "fsm.duplicate_action_request" });
+    });
+
+    it("re-processes a redelivered request_id after decision.failed (retry not swallowed)", () => {
+      const first = transitionAgentFSM(inMatch(), {
+        type: "ws.message",
+        message: actionRequestWithId(SESSION, "req-1"),
+      });
+      const failed = transitionAgentFSM(first.state, {
+        type: "decision.failed",
+        reason: new Error("model failed"),
+        matchId: SESSION,
+      });
+      // R15: the failure forgets the request_id so a server redelivery of the
+      // SAME request_id is a fresh retry, not duplicate-gate fodder.
+      expect(failed.state.lastRequestIds?.[SESSION]).toBeUndefined();
+      const redelivered = transitionAgentFSM(failed.state, {
+        type: "ws.message",
+        message: actionRequestWithId(SESSION, "req-1"),
+      });
+      expect(redelivered.effects).toEqual([
+        expect.objectContaining({ type: "request_decision", matchId: SESSION, requestId: "req-1" }),
+      ]);
+      expect(redelivered.state.lastRequestIds?.[SESSION]).toBe("req-1");
     });
 
     it("processes a superseding action_request (different request_id) for the same match", () => {

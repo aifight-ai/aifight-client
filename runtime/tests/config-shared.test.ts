@@ -34,20 +34,22 @@ describe("resolveProtocol (D2)", () => {
   it("accepts canonical protocol names as a pass-through", () => {
     expect(resolveProtocol("anthropic_messages")).toBe("anthropic_messages");
     expect(resolveProtocol("deepseek_chat_completions")).toBe("deepseek_chat_completions");
-    expect(resolveProtocol("gemini_openai_compat")).toBe("gemini_openai_compat");
+    expect(resolveProtocol("gemini_generate_content")).toBe("gemini_generate_content");
   });
 
   it("returns undefined for an unknown value", () => {
     expect(resolveProtocol("claud")).toBeUndefined();
     expect(resolveProtocol("openai")).toBeUndefined();
     expect(resolveProtocol("")).toBeUndefined();
+    // Removed ghost protocol: it was storable but no adapter ever existed for
+    // it, so accepting it only deferred the failure to the first decision.
+    expect(resolveProtocol("gemini_openai_compat")).toBeUndefined();
   });
 });
 
 describe("protocolRequiresBaseURLAndModel (D3)", () => {
-  it("is true only for the compat protocols", () => {
+  it("is true only for the compat protocol", () => {
     expect(protocolRequiresBaseURLAndModel("openai_chat_compat")).toBe(true);
-    expect(protocolRequiresBaseURLAndModel("gemini_openai_compat")).toBe(true);
     expect(protocolRequiresBaseURLAndModel("anthropic_messages")).toBe(false);
     expect(protocolRequiresBaseURLAndModel("openai_responses")).toBe(false);
     expect(protocolRequiresBaseURLAndModel("gemini_generate_content")).toBe(false);

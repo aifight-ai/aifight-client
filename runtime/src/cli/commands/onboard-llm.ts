@@ -19,7 +19,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import type { HandlerEnv } from "../shared.js";
-import { STORABLE_REASONING_EFFORTS } from "../../profile/config-schema.js";
+import {
+  DEFAULT_CLAUDE_MODEL,
+  DEFAULT_MAX_TOKENS,
+  STORABLE_REASONING_EFFORTS,
+} from "../../profile/config-schema.js";
 import type { LLMConfig, LLMProfile, Protocol, ReasoningEffort } from "../../profile/config-schema.js";
 import { validateProviderBaseURL } from "../../profile/config-schema.js";
 import { resolveAgentDir } from "../../profile/profile-loader.js";
@@ -58,7 +62,9 @@ export const ONBOARD_PROVIDERS: readonly OnboardProvider[] = [
     officialBaseURL: "https://api.anthropic.com",
     // Current-generation speed/intelligence tier. Sonnet 4.6 is now a legacy model,
     // so pointing a first run at it started new users one generation behind.
-    defaultModel: "claude-sonnet-5",
+    // Shared with config-schema's DEFAULT_CONFIG so the starter template and
+    // the wizard bump generations together.
+    defaultModel: DEFAULT_CLAUDE_MODEL,
     displayName: "Claude (Anthropic)",
   },
   {
@@ -69,7 +75,7 @@ export const ONBOARD_PROVIDERS: readonly OnboardProvider[] = [
     officialBaseURL: "https://api.openai.com/v1",
     // Cost-effective mainstream tier (not the flagship). Kept in sync with the
     // desktop app's model presets and model-capabilities.json (D15).
-    defaultModel: "gpt-5.4",
+    defaultModel: "gpt-5.6-sol",
     displayName: "GPT (OpenAI Responses)",
   },
   {
@@ -86,8 +92,11 @@ export const ONBOARD_PROVIDERS: readonly OnboardProvider[] = [
     id: "gemini",
     label: "Gemini   (Google)",
     protocol: "gemini_generate_content",
-    officialBaseURL: "https://generativelanguage.googleapis.com/v1beta",
-    defaultModel: "gemini-2.5-flash",
+    // Bare domain, NO /v1beta: the gemini_generate_content adapter appends the
+    // version path itself. Must match protocolDefaultBaseURL (resolve-profile.ts)
+    // — a baked-in /v1beta here produced /v1beta/v1beta request URLs.
+    officialBaseURL: "https://generativelanguage.googleapis.com",
+    defaultModel: "gemini-3.6-flash",
     displayName: "Gemini (Google)",
   },
 ] as const;
@@ -115,8 +124,8 @@ export type OnboardResult = "configured" | "failed";
 
 const MAX_ATTEMPTS = 3;
 
-/** AIFight is a reasoning arena, so generous output room is the default. */
-const DEFAULT_MAX_TOKENS = 32000;
+// DEFAULT_MAX_TOKENS is imported from config-schema (D16 single source):
+// AIFight is a reasoning arena, so generous output room is the default.
 const MIN_MAX_TOKENS = 256;
 
 /** The model knobs the wizard collects (capability-aware). */
@@ -251,6 +260,20 @@ async function existingConfigIsUsable(slug: string, io: OnboardIO, env: HandlerE
   return false;
 }
 
+/**
+ * Back-navigation sentinel. Every LINE prompt in the wizard accepts "b" to return
+ * to the previous step (yes/no micro-questions stay binary — the summary screen is
+ * the revision mechanism for anything they set). Symbol, not string, so a model
+ * actually named "b" could still be typed via the summary's model jump.
+ */
+const BACK = Symbol("back");
+type Back = typeof BACK;
+
+function isBack(answer: string): boolean {
+  const a = answer.trim().toLowerCase();
+  return a === "b" || a === "back";
+}
+
 async function chooseProvider(io: OnboardIO, env: HandlerEnv): Promise<OnboardProvider | undefined> {
   env.stdout("Which LLM will your agent play with?\n");
   for (const p of ONBOARD_PROVIDERS) env.stdout(`    ${p.key}) ${p.label}\n`);
@@ -267,11 +290,12 @@ async function chooseBaseURL(
   provider: OnboardProvider,
   io: OnboardIO,
   env: HandlerEnv,
-): Promise<string | undefined> {
+): Promise<string | undefined | Back> {
   if (provider.officialBaseURL === undefined) {
     // Compat: base URL is required.
     for (let i = 0; i < MAX_ATTEMPTS; i++) {
-      const raw = (await io.promptLine("  Base URL (e.g. https://api.deepseek.com/v1): ")).trim();
+      const raw = (await io.promptLine("  Base URL (e.g. https://api.deepseek.com/v1) [b = back]: ")).trim();
+      if (isBack(raw)) return BACK;
       if (raw === "") continue; // empty → ask again
       const problem = baseURLProblem(raw);
       if (problem === null) return raw.replace(/\/+$/, "");
@@ -281,8 +305,9 @@ async function chooseBaseURL(
   }
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
     const raw = (
-      await io.promptLine(`  Base URL [Enter = official ${provider.officialBaseURL}, or paste a custom one]: `)
+      await io.promptLine(`  Base URL [Enter = official ${provider.officialBaseURL}, or paste a custom one, b = back]: `)
     ).trim();
+    if (isBack(raw)) return BACK;
     if (raw === "") return provider.officialBaseURL;
     const problem = baseURLProblem(raw);
     if (problem === null) return raw.replace(/\/+$/, "");
@@ -307,7 +332,7 @@ async function chooseModel(
   apiKey: string,
   io: OnboardIO,
   env: HandlerEnv,
-): Promise<string> {
+): Promise<string | Back> {
   // Best-effort discovery; never blocks the flow.
   const models = await io.discoverModels({ protocol: provider.protocol, baseURL, apiKey });
   if (models && models.length > 0) {
@@ -315,16 +340,18 @@ async function chooseModel(
     env.stdout("  Available models:\n");
     shown.forEach((m, i) => env.stdout(`    ${i + 1}) ${m}\n`));
     const answer = (
-      await io.promptLine(`  Pick a number, type a model name, or Enter for default (${provider.defaultModel}): `)
+      await io.promptLine(`  Pick a number, type a model name, or Enter for default (${provider.defaultModel}) [b = back]: `)
     ).trim();
+    if (isBack(answer)) return BACK;
     if (answer === "") return provider.defaultModel;
     const asNum = Number.parseInt(answer, 10);
     if (Number.isInteger(asNum) && asNum >= 1 && asNum <= shown.length) return shown[asNum - 1]!;
     return answer;
   }
   const answer = (
-    await io.promptLine(`  Model [Enter = ${provider.defaultModel}, or type a name]: `)
+    await io.promptLine(`  Model [Enter = ${provider.defaultModel}, or type a name, b = back]: `)
   ).trim();
+  if (isBack(answer)) return BACK;
   return answer === "" ? provider.defaultModel : answer;
 }
 
@@ -342,7 +369,7 @@ async function chooseModelSettings(
   model: string,
   io: OnboardIO,
   env: HandlerEnv,
-): Promise<ModelSettings> {
+): Promise<ModelSettings | Back> {
   const caps = resolveModelCapabilities(provider.protocol, model);
 
   // ── Thinking ──
@@ -353,7 +380,15 @@ async function chooseModelSettings(
     thinkingEnabled = true;
     env.stdout("  This model always reasons — thinking can't be turned off.\n");
   } else {
-    thinkingEnabled = await io.promptYesNo("  Enable thinking / reasoning? (recommended)", true);
+    // Pass-through protocols default the toggle OFF: the endpoint's model may not
+    // reason at all, and a forwarded reasoning_effort would 400 on it. Reasoning
+    // arenas want it on everywhere else.
+    thinkingEnabled = await io.promptYesNo(
+      caps.thinkingDefaultOn
+        ? "  Enable thinking / reasoning? (recommended)"
+        : "  Enable thinking / reasoning? (only if this endpoint's model reasons)",
+      caps.thinkingDefaultOn,
+    );
   }
 
   // ── Effort (only when thinking is on and the model exposes levels) ──
@@ -361,32 +396,43 @@ async function chooseModelSettings(
   let effortExplicit = false;
   if (thinkingEnabled && caps.efforts.length > 0) {
     const efforts = caps.efforts.map(normalizeEffort);
-    const def: ReasoningEffort = caps.defaultEffort
-      ? normalizeEffort(caps.defaultEffort)
-      : (efforts[efforts.length - 1] as ReasoningEffort);
+    // Owner decision 2026-07-26: the default is an EXPLICIT "high" wherever the
+    // model has it — a reasoning arena should not quietly inherit a provider
+    // default that may be medium (GPT-5.x) or none (gpt-5.4). The provider's own
+    // default stays reachable as the "auto" tier.
+    const def: ReasoningEffort = efforts.includes("high")
+      ? "high"
+      : caps.defaultEffort
+        ? normalizeEffort(caps.defaultEffort)
+        : (efforts[efforts.length - 1] as ReasoningEffort);
     env.stdout(
-      `  Reasoning effort: ${efforts.join(", ")}` +
+      `  Reasoning effort: ${efforts.join(", ")}, or auto (= the provider's default` +
+        `${caps.defaultEffort ? `, ${caps.defaultEffort}` : ""})` +
         (caps.isKnownModel ? "" : " (suggested — this model isn't in the built-in list)") +
         "\n",
     );
-    const ans = (await io.promptLine(`  Effort [Enter = ${def}]: `)).trim().toLowerCase();
+    const ans = (await io.promptLine(`  Effort [Enter = ${def}, b = back]: `)).trim().toLowerCase();
+    if (isBack(ans)) return BACK;
     const picked = normalizeEffort(ans);
     if (ans === "") {
       effort = def;
-    } else if (efforts.includes(picked)) {
+    } else if (efforts.includes(picked) || picked === "auto") {
       effort = picked;
-      effortExplicit = true;
-    } else if (!caps.isKnownModel && STORABLE_REASONING_EFFORTS.includes(picked)) {
-      // Same rule as `aifight config add`: only the registry may reject a tier, and
-      // only for a model it lists. For an unlisted model take the answer as given and
-      // let the auto-test be the judge.
+      effortExplicit = picked !== "auto";
+    } else if (STORABLE_REASONING_EFFORTS.includes(picked)) {
+      // A storable tier the model doesn't list is ACCEPTED — the adapter clamps it
+      // on send — but say so now, at the prompt, not never. (Same rule as the
+      // desktop chips: max stays clickable on gpt-5.5 with a "sent as xhigh" note.)
+      if (caps.isKnownModel) {
+        env.stdout(`  Note: this model doesn't list "${picked}" — it will be clamped when sent.\n`);
+      }
       effort = picked;
       effortExplicit = true;
     } else {
       // Never swallow the answer. This used to fall back to the default in silence,
       // so a user who typed a tier the model lacks got a config that disagreed with
       // what they'd just chosen, with nothing on screen saying so.
-      env.stdout(`  "${ans}" isn't available here — using ${def}.\n`);
+      env.stdout(`  "${ans}" isn't a level this app can save — using ${def}.\n`);
       effort = def;
     }
   }
@@ -492,54 +538,160 @@ export async function onboardDirectLLM(opts: {
   const preExistingProfiles = (await readConfig(slug))?.profiles ?? {};
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const provider = await chooseProvider(io, env);
-    if (!provider) {
-      env.stdout("No provider selected.\n");
+    // ── The wizard as an explicit phase machine ─────────────────────────────
+    // provider → baseURL → key → model → settings → summary → write. "b" on any
+    // line prompt moves one phase back; the SUMMARY screen is the revision hub —
+    // most people only notice the wrong answer at the end, and before this
+    // machine the only way back was Ctrl-C and start over.
+    type Phase = "provider" | "baseURL" | "key" | "model" | "settings" | "summary" | "write";
+    let phase: Phase = "provider";
+    // Set when a summary jump re-runs one phase, so it returns to the summary
+    // instead of dragging the user through every later step again.
+    let fromSummary = false;
+
+    let provider: OnboardProvider | undefined;
+    let baseURL: string | undefined;
+    let apiKey = "";
+    let keyFilePath = "";
+    let model = "";
+    let settings: ModelSettings | undefined;
+
+    let cancelled = false;
+    while (phase !== "write" && !cancelled) {
+      switch (phase) {
+        case "provider": {
+          provider = await chooseProvider(io, env);
+          if (!provider) {
+            env.stdout("No provider selected.\n");
+            return "failed";
+          }
+          // Confirm before overwriting a pre-existing profile (default No). To keep
+          // both, the user runs `aifight config add <name>` with a custom id. Headless
+          // `config add` is untouched — this gate lives only in the interactive wizard.
+          const clash = preExistingProfiles[provider.id];
+          if (clash) {
+            const replace = await io.promptYesNo(
+              `  You already have "${provider.id}" (${clash.model}). Replace it? (No keeps it — use \`aifight config add <name>\` to add another alongside)`,
+              false,
+            );
+            if (!replace) {
+              env.stdout(
+                `  Kept your existing "${provider.id}". Run \`aifight config add <name>\` to add another provider alongside it.\n`,
+              );
+              return "failed";
+            }
+          }
+          phase = "baseURL";
+          break;
+        }
+        case "baseURL": {
+          const r = await chooseBaseURL(provider!, io, env);
+          if (r === BACK) {
+            phase = fromSummary ? "summary" : "provider";
+            fromSummary = false;
+            break;
+          }
+          if (provider!.officialBaseURL === undefined && r === undefined) {
+            env.stdout("  A base URL is required for an OpenAI-compatible provider.\n");
+            break; // re-ask
+          }
+          baseURL = r;
+          phase = fromSummary ? "summary" : "key";
+          fromSummary = false;
+          break;
+        }
+        case "key": {
+          const entered = (
+            await io.promptHidden(`  Paste your ${provider!.displayName} API key (hidden; b = back): `)
+          ).trim();
+          if (isBack(entered)) {
+            phase = "baseURL";
+            break;
+          }
+          if (entered === "") {
+            env.stdout("  No key entered.\n");
+            const again = await io.promptYesNo("  Try again?", true);
+            if (!again) return "failed";
+            break; // re-ask
+          }
+          apiKey = entered;
+          // Same on-disk layout the desktop app uses (resolveAgentDir/keys/<id>.key),
+          // so a profile configured here and one configured in the app share one file.
+          keyFilePath = path.join(resolveAgentDir(slug), "keys", `${provider!.id}.key`);
+          await io.storeKey(keyFilePath, apiKey);
+          env.stdout("  ✓ Key saved to local config (0600 file, never uploaded).\n");
+          phase = "model";
+          break;
+        }
+        case "model": {
+          const r = await chooseModel(provider!, baseURL!, apiKey, io, env);
+          if (r === BACK) {
+            phase = fromSummary ? "summary" : "key";
+            fromSummary = false;
+            break;
+          }
+          model = r;
+          phase = fromSummary ? "summary" : "settings";
+          fromSummary = false;
+          break;
+        }
+        case "settings": {
+          const r = await chooseModelSettings(provider!, model, io, env);
+          if (r === BACK) {
+            phase = "model";
+            break;
+          }
+          settings = r;
+          phase = "summary";
+          break;
+        }
+        case "summary": {
+          const st = settings!;
+          const official = baseURL === provider!.officialBaseURL ? " (official)" : "";
+          env.stdout(
+            [
+              "",
+              `  Summary — ${provider!.displayName}`,
+              `    1) Base URL   ${baseURL ?? "(unset)"}${official}`,
+              `    2) Model      ${model}`,
+              `    3) Reasoning  ${st.thinkingEnabled ? `on${st.effort ? ` · effort ${st.effort}` : ""}` : "off"}` +
+                ` · max tokens ${st.maxTokens} · streaming ${st.stream}` +
+                `${st.temperature !== null ? ` · temperature ${st.temperature}` : ""}`,
+              `       Key        (saved to a 0600 file)`,
+              "",
+            ].join("\n"),
+          );
+          const ans = (
+            await io.promptLine("  Save & test? [Enter = save, 1-3 = change that item, q = cancel]: ")
+          )
+            .trim()
+            .toLowerCase();
+          if (ans === "") {
+            phase = "write";
+          } else if (ans === "1") {
+            fromSummary = true;
+            phase = "baseURL";
+          } else if (ans === "2") {
+            fromSummary = true;
+            phase = "model";
+          } else if (ans === "3" || isBack(ans)) {
+            phase = "settings";
+          } else if (ans === "q" || ans === "quit") {
+            cancelled = true;
+          }
+          // anything else: re-print the summary
+          break;
+        }
+      }
+    }
+    if (cancelled) {
+      env.stdout("  Cancelled — nothing was saved (the pasted key file remains; overwrite it by re-running setup).\n");
       return "failed";
     }
 
-    // Confirm before overwriting a pre-existing profile (default No). To keep
-    // both, the user runs `aifight config add <name>` with a custom id. Headless
-    // `config add` is untouched — this gate lives only in the interactive wizard.
-    const clash = preExistingProfiles[provider.id];
-    if (clash) {
-      const replace = await io.promptYesNo(
-        `  You already have "${provider.id}" (${clash.model}). Replace it? (No keeps it — use \`aifight config add <name>\` to add another alongside)`,
-        false,
-      );
-      if (!replace) {
-        env.stdout(
-          `  Kept your existing "${provider.id}". Run \`aifight config add <name>\` to add another provider alongside it.\n`,
-        );
-        return "failed";
-      }
-    }
+    await writeProfile(slug, provider!.id, profileFor(provider!, baseURL, model, keyFilePath, settings!));
 
-    const baseURL = await chooseBaseURL(provider, io, env);
-    if (provider.officialBaseURL === undefined && baseURL === undefined) {
-      env.stdout("  A base URL is required for an OpenAI-compatible provider.\n");
-      continue;
-    }
-
-    const apiKey = (await io.promptHidden(`  Paste your ${provider.displayName} API key (hidden): `)).trim();
-    if (apiKey === "") {
-      env.stdout("  No key entered.\n");
-      const again = await io.promptYesNo("  Try again?", true);
-      if (!again) return "failed";
-      continue;
-    }
-
-    // Same on-disk layout the desktop app uses (resolveAgentDir/keys/<id>.key),
-    // so a profile configured here and one configured in the app share one file.
-    const keyFilePath = path.join(resolveAgentDir(slug), "keys", `${provider.id}.key`);
-    await io.storeKey(keyFilePath, apiKey);
-    env.stdout("  ✓ Key saved to local config (0600 file, never uploaded).\n");
-
-    const model = await chooseModel(provider, baseURL!, apiKey, io, env);
-    const settings = await chooseModelSettings(provider, model, io, env);
-    await writeProfile(slug, provider.id, profileFor(provider, baseURL, model, keyFilePath, settings));
-
-    env.stdout(`\nTesting ${provider.displayName} (${model})…\n`);
+    env.stdout(`\nTesting ${provider!.displayName} (${model})…\n`);
     const ok = await io.probe(slug);
     if (ok) {
       // Drop any leftover placeholder profiles (e.g. config init's
@@ -548,7 +700,7 @@ export async function onboardDirectLLM(opts: {
       await pruneUnresolvableProfiles(slug);
       env.stdout("  ✓ model responded.\n");
       env.stdout(
-        `  Tip: change any field later with one command — \`aifight config update ${provider.id} --model …\` (see \`aifight config --help\`).\n\n`,
+        `  Tip: change any field later with one command — \`aifight config update ${provider!.id} --model …\` (see \`aifight config --help\`).\n\n`,
       );
       return "configured";
     }

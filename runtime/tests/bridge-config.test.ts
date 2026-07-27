@@ -76,6 +76,16 @@ describe("bridge config", () => {
     expect(redacted.runtimeType).toBe("direct");
   });
 
+  it("fully masks a short secret; long secrets keep only head+tail (R14 audit pin)", () => {
+    // 18-char key (< 20): must be opaque — the pre-R13 head+tail form preserved
+    // 8 of its 18 chars, and archiveReplacedBridgeConfig persists this output.
+    const short = redactBridgeConfig({ ...config(), apiKey: "sk-test-secret-key" });
+    expect(short.apiKey).toBe("***");
+    // Long key keeps the 4+4 support-triage affordance, nothing more.
+    const long = redactBridgeConfig({ ...config(), apiKey: "sk-live-0123456789abcdefghijkl" });
+    expect(long.apiKey).toBe("sk-l...ijkl");
+  });
+
   it("accepts the direct and mock sentinel runtime URLs", () => {
     expect(normalizeRuntimeLocalUrl("mock://local", "mock")).toBe("mock://local");
     expect(normalizeRuntimeLocalUrl("direct://local", "direct")).toBe("direct://local");

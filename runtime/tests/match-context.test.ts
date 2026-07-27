@@ -114,6 +114,29 @@ describe("MatchContextTracker", () => {
     expect(rules?.keyRules?.[0]?.length).toBe(400);
   });
 
+  it("evicts the least-recently-used match, not the oldest-inserted", () => {
+    const t = new MatchContextTracker();
+    for (let i = 0; i < 16; i++) t.observe(actionRequestMsg(`s${i}`, [ev(1)]));
+    // s0 is still active — a fresh action_request touches it, so the next
+    // eviction must take s1 (least recently used), not s0 (oldest-inserted).
+    t.observe(actionRequestMsg("s0", [ev(2)]));
+    t.observe(actionRequestMsg("s16", [ev(1)]));
+    expect(t.get("s0")?.events.map((e) => e.seq)).toEqual([1, 2]);
+    expect(t.get("s1")).toBeUndefined();
+  });
+
+  it("caps a single event's stored data (storage-side, truncated JSON string)", () => {
+    const t = new MatchContextTracker();
+    t.observe(
+      actionRequestMsg("s1", [ev(1, "act", { blob: "z".repeat(10_000) }), ev(2, "act", { small: true })]),
+    );
+    const events = t.get("s1")?.events ?? [];
+    expect(typeof events[0]?.data).toBe("string");
+    expect((events[0]?.data as string).length).toBe(2_000);
+    // Under the cap: stored verbatim, shape untouched.
+    expect(events[1]?.data).toEqual({ small: true });
+  });
+
   it("caps per-match events, dropping the oldest", () => {
     const t = new MatchContextTracker();
     const batch = Array.from({ length: 2001 }, (_, i) => ev(i + 1));

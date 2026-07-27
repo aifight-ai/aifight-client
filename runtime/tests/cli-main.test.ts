@@ -78,6 +78,17 @@ function tempExecutable(name = "aifight-bin"): string {
   return file;
 }
 
+/** Expected ExecStart path as the product writes it. Mirrors
+ *  quoteSystemdExecPath in src/bridge/service.ts: paths containing whitespace,
+ *  quotes, or backslashes (e.g. Windows tmp dirs when this test runs on
+ *  Windows) are quoted and escaped per systemd rules; plain POSIX tmp paths
+ *  pass through unchanged, so on Linux/macOS this is the identity. */
+function systemdExecPath(p: string): string {
+  const real = fs.realpathSync(p);
+  if (!/[\s"\\]/.test(real)) return real;
+  return `"${real.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
 function jsonResp(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -416,7 +427,7 @@ describe("aifight service", () => {
     expect(r.stdout).toContain("aifight.service installed and started");
     const unit = fs.readFileSync(unitPath, "utf8");
     expect(unit).toContain("Description=AIFight Agent Service");
-    expect(unit).toContain(`ExecStart=${fs.realpathSync(nodeExec)} ${fs.realpathSync(aifightExec)} run`);
+    expect(unit).toContain(`ExecStart=${systemdExecPath(nodeExec)} ${systemdExecPath(aifightExec)} run`);
     expect(unit).toContain('Environment="AIFIGHT_SERVICE_RUN=1"');
     expect(unit).toContain("WantedBy=multi-user.target");
     expect(calls.map((c) => [c.file, ...c.args].join(" "))).toEqual([
@@ -451,7 +462,7 @@ describe("aifight service", () => {
 
     expect(r.code).toBe(0);
     const unit = fs.readFileSync(unitPath, "utf8");
-    expect(unit).toContain(`ExecStart=${fs.realpathSync(nodeExec)} ${fs.realpathSync(aifightExec)} run`);
+    expect(unit).toContain(`ExecStart=${systemdExecPath(nodeExec)} ${systemdExecPath(aifightExec)} run`);
     expect(calls.some((c) => c.file === "sh")).toBe(false);
     expect(calls.map((c) => [c.file, ...c.args].join(" "))).toEqual([
       "systemctl --version",
@@ -596,8 +607,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-beta.27",
-          latest_version: "0.1.0-beta.27",
+          recommended_version: "0.1.0-beta.28",
+          latest_version: "0.1.0-beta.28",
           update_command: "npm install -g @aifight/aifight",
         });
       }
@@ -636,8 +647,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-beta.27",
-          latest_version: "0.1.0-beta.27",
+          recommended_version: "0.1.0-beta.28",
+          latest_version: "0.1.0-beta.28",
           update_command: "npm install -g @aifight/aifight",
         });
       }

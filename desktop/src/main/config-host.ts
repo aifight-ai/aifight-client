@@ -14,20 +14,22 @@
 // strategy-host.ts (strategy/global.md + strategy/games/<game>.md). This host
 // owns only config.json (model routing + provider key refs).
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
 import { resolveAgentDir, ensureAgentDir } from "@aifight/aifight/profile/profile-loader";
 import {
   validateConfig,
+  DEFAULT_MAX_TOKENS,
   type LLMConfig,
   type LLMProfile,
   type Protocol,
   type ReasoningEffort,
   STORABLE_REASONING_EFFORTS,
 } from "@aifight/aifight/profile/config-schema";
-import { storeSecretFile, checkSecretStatus } from "@aifight/aifight/profile/secret-ref";
+import { storeSecretFile, checkSecretStatus, resolveSecret } from "@aifight/aifight/profile/secret-ref";
+import { discoverModelsForProtocol } from "@aifight/aifight/llm/discover-models";
 import {
   recommendMaxTokens,
   resolveModelCapabilities,
@@ -59,6 +61,25 @@ function familyOf(protocol: string): ProtocolFamily {
 }
 
 /**
+ * Which concrete chat adapter (model, endpoint) actually IDENTIFIES, or null when
+ * nothing in them does — a generic endpoint behind a corporate gateway looks the
+ * same whatever is really on the other end.
+ *
+ * Split out from resolveConcreteProtocol because the two callers need opposite
+ * things from a no-signal answer: a NEW profile has to land somewhere, so it takes
+ * the generic compat adapter; an EXISTING profile already has an answer recorded,
+ * and overwriting it with the fallback is how a DeepSeek profile reached through a
+ * gateway silently became a plain compat profile (B3).
+ */
+function detectChatProtocol(model: string, baseURL: string): string | null {
+  const m = model.toLowerCase();
+  const b = baseURL.toLowerCase();
+  if (m.startsWith("deepseek") || b.includes("deepseek")) return "deepseek_chat_completions";
+  if (b === "" || b.includes("api.openai.com")) return "openai_chat_completions";
+  return null;
+}
+
+/**
  * Resolve a family + model/endpoint to the concrete adapter protocol. The
  * "openai_chat" family auto-routes to the DeepSeek adapter (for its thinking/
  * streaming/reasoning_content handling) when the model/endpoint is DeepSeek, to
@@ -68,11 +89,32 @@ function resolveConcreteProtocol(family: string, model: string, baseURL: string)
   if (family === "anthropic") return "anthropic_messages";
   if (family === "openai_responses") return "openai_responses";
   if (family === "gemini") return "gemini_generate_content";
-  const m = model.toLowerCase();
-  const b = baseURL.toLowerCase();
-  if (m.startsWith("deepseek") || b.includes("deepseek")) return "deepseek_chat_completions";
-  if (b === "" || b.includes("api.openai.com")) return "openai_chat_completions";
-  return "openai_chat_compat";
+  return detectChatProtocol(model, baseURL) ?? "openai_chat_compat";
+}
+
+/**
+ * The protocol to STORE for a save, which is not always the one the heuristic
+ * derives. The GUI edits four families while config.json records one of six
+ * protocols, so every save re-derives the concrete one — and for the three that
+ * share the openai_chat family that derivation can only ever DISCOVER an adapter
+ * from a positive signal, never retain one. A DeepSeek profile written by the CLI
+ * behind a gateway (model "v4-pro", no "deepseek" anywhere) therefore lost its
+ * adapter to any unrelated edit — same endpoint afterwards, but none of DeepSeek's
+ * thinking/reasoning_content handling, and nothing said so.
+ *
+ * So: re-derive when the user changed the family, or when (model, baseURL) actually
+ * point somewhere; otherwise keep what is already recorded.
+ */
+function protocolForSave(
+  family: string,
+  model: string,
+  baseURL: string,
+  existingProtocol: string | undefined,
+): string {
+  const derived = resolveConcreteProtocol(family, model, baseURL);
+  if (existingProtocol === undefined) return derived;
+  if (familyOf(existingProtocol) !== family) return derived;
+  return detectChatProtocol(model, baseURL) === null ? existingProtocol : derived;
 }
 
 // The storable set comes from the runtime schema, not a copy — a local duplicate
@@ -109,6 +151,17 @@ function describeError(cause: unknown): string {
 function safeSegment(value: string): string {
   const safe = value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 64);
   return safe.length > 0 ? safe : "profile";
+}
+
+// R12 (2026-07-26): safeSegment is lossy ("gpt/mini" and "gpt_mini" collapse to
+// the same segment; two equal-length CJK ids collapse to the same run of "_"),
+// so a name derived from it alone is NOT injective — two profiles could share one
+// key file, sending one profile's key to the other's endpoint or deleting a
+// still-referenced key. Suffix a short hash of the RAW id to make the filename
+// injective while keeping the human-readable prefix.
+function keyFileName(profileId: string): string {
+  const digest = createHash("sha256").update(profileId).digest("hex").slice(0, 8);
+  return `${safeSegment(profileId)}-${digest}.key`;
 }
 
 /** The only directory the GUI itself writes key files into (setKey). */
@@ -151,22 +204,42 @@ async function removeManagedKeyFile(keyPath: string): Promise<string | null> {
   }
 }
 
-async function readConfigOptional(slug: string): Promise<LLMConfig | null> {
+// R12 (2026-07-26): distinguish "no config yet" (ENOENT) from "config.json is
+// present but unreadable/corrupt/schema-invalid". The old readConfigOptional
+// collapsed all three to null, which made getConfig report a corrupt config as
+// "not configured" and let the next saveProfile rebuild from emptyConfig() and
+// silently overwrite every other profile + routing shared with the CLI. Callers
+// that must never overwrite (saveProfile) branch on this; the fail-closed
+// mutators keep using readConfigOptional (both absent and invalid → null →
+// "profile not found", which is safe — they never write emptyConfig()).
+type ReadConfigState =
+  | { state: "absent" }
+  | { state: "invalid"; errors: string[] }
+  | { state: "ok"; config: LLMConfig };
+
+async function readConfigState(slug: string): Promise<ReadConfigState> {
   const configPath = path.join(resolveAgentDir(slug), "config.json");
   let raw: string;
   try {
     raw = await fs.readFile(configPath, "utf8");
-  } catch {
-    return null; // not configured yet — the GUI handles this, no throw
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException)?.code === "ENOENT") return { state: "absent" };
+    return { state: "invalid", errors: [`config.json could not be read: ${describeError(cause)}`] };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch {
-    return null;
+  } catch (cause) {
+    return { state: "invalid", errors: [`config.json is not valid JSON: ${describeError(cause)}`] };
   }
   const result = validateConfig(parsed);
-  return result.ok ? result.config : null;
+  if (!result.ok) return { state: "invalid", errors: result.errors };
+  return { state: "ok", config: result.config };
+}
+
+async function readConfigOptional(slug: string): Promise<LLMConfig | null> {
+  const s = await readConfigState(slug);
+  return s.state === "ok" ? s.config : null;
 }
 
 async function writeConfig(slug: string, config: LLMConfig): Promise<void> {
@@ -181,7 +254,20 @@ async function writeConfig(slug: string, config: LLMConfig): Promise<void> {
   // last wins wholesale — the visible file is always one complete write.
   const tmp = `${configPath}.${randomUUID()}.tmp`;
   try {
-    await fs.writeFile(tmp, JSON.stringify(config, null, 2) + "\n", "utf8");
+    // R12 (2026-07-26): fsync the tmp file before the rename. writeFile leaves
+    // the bytes in the OS page cache; on power loss shortly after the rename the
+    // metadata can commit before the data, leaving config.json zero-length/torn
+    // on next boot — which readConfigState now flags as "invalid" (previously a
+    // silent "unconfigured" wipe). Mirrors the runtime's durable single-user
+    // writers (account/credentials.ts, device-id.ts) which write+fsync+close
+    // before publishing.
+    const fh = await fs.open(tmp, "w");
+    try {
+      await fh.writeFile(JSON.stringify(config, null, 2) + "\n", "utf8");
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
     await fs.rename(tmp, configPath);
   } catch (cause) {
     await fs.rm(tmp, { force: true }).catch(() => {});
@@ -236,11 +322,14 @@ export function modelCapabilitiesForFamily(input: {
   model: string;
 }): {
   efforts: string[];
+  protocolEfforts: string[];
   storableEfforts: readonly string[];
   isKnownModel: boolean;
   defaultEffort?: string;
   thinkingModes: string[];
   thinkingAlwaysOn: boolean;
+  thinkingDefaultOn: boolean;
+  thinkingParam?: string;
   maxOutputTokens?: number;
 } | null {
   if (typeof input?.family !== "string" || typeof input?.model !== "string") return null;
@@ -248,20 +337,73 @@ export function modelCapabilitiesForFamily(input: {
   const caps = resolveModelCapabilities(protocol, input.model);
   return {
     efforts: caps.efforts,
+    protocolEfforts: caps.protocolEfforts,
     storableEfforts: caps.storableEfforts,
     isKnownModel: caps.isKnownModel,
     ...(caps.defaultEffort !== undefined ? { defaultEffort: caps.defaultEffort } : {}),
     thinkingModes: caps.thinkingModes,
     thinkingAlwaysOn: caps.thinkingAlwaysOn,
+    thinkingDefaultOn: caps.thinkingDefaultOn,
+    ...(caps.thinkingParam !== undefined ? { thinkingParam: caps.thinkingParam } : {}),
     ...(caps.maxOutputTokens !== undefined ? { maxOutputTokens: caps.maxOutputTokens } : {}),
   };
 }
 
-export async function getConfig(slug: string = DEFAULT_SLUG): Promise<ConfigView> {
-  const config = await readConfigOptional(slug);
-  if (config === null) {
-    return { configured: false, slug, activeProfile: "", routing: { default: "" }, profiles: [] };
+/**
+ * Ask the provider which models exist, using the key pasted in the form (not yet
+ * saved) or the profile's stored key. Best-effort — null means "no list, fall back
+ * to seeds"; it never throws into the renderer.
+ */
+export async function discoverModelsForFamily(
+  slug: string,
+  input: { family: string; model: string; baseURL?: string; apiKey?: string; profileId?: string },
+): Promise<{ models: string[] } | null> {
+  if (typeof input?.family !== "string" || typeof input?.model !== "string") return null;
+  const baseURLRaw = typeof input.baseURL === "string" ? input.baseURL.trim() : "";
+  const protocol = resolveConcreteProtocol(input.family, input.model, baseURLRaw) as Protocol;
+  const caps = resolveModelCapabilities(protocol, input.model);
+  const baseURL = baseURLRaw !== "" ? baseURLRaw : (caps.defaultBaseURL ?? "");
+  if (baseURL === "") return null;
+
+  let apiKey = typeof input.apiKey === "string" ? input.apiKey.trim() : "";
+  if (apiKey === "" && typeof input.profileId === "string" && input.profileId !== "") {
+    const config = await readConfigOptional(slug);
+    const ref = config?.profiles[input.profileId]?.apiKeyRef;
+    if (ref) {
+      try {
+        apiKey = await resolveSecret(ref);
+      } catch {
+        return null; // stored key unreadable — the Test button is the diagnosis path
+      }
+    }
   }
+  if (apiKey === "") return null;
+
+  const models = await discoverModelsForProtocol({}, { protocol, baseURL, apiKey });
+  return models !== null && models.length > 0 ? { models } : null;
+}
+
+export async function getConfig(slug: string = DEFAULT_SLUG): Promise<ConfigView> {
+  const state = await readConfigState(slug);
+  if (state.state !== "ok") {
+    // R12: a present-but-invalid config surfaces an error so the UI can warn
+    // ("config.json is invalid — fix or back it up") instead of silently showing
+    // the fresh-setup flow, whose next save would overwrite the real file.
+    return {
+      configured: false,
+      slug,
+      activeProfile: "",
+      routing: { default: "" },
+      profiles: [],
+      ...(state.state === "invalid"
+        ? {
+            error: state.errors.join("; "),
+            configPath: path.join(resolveAgentDir(slug), "config.json"),
+          }
+        : {}),
+    };
+  }
+  const config = state.config;
   const profiles: ConfigProfileView[] = [];
   for (const [id, def] of Object.entries(config.profiles)) {
     const status = await checkSecretStatus(def.apiKeyRef);
@@ -276,8 +418,9 @@ export async function getConfig(slug: string = DEFAULT_SLUG): Promise<ConfigView
       keyResolvable: status.available,
       thinkingEnabled: def.thinking?.enabled ?? false,
       effort: def.thinking?.effort ?? null,
+      maxReasoningTokens: def.thinking?.maxReasoningTokens ?? null,
       temperature: def.request?.temperature ?? null,
-      maxTokens: def.request?.maxTokens ?? 16000,
+      maxTokens: def.request?.maxTokens ?? DEFAULT_MAX_TOKENS,
       requestTimeoutMs: def.timeouts?.requestMs ?? null,
       stream: def.request?.stream ?? "auto",
       verbosity: def.request?.verbosity ?? null,
@@ -305,13 +448,32 @@ export async function saveProfile(slug: string, input: ProfileInput): Promise<Co
     return { ok: false, error: "model is required" };
   }
 
+  const id = input.profileId.trim();
+  // R12 (2026-07-26): reject prototype-chain names ("__proto__", "constructor",
+  // "toString", …). `config.profiles[id] = profile` for such an id mutates the
+  // object's prototype instead of creating an own property — validateConfig (own
+  // keys only) still passes, so saveProfile returns ok:true with NO profile
+  // created, and a paired setKey then orphans a plaintext key file nothing can
+  // reference. Object.prototype own-names are exactly the dangerous set.
+  if (Object.hasOwn(Object.prototype, id)) {
+    return { ok: false, error: `invalid profile id: ${id}` };
+  }
+
   try {
-    const config = (await readConfigOptional(slug)) ?? emptyConfig();
-    const id = input.profileId.trim();
+    // R12: never rebuild from emptyConfig() when config.json is present but
+    // invalid — that would silently overwrite every other profile + routing.
+    const state = await readConfigState(slug);
+    if (state.state === "invalid") {
+      return {
+        ok: false,
+        error: `config.json exists but is invalid (${state.errors.join("; ")}); fix or back it up before saving`,
+      };
+    }
+    const config = state.state === "ok" ? state.config : emptyConfig();
     const existing = config.profiles[id];
     const model = input.model.trim();
     const baseURL = (input.baseURL ?? "").trim();
-    const protocol = resolveConcreteProtocol(input.family, model, baseURL) as Protocol;
+    const protocol = protocolForSave(input.family, model, baseURL, existing?.protocol) as Protocol;
     const verbosity = coerceVerbosity(input.verbosity);
     const profile: LLMProfile = {
       displayName: (input.displayName && input.displayName.trim()) || id,
@@ -325,7 +487,7 @@ export async function saveProfile(slug: string, input: ProfileInput): Promise<Co
         maxTokens:
           typeof input.maxTokens === "number" && input.maxTokens > 0
             ? input.maxTokens
-            : existing?.request?.maxTokens ?? 16000,
+            : existing?.request?.maxTokens ?? DEFAULT_MAX_TOKENS,
         responseFormat: existing?.request?.responseFormat ?? "json",
         stream: coerceStream(input.stream ?? existing?.request?.stream),
         ...(verbosity ? { verbosity } : {}),
@@ -337,6 +499,16 @@ export async function saveProfile(slug: string, input: ProfileInput): Promise<Co
       thinking: {
         enabled: Boolean(input.thinkingEnabled),
         mode: input.thinkingEnabled ? "always" : "never",
+        // Manual thinking budget: explicit number sets, explicit null clears,
+        // absent preserves — mirroring the temperature convention above.
+        ...((): { maxReasoningTokens?: number } => {
+          if (input.maxReasoningTokens === null) return {};
+          if (typeof input.maxReasoningTokens === "number" && Number.isFinite(input.maxReasoningTokens) && input.maxReasoningTokens > 0) {
+            return { maxReasoningTokens: Math.floor(input.maxReasoningTokens) };
+          }
+          const kept = existing?.thinking?.maxReasoningTokens;
+          return typeof kept === "number" ? { maxReasoningTokens: kept } : {};
+        })(),
         ...((): { effort?: ReasoningEffort } => {
           const e = coerceEffort(input.effort);
           return e ? { effort: e } : {};
@@ -372,10 +544,15 @@ export async function setKey(slug: string, profileId: unknown, rawKey: unknown):
   if (typeof rawKey !== "string" || rawKey.trim() === "") return { ok: false, error: "API key is empty" };
   try {
     const config = await readConfigOptional(slug);
-    if (config === null || config.profiles[profileId] === undefined) {
+    if (config === null || !Object.hasOwn(config.profiles, profileId)) {
       return { ok: false, error: `profile not found: ${profileId}` };
     }
-    const keyPath = path.join(resolveAgentDir(slug), KEY_DIRNAME, `${safeSegment(profileId)}.key`);
+    // R12: reuse this profile's existing managed key file if it has one (a
+    // re-paste overwrites in place, no orphan); otherwise derive an injective
+    // name so two profiles with sanitize-colliding ids never share one file.
+    const keyPath =
+      managedKeyPathOf(slug, config.profiles[profileId].apiKeyRef) ??
+      path.join(managedKeyDir(slug), keyFileName(profileId));
     await storeSecretFile(keyPath, rawKey.trim());
     config.profiles[profileId] = { ...config.profiles[profileId], apiKeyRef: { type: "file", path: keyPath } };
     await writeConfig(slug, config);
@@ -395,7 +572,7 @@ export async function clearKey(slug: string, profileId: unknown): Promise<Config
   if (typeof profileId !== "string" || profileId.trim() === "") return { ok: false, error: "profile id is required" };
   try {
     const config = await readConfigOptional(slug);
-    if (config === null || config.profiles[profileId] === undefined) {
+    if (config === null || !Object.hasOwn(config.profiles, profileId)) {
       return { ok: false, error: `profile not found: ${profileId}` };
     }
     const managedPath = managedKeyPathOf(slug, config.profiles[profileId].apiKeyRef);
@@ -417,7 +594,7 @@ export async function setActive(slug: string, profileId: unknown): Promise<Confi
   if (typeof profileId !== "string") return { ok: false, error: "profile id is required" };
   try {
     const config = await readConfigOptional(slug);
-    if (config === null || config.profiles[profileId] === undefined) {
+    if (config === null || !Object.hasOwn(config.profiles, profileId)) {
       return { ok: false, error: `profile not found: ${profileId}` };
     }
     config.activeProfile = profileId;
@@ -432,7 +609,7 @@ export async function setRoute(slug: string, game: unknown, profileId: unknown):
   if (typeof profileId !== "string") return { ok: false, error: "profile id is required" };
   try {
     const config = await readConfigOptional(slug);
-    if (config === null || config.profiles[profileId] === undefined) {
+    if (config === null || !Object.hasOwn(config.profiles, profileId)) {
       return { ok: false, error: `profile not found: ${profileId}` };
     }
     if (game === "default" || typeof game !== "string") {
@@ -451,7 +628,7 @@ export async function deleteProfile(slug: string, profileId: unknown): Promise<C
   if (typeof profileId !== "string") return { ok: false, error: "profile id is required" };
   try {
     const config = await readConfigOptional(slug);
-    if (config === null || config.profiles[profileId] === undefined) {
+    if (config === null || !Object.hasOwn(config.profiles, profileId)) {
       return { ok: false, error: `profile not found: ${profileId}` };
     }
     // R14-F06: deleting a profile must not orphan its pasted key on disk.

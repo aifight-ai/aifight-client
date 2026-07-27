@@ -33,7 +33,7 @@ export function normalizeAgentProfile(json: unknown): AgentProfileData {
   const losses = num(s?.total_losses ?? r?.total_losses);
   const draws = num(s?.total_draws ?? r?.total_draws);
   const winRate =
-    s !== null && typeof s.overall_win_rate === "number"
+    s !== null && typeof s.overall_win_rate === "number" && Number.isFinite(s.overall_win_rate)
       ? s.overall_win_rate
       : totalGames > 0
         ? wins / totalGames

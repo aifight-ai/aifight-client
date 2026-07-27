@@ -9,13 +9,13 @@
 // "message" containing a `content` array of output_text blocks.
 //
 // Reasoning effort mapping:
-//   canonical "off" / "minimal"  → openai "none"
-//   canonical "low"              → openai "low"
-//   canonical "medium" / "auto"  → openai "medium"
-//   canonical "high"             → openai "high"
-//   canonical "xhigh" / "max"   → openai "xhigh"
+//   canonical "off" / "minimal"    → openai "none" (minimal never was a 5.x tier)
+//   canonical "auto" / unset       → OMIT the field — the provider default applies
+//   everything else                → passed through verbatim, then clamped per the
+//                                    capability registry (e.g. "max" is real on
+//                                    gpt-5.6 but clamps to "xhigh" on 5.5/5.4)
 //
-// GPT-5.5 default effort: "medium". GPT-5.4 default effort: "none"
+// GPT-5.6 default effort: "medium". GPT-5.5: "medium". GPT-5.4: "none"
 // (dangerous for strategy games — always set effort explicitly in profile).
 
 import type {
@@ -29,6 +29,7 @@ import type {
   ValidationResult,
 } from "./types.js";
 import { AdapterError } from "./types.js";
+import { resolveModelCapabilities } from "../capabilities/validate-capabilities.js";
 import { looksLikeTokenLimit, computeTruncated } from "./token-limit.js";
 import { parseRetryAfterMs, isContentFilterReason } from "./error-class.js";
 import { redactApiKey, boundedErrorBody } from "./redact.js";
@@ -40,29 +41,39 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 25000;
 
 // ─── Reasoning effort mapping ────────────────────────────────────────
 
-type OpenAIEffort = "none" | "low" | "medium" | "high" | "xhigh";
-
-function mapEffort(canonical: CanonicalReasoningConfig["effort"]): OpenAIEffort {
+/**
+ * Canonical effort → OpenAI reasoning.effort. `undefined` = omit the field, so the
+ * provider's own default applies — that is what the explicit "auto" tier means.
+ * Everything else passes through verbatim; clampEffortForModel then bounds it for
+ * models the registry lists. This used to be a closed switch that rewrote every
+ * unrecognized value to "medium", which made a newer tier (like "max", real since
+ * GPT-5.6) indistinguishable from asking for medium.
+ */
+function mapEffort(canonical: CanonicalReasoningConfig["effort"]): string | undefined {
   switch (canonical) {
+    case undefined:
+    case "auto":
+      return undefined;
     case "off":
     case "minimal":
       return "none";
-    case "low":
-      return "low";
-    case "medium":
-    case "auto":
-      return "medium";
-    case "high":
-      return "high";
-    case "xhigh":
-    case "max":
-      return "xhigh";
     default:
-      return "medium";
+      return canonical;
   }
 }
 
+/** Known model + tier it does not list → clamp DOWN to its highest listed tier
+ *  ("max" on gpt-5.5 becomes "xhigh"), mirroring Go NormalizeOpenAIEffort. An
+ *  unlisted model sends the configured tier as-is — the API is the judge. */
+function clampEffortForModel(effort: string, model: string): string {
+  const caps = resolveModelCapabilities(PROTOCOL, model);
+  if (!caps.isKnownModel || caps.efforts.length === 0) return effort;
+  if (caps.efforts.includes(effort)) return effort;
+  return caps.efforts[caps.efforts.length - 1] ?? effort;
+}
+
 function buildReasoningObject(
+  model: string,
   reasoning?: CanonicalReasoningConfig,
 ): Record<string, unknown> | undefined {
   if (!reasoning) return undefined;
@@ -71,7 +82,8 @@ function buildReasoningObject(
   if (reasoning.mode === "disabled" || reasoning.enabled === false) return undefined;
 
   const effort = mapEffort(reasoning.effort);
-  const obj: Record<string, unknown> = { effort };
+  const obj: Record<string, unknown> = {};
+  if (effort !== undefined) obj.effort = clampEffortForModel(effort, model);
 
   // Map canonical summary field.
   if (reasoning.summary != null) {
@@ -219,7 +231,7 @@ async function generateDecision(
 
   // Resolve reasoning config: DecisionInput overrides profile.
   const reasoningCfg = input.reasoning ?? profile.reasoning;
-  const reasoningObj = buildReasoningObject(reasoningCfg);
+  const reasoningObj = buildReasoningObject(profile.model, reasoningCfg);
 
   const body: Record<string, unknown> = {
     model: profile.model,

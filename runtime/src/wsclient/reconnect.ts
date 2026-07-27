@@ -482,7 +482,15 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
    *  the background and resurrecting a facade that already reported closed —
    *  the zombie-connection root cause of the 2026-07-25 self-eviction spiral. */
   #dialAbort: AbortController | null = null;
-  #innerUnsubs: Array<() => void> = [];
+  /** Per-handler inner-socket unsubscribe, keyed by the caller's handler.
+   *  Keeping these keyed (not a flat array) makes the unsubscribe returned by
+   *  onMessage/onError authoritative across reconnects: #wireHandlersTo refreshes
+   *  the entry to the CURRENT inner on every reconnect, and the returned closure
+   *  looks the live unsub up here rather than calling a dead inner's captured
+   *  unsub — which after a reconnect detached nothing and leaked the handler
+   *  onto the live socket (connection-1). */
+  readonly #messageInnerUnsubs = new Map<WSMessageHandler, () => void>();
+  readonly #errorInnerUnsubs = new Map<WSErrorHandler, () => void>();
   #seq = 0;
 
   constructor(opts: ReconnectingWSClientOptions) {
@@ -501,25 +509,33 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
 
   onMessage(handler: WSMessageHandler): () => void {
     this.#messageHandlers.add(handler);
-    let innerUnsub: (() => void) | null = null;
     if (this.#inner !== null && this.state === "connected") {
-      innerUnsub = this.#inner.onMessage(handler);
+      this.#messageInnerUnsubs.set(handler, this.#inner.onMessage(handler));
     }
     return () => {
       this.#messageHandlers.delete(handler);
-      if (innerUnsub) innerUnsub();
+      // Authoritative across reconnects: call the CURRENT inner's unsub for this
+      // handler (refreshed by #wireHandlersTo), not one captured at registration.
+      const innerUnsub = this.#messageInnerUnsubs.get(handler);
+      if (innerUnsub !== undefined) {
+        this.#messageInnerUnsubs.delete(handler);
+        innerUnsub();
+      }
     };
   }
 
   onError(handler: WSErrorHandler): () => void {
     this.#errorHandlers.add(handler);
-    let innerUnsub: (() => void) | null = null;
     if (this.#inner !== null && this.state === "connected") {
-      innerUnsub = this.#inner.onError(handler);
+      this.#errorInnerUnsubs.set(handler, this.#inner.onError(handler));
     }
     return () => {
       this.#errorHandlers.delete(handler);
-      if (innerUnsub) innerUnsub();
+      const innerUnsub = this.#errorInnerUnsubs.get(handler);
+      if (innerUnsub !== undefined) {
+        this.#errorInnerUnsubs.delete(handler);
+        innerUnsub();
+      }
     };
   }
 
@@ -1242,22 +1258,30 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
   #wireHandlersTo(inner: WSClient): void {
     this.#dropInnerUnsubs();
     for (const h of this.#messageHandlers) {
-      this.#innerUnsubs.push(inner.onMessage(h));
+      this.#messageInnerUnsubs.set(h, inner.onMessage(h));
     }
     for (const h of this.#errorHandlers) {
-      this.#innerUnsubs.push(inner.onError(h));
+      this.#errorInnerUnsubs.set(h, inner.onError(h));
     }
   }
 
   #dropInnerUnsubs(): void {
-    for (const u of this.#innerUnsubs) {
+    for (const u of this.#messageInnerUnsubs.values()) {
       try {
         u();
       } catch {
         /* ignore */
       }
     }
-    this.#innerUnsubs.length = 0;
+    this.#messageInnerUnsubs.clear();
+    for (const u of this.#errorInnerUnsubs.values()) {
+      try {
+        u();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.#errorInnerUnsubs.clear();
   }
 
   /** State setter that also projects (P4). Every state edge — including the

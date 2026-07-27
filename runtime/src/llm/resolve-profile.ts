@@ -14,6 +14,7 @@ import type {
   Protocol,
   ThinkingConfig,
 } from "../profile/config-schema.js";
+import { DEFAULT_MAX_TOKENS } from "../profile/config-schema.js";
 import type {
   LLMProfile as ResolvedLLMProfile,
   CanonicalReasoningConfig,
@@ -37,7 +38,6 @@ export function protocolDefaultBaseURL(protocol: Protocol | string): string {
     case "gemini_generate_content":
       return "https://generativelanguage.googleapis.com";
     case "openai_chat_compat":
-    case "gemini_openai_compat":
     default:
       return "";
   }
@@ -64,7 +64,11 @@ export function resolveLLMProfile(
     model: def.model,
     apiKey,
     temperature: def.request?.temperature ?? null,
-    maxTokens: def.request?.maxTokens ?? 16000,
+    // Single source of truth for the default (D16): config-schema's
+    // DEFAULT_MAX_TOKENS (32000). Do not hardcode a local copy here — a lower
+    // fallback silently halved the promised output budget for hand-written
+    // configs that omit request.maxTokens.
+    maxTokens: def.request?.maxTokens ?? DEFAULT_MAX_TOKENS,
     responseFormat: def.request?.responseFormat,
     ...(def.request?.stream !== undefined ? { stream: def.request.stream } : {}),
     ...(def.request?.verbosity !== undefined ? { verbosity: def.request.verbosity } : {}),

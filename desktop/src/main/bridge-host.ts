@@ -140,6 +140,15 @@ export class BridgeHost {
   // an await). The renderer can trigger start() from several places at once —
   // launch, the Retry button, the seat retry below.
   #starting: Promise<BridgeStatus> | null = null;
+  /**
+   * D6a (R12): stop() pressed while a start is in flight. During the
+   * engine-import window #runner is still null, so stop() has nothing to abort
+   * — the resuming #startOnce re-checks this flag at both of its resumption
+   * points (post-import, post-start) and honours the stop itself, mirroring
+   * agent.ts's post-connect #stopped re-check. Cleared at every #startOnce
+   * entry so a consumed stop never leaks into the next start.
+   */
+  #stopDuringStart = false;
   // Set while we are refusing because another bridge holds the seat: re-checks
   // until it is free, so stopping the other one is enough to recover.
   #seatRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -447,7 +456,14 @@ export class BridgeHost {
         this.#setStatus({ ...this.#status, config: toSummary(config) });
         return this.#status;
       }
-      const phase: BridgeHostPhase = this.#runner === null ? "idle" : this.#status.phase;
+      // R12 (2026-07-26): don't downgrade an in-flight start to "idle" either.
+      // #startOnce sets phase "starting" then awaits the engine import with
+      // #runner still null; a view-mount getStatus landing in that window would
+      // otherwise rewrite the live "starting" to "idle" (and re-broadcast it),
+      // making the app look offline for the whole cold-import stretch. Same
+      // "never silently wipe a live status" invariant as the error branch above.
+      const phase: BridgeHostPhase =
+        this.#runner !== null || this.#starting !== null ? this.#status.phase : "idle";
       this.#setStatus({ phase, config: toSummary(config), message: undefined });
     } catch (cause) {
       this.#setStatus({ phase: "unconfigured", config: undefined, message: describeError(cause) });
@@ -594,8 +610,10 @@ export class BridgeHost {
   }
 
   async #startOnce(): Promise<BridgeStatus> {
-    // A manual start supersedes any pending seat retry.
+    // A manual start supersedes any pending seat retry — and begins with a
+    // clean stop intent (see #stopDuringStart).
     this.#cancelSeatRetry();
+    this.#stopDuringStart = false;
 
     let config: BridgeConfig;
     try {
@@ -688,10 +706,30 @@ export class BridgeHost {
       this.#setStatus({ phase: "error", config: summary, message: describeError(cause) });
       return this.#status;
     }
+    // D6a checkpoint 1: stop() landed while we were importing the engine —
+    // before #runner existed for it to abort. Honouring the stop is our job
+    // now: proceeding to runner.start() would hand stop() a first-connect
+    // await that legitimately pends for as long as the server is unreachable.
+    if (this.#stopDuringStart) {
+      await runner.stop().catch(() => {});
+      this.#releaseAgentSeat();
+      this.#setStatus({ phase: "stopped", config: summary, message: undefined });
+      return this.#status;
+    }
     this.#runner = runner;
 
     try {
       await runner.start();
+      // D6a checkpoint 2: stop() raced the tail of the connect and its abort
+      // lost — the runner is up but the user asked for it to be down. Tear it
+      // down before anything can observe it as live.
+      if (this.#stopDuringStart) {
+        this.#runner = null;
+        await runner.stop().catch(() => {});
+        this.#releaseAgentSeat();
+        this.#setStatus({ phase: "stopped", config: summary, message: undefined });
+        return this.#status;
+      }
       this.#noteActivity();
       // P4: from here phase/uptime/counter derive from the facade projection.
       // Subscribing replays the standing snapshot synchronously (state
@@ -731,9 +769,16 @@ export class BridgeHost {
     //
     // 审查 F5: "finish first" must not mean "wait out a server outage" — the
     // first-connect promise legitimately pends forever while the server is
-    // down. runner.stop() aborts the in-flight connect (AgentInstance threads
-    // an abort into the facade), so the await below settles promptly.
+    // down. When #runner is already set, runner.stop() aborts the in-flight
+    // connect (AgentInstance threads an abort into the facade). When it is NOT
+    // set — the engine-import window, D6a — there is nothing to abort yet, and
+    // before the flag below existed this await simply waited out the outage:
+    // the Stop invoke hung for hours and the bridge then connected anyway when
+    // the server returned. #stopDuringStart is what makes the resuming start
+    // honour the stop at its next resumption point, so this await settles on
+    // import speed rather than server availability.
     if (this.#starting !== null) {
+      this.#stopDuringStart = true;
       const startingRunner = this.#runner;
       if (startingRunner !== null) void startingRunner.stop().catch(() => {});
       await this.#starting.catch(() => undefined);
@@ -1045,12 +1090,21 @@ export class BridgeHost {
    * auto-match on; 0 → off). The desktop sets ONLY the daily cap — hourly cap is
    * gone and cooldown is a server default. Returns a result, never throws.
    */
-  async setAgentPolicy(patch: { maxGamesPerDay: number }): Promise<{ ok: boolean; error?: string }> {
+  async setAgentPolicy(patch: { maxGamesPerDay?: unknown }): Promise<{ ok: boolean; error?: string }> {
     const ep = this.#meEndpoint("/api/agents/me/policy");
     if (ep === null) return { ok: false, error: "not configured" };
+    // R12 (2026-07-26): validate the renderer-supplied cap here (ipc.ts forwards
+    // the patch untyped). A malformed value (e.g. {}) would otherwise drop
+    // max_games_per_day, send only {auto_requeue:false}, silently turn off
+    // auto-matching server-side, and erase the local autoDailyLimit field. The
+    // 10000 ceiling mirrors the server bound (maxPolicyGamesPerDay).
+    const cap = patch?.maxGamesPerDay;
+    if (typeof cap !== "number" || !Number.isInteger(cap) || cap < 0 || cap > 10000) {
+      return { ok: false, error: "invalid policy patch: maxGamesPerDay must be an integer in [0, 10000]" };
+    }
     const body: Record<string, unknown> = {
-      max_games_per_day: patch.maxGamesPerDay,
-      auto_requeue: patch.maxGamesPerDay > 0,
+      max_games_per_day: cap,
+      auto_requeue: cap > 0,
     };
     try {
       const res = await fetch(ep.url, {
@@ -1071,7 +1125,7 @@ export class BridgeHost {
       // showed 6, diagnostics still showed 2). Reconcile it here, but ONLY after the
       // server confirms, and best-effort so a local-write hiccup never undoes a cap
       // change the platform already accepted.
-      this.#persistDailyLimitLocally(patch.maxGamesPerDay);
+      this.#persistDailyLimitLocally(cap);
       return { ok: true };
     } catch (cause) {
       return { ok: false, error: describeError(cause) };

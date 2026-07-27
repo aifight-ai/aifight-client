@@ -24,6 +24,25 @@ describe("resolveModelCapabilities", () => {
     expect(c.efforts).toContain("xhigh");
   });
 
+  it("Claude Opus 4.1: extended thinking only, 32k ceiling — deprecated but still callable", () => {
+    // Per the model overview (2026-07-26): adaptive thinking "No", extended thinking
+    // "Yes", max output 32k, retires 2026-08-05. While it was unlisted, three things
+    // broke at once on it: the adapter's unknown-model fallback picked adaptive
+    // (type:"adaptive" + output_config → 400), the ceiling read as unknown so the
+    // first call could ask for more than 32k, and the truncation self-heal raised
+    // toward 65536 — turning one 400 into two.
+    const c = resolveModelCapabilities("anthropic_messages", "claude-opus-4-1");
+    expect(c.isKnownModel).toBe(true);
+    expect(c.thinkingModesKnown).toBe(true);
+    expect(c.thinkingModes).toEqual(["extended"]);
+    expect(c.maxOutputTokens).toBe(32000);
+    expect(c.temperatureUsableWhenThinkingOff).toBe(true); // temperature only 400s on 4.7+
+    // The dated id and the alias must land on the same entry, and neither may be
+    // swallowed by (or swallow) a neighbouring 4.x pattern.
+    expect(resolveModelCapabilities("anthropic_messages", "claude-opus-4-1-20250805").maxOutputTokens).toBe(32000);
+    expect(resolveModelCapabilities("anthropic_messages", "claude-opus-4-8").maxOutputTokens).toBe(128000);
+  });
+
   it("DeepSeek V4 Pro: thinking optional, sampling ignored while thinking, effort high/max", () => {
     const c = resolveModelCapabilities("deepseek_chat_completions", "deepseek-v4-pro");
     expect(c.supportsThinking).toBe(true);
@@ -36,13 +55,27 @@ describe("resolveModelCapabilities", () => {
     expect(c.maxOutputTokens).toBe(65536);
   });
 
-  it("OpenAI Chat Completions: no thinking at all, no effort knobs", () => {
+  it("OpenAI Chat Completions: thinking is pass-through — available, but default OFF", () => {
+    // 2026-07-26: this protocol used to be marked non-thinking, so a reasoning
+    // model behind it (gpt-5.x via a proxy) had its configured effort silently
+    // discarded. It now forwards reasoning_effort verbatim; because the endpoint's
+    // model may not reason at all (gpt-4o), a fresh profile defaults thinking off.
     const c = resolveModelCapabilities("openai_chat_completions", "gpt-4o");
-    expect(c.supportsThinking).toBe(false);
-    expect(c.canDisableThinking).toBe(false);
+    expect(c.supportsThinking).toBe(true);
+    expect(c.thinkingDefaultOn).toBe(false);
     expect(c.thinkingAlwaysOn).toBe(false);
-    expect(c.efforts).toEqual([]);
+    expect(c.efforts).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
     expect(c.temperatureUsableWhenThinkingOff).toBe(true);
+  });
+
+  it("protocols that think keep defaulting thinking ON", () => {
+    for (const [proto, model] of [
+      ["anthropic_messages", "claude-opus-5"],
+      ["openai_responses", "gpt-5.6-sol"],
+      ["gemini_generate_content", "gemini-3.6-flash"],
+    ] as const) {
+      expect(resolveModelCapabilities(proto, model).thinkingDefaultOn, proto).toBe(true);
+    }
   });
 
   it("unknown protocol degrades to a safe plain-chat view", () => {

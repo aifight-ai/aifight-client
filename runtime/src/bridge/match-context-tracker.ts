@@ -90,9 +90,17 @@ export class MatchContextTracker {
 
   #ensure(sessionId: string): TrackedMatch {
     const existing = this.#matches.get(sessionId);
-    if (existing !== undefined) return existing;
-    // Insertion-ordered eviction: matches finish via game_over; this only
-    // guards a runner that somehow never sees one.
+    if (existing !== undefined) {
+      // LRU touch (R15 2026-07-26): re-insert so eviction order tracks
+      // recency, not first-seen — a long-lived active match must not be the
+      // first evicted while idle finished-without-game_over entries linger.
+      this.#matches.delete(sessionId);
+      this.#matches.set(sessionId, existing);
+      return existing;
+    }
+    // LRU eviction (Map iterates insertion order; hits above re-insert):
+    // matches finish via game_over; this only guards a runner that somehow
+    // never sees one.
     while (this.#matches.size >= MAX_TRACKED_MATCHES) {
       const oldest = this.#matches.keys().next().value;
       if (oldest === undefined) break;
@@ -128,12 +136,31 @@ function parseEvent(raw: unknown): MatchEventRecord | null {
   // Wire field is `player` (engine.Event json tag / common/event.schema.json) —
   // the acting player, essential for e.g. Coup's `action` events.
   const playerId = readString(raw.player);
+  const data = raw.data !== undefined ? capEventData(raw.data) : undefined;
   return {
     seq,
     type,
-    ...(raw.data !== undefined ? { data: raw.data } : {}),
+    ...(data !== undefined ? { data } : {}),
     ...(playerId !== undefined ? { playerId } : {}),
   };
+}
+
+// Storage-side cap on a single event's data payload (precedent: the
+// RULES_STORE_* caps below) — an oversized blob is kept as a truncated JSON
+// string instead, so one pathological event can't park megabytes in memory.
+// The prompt renderer caps each event line far tighter anyway.
+const EVENT_STORE_DATA_MAX = 2_000;
+
+function capEventData(data: unknown): unknown {
+  try {
+    const json = JSON.stringify(data);
+    if (json === undefined || json.length <= EVENT_STORE_DATA_MAX) return data;
+    return json.slice(0, EVENT_STORE_DATA_MAX);
+  } catch {
+    // Unserializable (cyclic) — never comes off the wire; drop rather than
+    // store something we can't bound.
+    return undefined;
+  }
 }
 
 // Storage-side caps on server-provided rules text, so a pathological

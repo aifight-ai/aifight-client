@@ -7,6 +7,9 @@ import {
   type BridgeRuntimeType,
 } from "./config";
 import type { BridgeClientKind } from "./client-kind";
+import { fetchNoFollow } from "../net/guarded-fetch";
+
+const DEFAULT_PAIR_TIMEOUT_MS = 15_000;
 
 export interface BridgePairExchangeResponse {
   readonly agent: {
@@ -32,6 +35,8 @@ export interface ExchangePairingCodeOptions {
    *  agent is leaving cannot reconnect and take it back. Omitted when absent,
    *  which leaves the server's binding unset for the next connect to claim. */
   readonly clientKind?: BridgeClientKind;
+  /** Wall-time bound for the exchange (default 15s). */
+  readonly timeoutMs?: number;
 }
 
 const DEFAULT_BASE_URL = "https://aifight.ai";
@@ -49,16 +54,38 @@ export async function exchangePairingCode(
   const baseUrl = validatePlatformBaseUrl(
     opts.baseUrl ?? process.env.AIFIGHT_BASE_URL ?? DEFAULT_BASE_URL,
   );
+  // F-05 / R13 (2026-07-26): the one-time pairing code is secret-bearing, so use
+  // the same no-follow guard as every other credentialed call (a 3xx to a foreign
+  // origin would otherwise replay the POST body — the code — to that origin). Bound
+  // the exchange with a timeout so `aifight connect` can't stall while the code's
+  // 10-minute expiry runs (sibling platform calls all set AbortSignal.timeout).
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
-  const res = await fetchImpl(`${baseUrl}/api/bridge/pair`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(opts.deviceId ? { "X-Device-Id": opts.deviceId } : {}),
-      ...(opts.clientKind ? { "X-AIFight-Client-Kind": opts.clientKind } : {}),
-    },
-    body: JSON.stringify({ pairing_code: pairingCode }),
-  });
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_PAIR_TIMEOUT_MS;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  let res: Response;
+  try {
+    res = await fetchNoFollow(
+      `${baseUrl}/api/bridge/pair`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(opts.deviceId ? { "X-Device-Id": opts.deviceId } : {}),
+          ...(opts.clientKind ? { "X-AIFight-Client-Kind": opts.clientKind } : {}),
+        },
+        body: JSON.stringify({ pairing_code: pairingCode }),
+        signal: timeoutSignal,
+      },
+      { fetchImpl },
+    );
+  } catch (cause) {
+    // "timed out" is load-bearing: classifyPairingError buckets it as a network
+    // error with actionable retry copy (vs the opaque DOMException text).
+    if (timeoutSignal.aborted) {
+      throw new Error(`pairing request timed out after ${timeoutMs}ms — check your connection and try again`);
+    }
+    throw cause;
+  }
   if (!res.ok) {
     const message = await readErrorMessage(res);
     throw new Error(message);

@@ -122,6 +122,15 @@
           "supportsTemperature": true,
           "maxOutputTokens": 64000,
           "notes": "Extended thinking only, no effort parameter, no interleaved thinking."
+        },
+        {
+          "pattern": "^claude-opus-4-1",
+          "thinkingModes": ["extended"],
+          "efforts": [],
+          "supportsManualBudget": true,
+          "supportsTemperature": true,
+          "maxOutputTokens": 32000,
+          "notes": "Deprecated, retires 2026-08-05, but still callable — and the only still-callable Claude this file used to miss. Per the model overview (verified 2026-07-26) adaptive thinking is \"No\" and extended thinking \"Yes\", so the unknown-model fallback (adaptive) was a 400 on every decision; the 32k ceiling is also the lowest of any listed Claude, and reading it as unknown made both the first call and the truncation self-heal ask for more than it can emit. Predates output_config.effort (that arrived with the 4.5 generation)."
         }
       ]
     },
@@ -134,9 +143,16 @@
       "supportsThinking": true,
       "supportsReasoningSummary": true,
       "maxTokensParam": "max_output_tokens",
-      "effortValues": ["none", "minimal", "low", "medium", "high", "xhigh"],
+      "effortValues": ["none", "low", "medium", "high", "xhigh", "max"],
       "defaultEffort": "medium",
       "models": [
+        {
+          "pattern": "^gpt-5\\.6",
+          "efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+          "defaultEffort": "medium",
+          "maxOutputTokens": 128000,
+          "notes": "GPT-5.6 family (gpt-5.6-sol; alias gpt-5.6). First OpenAI ladder with max. Works on Chat Completions AND Responses."
+        },
         {
           "pattern": "^gpt-5\\.5",
           "efforts": ["none", "low", "medium", "high", "xhigh"],
@@ -159,10 +175,11 @@
       "supportsBaseURL": true,
       "supportsTemperature": true,
       "supportsJSONMode": true,
-      "supportsThinking": false,
+      "supportsThinking": true,
+      "defaultThinkingEnabled": false,
       "supportsReasoningSummary": false,
       "maxTokensParam": "max_completion_tokens",
-      "effortValues": [],
+      "effortValues": ["none", "low", "medium", "high", "xhigh", "max"],
       "models": []
     },
     "openai_chat_compat": {
@@ -171,12 +188,13 @@
       "supportsBaseURL": true,
       "supportsTemperature": true,
       "supportsJSONMode": true,
-      "supportsThinking": false,
+      "supportsThinking": true,
+      "defaultThinkingEnabled": false,
       "supportsReasoningSummary": false,
       "maxTokensParam": "max_tokens",
-      "effortValues": [],
+      "effortValues": ["none", "low", "medium", "high", "xhigh", "max"],
       "models": [],
-      "notes": "Generic compatibility. Validate per provider."
+      "notes": "Generic compatibility. reasoning_effort is passed through verbatim when configured; endpoint support varies — a 400 is the endpoint saying no, which beats silently dropping the user's effort."
     },
     "deepseek_chat_completions": {
       "displayName": "DeepSeek Chat Completions",
@@ -207,7 +225,7 @@
     },
     "gemini_generate_content": {
       "displayName": "Google Gemini generateContent API",
-      "defaultBaseURL": "https://generativelanguage.googleapis.com/v1beta",
+      "defaultBaseURL": "https://generativelanguage.googleapis.com",
       "supportsBaseURL": true,
       "supportsTemperature": true,
       "supportsJSONMode": true,
@@ -218,11 +236,18 @@
       "defaultEffort": "high",
       "models": [
         {
-          "pattern": "^gemini-3",
+          "pattern": "^gemini-3.*(flash|lite)",
           "thinkingParam": "thinkingLevel",
           "efforts": ["minimal", "low", "medium", "high"],
           "maxOutputTokens": 65536,
-          "notes": "Gemini 3.x uses thinkingLevel. 3.1 Pro does not support minimal."
+          "notes": "Gemini 3.x Flash/Flash-Lite use thinkingLevel and accept minimal. Must stay BEFORE the ^gemini-3 family fallback: findModelEntry returns the first matching pattern."
+        },
+        {
+          "pattern": "^gemini-3",
+          "thinkingParam": "thinkingLevel",
+          "efforts": ["low", "medium", "high"],
+          "maxOutputTokens": 65536,
+          "notes": "Gemini 3.x Pro (family fallback) uses thinkingLevel. Per ai.google.dev/gemini-api/docs/thinking (verified 2026-07-26), Pro models do NOT accept minimal — adapters clamp minimal to low, matching Go NormalizeGeminiThinkingLevel."
         },
         {
           "pattern": "^gemini-2\\.5",

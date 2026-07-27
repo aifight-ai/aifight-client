@@ -472,6 +472,11 @@ function commandUsage(positional: readonly string[]): string | undefined {
         "       aifight service install [--aifight-path <path>]",
         "  Manage the local background service named aifight.service.",
         "  The service runs `aifight run` so this Agent comes back online after reboot.",
+        "  start   Bring the service up. Safe to run any time: if it is already running",
+        "          this leaves it alone, so a match in progress is never interrupted.",
+        "  restart Tear the service down and start it again. Use this when the service",
+        "          is up but stuck (status says running, yet the Agent is not playing).",
+        "          It DOES drop a live connection, so an in-progress match is forfeited.",
         "  --aifight-path is an advanced install-only override for the CLI binary path.",
       ].join("\n");
     case "sessions":

@@ -8,7 +8,7 @@ import { clearAdapters, registerAdapter } from "../src/llm/adapter-registry";
 import type { LLMAdapter } from "../src/llm/adapters/types";
 import { createDirectLLMRuntimeProvider } from "../src/bridge/direct-llm-provider";
 import type { BridgeRuntimeDecisionRequest } from "../src/bridge/provider";
-import type { LLMConfig, LLMProfile } from "../src/profile/config-schema";
+import { DEFAULT_CONFIG, DEFAULT_MAX_TOKENS, type LLMConfig, type LLMProfile } from "../src/profile/config-schema";
 import { run } from "../src/cli/main";
 import { writeBridgeConfig, readBridgeConfig, type BridgeConfig } from "../src/bridge/config";
 
@@ -66,6 +66,16 @@ describe("resolve-profile: protocol default baseURL (P1 baseURL fix)", () => {
     expect(resolved.baseURL).toBe("https://api.anthropic.com");
     expect(resolved.apiKey).toBe("secret");
     expect(resolved.model).toBe("claude-x");
+  });
+
+  it("resolveLLMProfile defaults maxTokens to the shared DEFAULT_MAX_TOKENS (D16)", () => {
+    // A hand-written config omitting request.maxTokens must get the SAME
+    // default the wizard / DEFAULT_CONFIG promise (32000) — a lower local
+    // fallback here silently halved the reasoning budget.
+    const def: LLMProfile = { protocol: "anthropic_messages", apiKeyRef: { type: "env", name: "X" }, model: "claude-x" };
+    const resolved = resolveLLMProfile("p", def, "k");
+    expect(resolved.maxTokens).toBe(DEFAULT_MAX_TOKENS);
+    expect(resolved.maxTokens).toBe(DEFAULT_CONFIG.profiles["claude-default"]!.request?.maxTokens);
   });
 
   it("resolveLLMProfile passes through an explicit baseURL", () => {

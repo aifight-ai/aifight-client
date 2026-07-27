@@ -349,6 +349,8 @@ export interface ConfigProfileView {
   readonly keyResolvable: boolean;
   readonly thinkingEnabled: boolean;
   readonly effort: string | null;
+  /** Manual thinking budget; null when unset (budget-shaped models only). */
+  readonly maxReasoningTokens: number | null;
   readonly temperature: number | null;
   readonly maxTokens: number;
   /** Per-call LLM request timeout in ms; null when the profile leaves it at the default. */
@@ -365,6 +367,22 @@ export interface ConfigView {
   readonly activeProfile: string;
   readonly routing: { readonly default: string; readonly byGame?: Record<string, string> };
   readonly profiles: ConfigProfileView[];
+  /**
+   * Set when config.json is present but unreadable/corrupt/schema-invalid
+   * (configured stays false). Lets the UI warn instead of showing fresh-setup,
+   * whose next save would overwrite the real file. Mirrors StrategyReadResult.error.
+   *
+   * Raw technical detail only — the surrounding prose is the renderer's, so it
+   * can be localized. Paired with configPath below.
+   */
+  readonly error?: string;
+  /**
+   * Absolute path of the config.json `error` refers to. E2 (windows-loop): the
+   * user has to go edit or move that file, and the renderer must not rebuild the
+   * path itself — it varies with AIFIGHT_HOME and platform, and a wrong path in
+   * the banner sends them to fix a file that is not the broken one.
+   */
+  readonly configPath?: string;
 }
 
 /** Query for the maxTokens a chosen reasoning effort needs (token-budget guard). */
@@ -390,21 +408,45 @@ export interface ModelCapabilitiesInput {
   readonly model: string;
 }
 export interface ModelCapabilitiesResult {
-  /** Effort tiers to suggest. Empty = this model has no effort parameter at all. */
+  /** Tiers THIS model lists (annotation source). Empty = no effort parameter. */
   readonly efforts: readonly string[];
-  /** Every tier config.json can store. In here but not in `efforts` = storable but
-   *  the adapter will clamp it; outside it = cannot be saved at all. */
+  /** The protocol-wide tier vocabulary — what the picker RENDERS as chips. A tier
+   *  in here but not in `efforts` is still selectable; the adapter clamps it and
+   *  the UI says so (e.g. max on gpt-5.5 → "sent as xhigh"). */
+  readonly protocolEfforts: readonly string[];
+  /** Every tier config.json can store. */
   readonly storableEfforts: readonly string[];
   /** False when the registry has no entry — `efforts` is then a protocol-wide guess. */
   readonly isKnownModel: boolean;
-  /** Tier used when the field is left blank. */
+  /** The PROVIDER's default tier — what "auto" resolves to on their side. */
   readonly defaultEffort?: string;
   /** Thinking wire shapes, e.g. ["adaptive"] — empty for an unlisted model. */
   readonly thinkingModes: readonly string[];
   /** The model always reasons; the on/off toggle is meaningless. */
   readonly thinkingAlwaysOn: boolean;
+  /** What a fresh profile's thinking toggle should be: false for the pass-through
+   *  chat protocols, whose endpoint's model may not reason at all. */
+  readonly thinkingDefaultOn: boolean;
+  /** Protocol-specific thinking parameter (e.g. "thinkingBudget" on gemini-2.5),
+   *  used to pick the budget editor over the tier picker. */
+  readonly thinkingParam?: string;
   /** Output-token ceiling, when the registry knows it. */
   readonly maxOutputTokens?: number;
+}
+
+/** Ask the provider itself which models exist (GET /models with the profile's key).
+ *  Best-effort: null = endpoint unreachable / unsupported — fall back to seeds. */
+export interface DiscoverModelsInput {
+  readonly family: ProtocolFamily;
+  readonly model: string;
+  readonly baseURL?: string;
+  /** Key pasted in the form but not yet saved; falls back to the stored key. */
+  readonly apiKey?: string;
+  /** Profile whose stored key to use when apiKey is absent. */
+  readonly profileId?: string;
+}
+export interface DiscoverModelsResult {
+  readonly models: readonly string[];
 }
 
 /** Editable profile fields (everything except the API key, which has its own call). */
@@ -417,6 +459,8 @@ export interface ProfileInput {
   readonly baseURL?: string;
   readonly thinkingEnabled: boolean;
   readonly effort?: string;
+  /** Manual thinking budget (budget-shaped models only). null clears it. */
+  readonly maxReasoningTokens?: number | null;
   readonly temperature?: number | null;
   readonly maxTokens?: number;
   /** Per-call LLM request timeout in ms (user-settable; ≤ 300000). Omit → keep existing / default. */
@@ -625,6 +669,7 @@ export const IPC = {
   configGet: "config:get",
   configRecommendMaxTokens: "config:recommend-max-tokens",
   configModelCapabilities: "config:model-capabilities",
+  configDiscoverModels: "config:discover-models",
   configSaveProfile: "config:save-profile",
   configSetKey: "config:set-key",
   configClearKey: "config:clear-key",
@@ -739,6 +784,8 @@ export interface AifightBridgeApi {
   llmRecommendMaxTokens(input: RecommendMaxTokensInput): Promise<RecommendMaxTokensResult | null>;
   /** What the capability registry knows about a family+model (effort tiers, ceiling). */
   llmModelCapabilities(input: ModelCapabilitiesInput): Promise<ModelCapabilitiesResult | null>;
+  /** Ask the provider which models exist. null = discovery unavailable. */
+  llmDiscoverModels(input: DiscoverModelsInput): Promise<DiscoverModelsResult | null>;
   saveLLMProfile(input: ProfileInput): Promise<ConfigMutResult>;
   setLLMKey(profileId: string, apiKey: string): Promise<ConfigMutResult>;
   /** Remove a profile's stored API key (deletes the 0600 key file, resets the ref). */

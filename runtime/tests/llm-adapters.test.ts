@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   clearAdapters,
+  listRegisteredProtocols,
   registerBuiltinAdapters,
   requireAdapter,
 } from "../src/llm/adapter-registry";
-import type { LLMProfile } from "../src/llm/adapters/types";
+import { AdapterError, SUPPORTED_PROTOCOLS, type LLMProfile } from "../src/llm/adapters/types";
 import { redactApiKey, boundedErrorBody } from "../src/llm/adapters/redact";
+import capabilitiesJson from "../src/llm/capabilities/model-capabilities.json";
 
 // Adapter HTTP-shape tests (P2 hardening). Injects globalThis.fetch so no
 // network is touched. Verifies each adapter: hits the right endpoint with the
@@ -64,6 +66,20 @@ describe("adapter registry", () => {
     await registerBuiltinAdapters();
     for (const p of ALL_PROTOCOLS) {
       expect(requireAdapter(p).protocol).toBe(p);
+    }
+  });
+
+  // Drift guard: every protocol that can be STORED in config.json must also be
+  // RUNNABLE — a registered adapter plus a capability-registry entry.
+  // gemini_openai_compat was storable-but-adapterless: `config validate`
+  // passed, then the first decision threw "No LLM adapter registered".
+  it("every SUPPORTED_PROTOCOLS entry has an adapter and a capabilities entry", async () => {
+    await registerBuiltinAdapters();
+    const registered = new Set(listRegisteredProtocols());
+    const capabilityKeys = new Set(Object.keys(capabilitiesJson.protocols));
+    for (const p of SUPPORTED_PROTOCOLS) {
+      expect(registered.has(p), `no adapter registered for "${p}"`).toBe(true);
+      expect(capabilityKeys.has(p), `no model-capabilities.json entry for "${p}"`).toBe(true);
     }
   });
 });
@@ -213,6 +229,38 @@ describe("redact helpers (R13 F-09)", () => {
   });
 });
 
+// drift-6 regression: older onboarding wizards wrote the official Gemini URL
+// with /v1beta baked in while the adapter appends /v1beta itself, producing
+// /v1beta/v1beta/… request URLs (404). Both stored shapes must resolve to a
+// single /v1beta segment so existing configs keep working either way.
+describe("gemini_generate_content: /v1beta in the baseURL never doubles", () => {
+  const EXPECTED_URL =
+    "https://generativelanguage.googleapis.com/v1beta/models/test-model:generateContent";
+  const input = { systemPrompt: "sys", userPrompt: "usr", maxTokens: 64, temperature: 0, responseFormat: "json" } as const;
+  const body = {
+    candidates: [{ content: { parts: [{ text: "HELLO" }] } }],
+    usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 },
+  };
+
+  for (const baseURL of [
+    "https://generativelanguage.googleapis.com",
+    "https://generativelanguage.googleapis.com/v1beta",
+    "https://generativelanguage.googleapis.com/v1beta/",
+  ]) {
+    it(`baseURL "${baseURL}" yields a single /v1beta request URL`, async () => {
+      await registerBuiltinAdapters();
+      const adapter = requireAdapter("gemini_generate_content");
+      const { calls } = stubFetch(200, body);
+      const out = await adapter.generateDecision(
+        input,
+        resolved({ protocol: "gemini_generate_content", baseURL, model: "test-model" }),
+      );
+      expect(out.text).toBe("HELLO");
+      expect(calls[0]!.url).toBe(EXPECTED_URL);
+    });
+  }
+});
+
 // 2026-07-19: Gemini-protocol gateways/proxies can return thought-summary parts
 // (thought: true) even though the runtime never requests includeThoughts. Those
 // parts are chain-of-thought — joining them into the reply surfaced the model's
@@ -294,5 +342,71 @@ describe("gemini_generate_content: thoughtsTokenCount folds into outputTokens", 
       resolved({ protocol: "gemini_generate_content", baseURL: GEMINI_BASE, model: "test-model" }),
     );
     expect(out.outputTokens).toBe(7);
+  });
+});
+
+// R10 llm-adapters-1 / llm-adapters-2: a 200 response whose JSON body is
+// malformed ({} / literal null) — no `content` array (Anthropic) / no base
+// object (DeepSeek) — must surface a classified AdapterError('invalid_response'),
+// never a raw TypeError from iterating/dereferencing an undefined/null field.
+// Guards mirror each file's own conventions (Anthropic redact()'s `content ?? []`,
+// DeepSeek siblings' isObject()). Upstream fallback behaviour is unchanged; this
+// only keeps the trace diagnostic and consistent with the happy/max-tokens paths.
+describe("malformed 200 body → classified invalid_response, not raw TypeError", () => {
+  const input = { systemPrompt: "sys", userPrompt: "usr", maxTokens: 64, temperature: 0, responseFormat: "json" } as const;
+
+  async function decisionError(
+    protocol: LLMProfile["protocol"],
+    baseURL: string,
+    body: unknown,
+  ): Promise<unknown> {
+    await registerBuiltinAdapters();
+    const adapter = requireAdapter(protocol);
+    stubFetch(200, body);
+    try {
+      await adapter.generateDecision(input, resolved({ protocol, baseURL, model: "test-model" }));
+      return undefined;
+    } catch (e) {
+      return e;
+    }
+  }
+
+  it("anthropic_messages: empty-object body → AdapterError('invalid_response')", async () => {
+    const err = await decisionError("anthropic_messages", "https://api.anthropic.com", {});
+    expect(err).toBeInstanceOf(AdapterError);
+    expect(err).not.toBeInstanceOf(TypeError);
+    expect((err as AdapterError).kind).toBe("invalid_response");
+  });
+
+  it("anthropic_messages: literal null body → AdapterError('invalid_response')", async () => {
+    const err = await decisionError("anthropic_messages", "https://api.anthropic.com", null);
+    expect(err).toBeInstanceOf(AdapterError);
+    expect(err).not.toBeInstanceOf(TypeError);
+    expect((err as AdapterError).kind).toBe("invalid_response");
+  });
+
+  it("anthropic_messages: max-tokens content:[] still classifies as invalid_response(tokenLimit)", async () => {
+    const err = await decisionError("anthropic_messages", "https://api.anthropic.com", {
+      content: [],
+      stop_reason: "max_tokens",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+    expect(err).toBeInstanceOf(AdapterError);
+    expect((err as AdapterError).kind).toBe("invalid_response");
+    expect((err as AdapterError).tokenLimit).toBe(true);
+  });
+
+  it("deepseek_chat_completions: literal null body → AdapterError('invalid_response')", async () => {
+    const err = await decisionError("deepseek_chat_completions", "https://api.deepseek.com", null);
+    expect(err).toBeInstanceOf(AdapterError);
+    expect(err).not.toBeInstanceOf(TypeError);
+    expect((err as AdapterError).kind).toBe("invalid_response");
+  });
+
+  it("deepseek_chat_completions: empty-object body → AdapterError('invalid_response')", async () => {
+    const err = await decisionError("deepseek_chat_completions", "https://api.deepseek.com", {});
+    expect(err).toBeInstanceOf(AdapterError);
+    expect(err).not.toBeInstanceOf(TypeError);
+    expect((err as AdapterError).kind).toBe("invalid_response");
   });
 });
