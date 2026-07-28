@@ -20,10 +20,10 @@ import { ExternalLink, Loader2, X } from "lucide-react";
 
 import { FIXTURES, FIXTURE_GAMES } from "../fixtures";
 import { synthesizeTraces } from "../demoMatch";
-import { emptyLiveMatch, type MatchOutcome } from "../liveMatch";
+import { appendFinalEvents, emptyLiveMatch, type MatchOutcome } from "../liveMatch";
 import { useLiveStore } from "../liveStore";
 import { runCli, useBridgeStatus } from "../useBridge";
-import { buildReplayFromExport, type SessionReplay } from "../sessionReplay";
+import { buildReplayFromExport, replayPathOf, type SessionReplay } from "../sessionReplay";
 import { consumeWatchReplayIntent, type WatchReplayIntent } from "../watchIntent";
 import { gameLabel } from "../../shared/games";
 import { CockpitPanel } from "./CockpitPanel";
@@ -109,6 +109,25 @@ export function WatchView() {
         return;
       }
       setReplay({ kind: "ready", intent, replay: built });
+      // A stored session's inbound frames end at this player's LAST decision —
+      // same gap as the live stream — so the closing stretch (opponents' final
+      // moves, showdown, result) comes from the finished match's public replay.
+      // Best-effort: on any failure the replay stays as stored.
+      const tailPath = replayPathOf(intent.replayUrl);
+      if (tailPath !== null && typeof window.aifight?.getReplayTail === "function") {
+        void window.aifight
+          .getReplayTail(tailPath)
+          .then((frames) => {
+            if (frames === null || frames.length === 0) return;
+            setReplay((cur) => {
+              if (cur === null || cur.kind !== "ready" || cur.intent.sessionId !== intent.sessionId) return cur;
+              const state = appendFinalEvents(cur.replay.state, frames);
+              if (state === cur.replay.state) return cur;
+              return { ...cur, replay: { state, traces: cur.replay.traces } };
+            });
+          })
+          .catch(() => {});
+      }
     });
   }, []);
 
@@ -118,6 +137,11 @@ export function WatchView() {
   }
 
   const isLive = liveMatch.sessionId !== null && liveMatch.match !== null;
+  // A finished real match flips the cockpit from follow-the-tip to replay
+  // transport: the board no longer "waits" on anyone (the final tail is loaded
+  // by liveStore from the public replay), and play/restart replace the live
+  // button. The key below remounts the panel so it re-parks at the final board.
+  const finished = isLive && liveMatch.finished;
 
   const demoFix = FIXTURES[demoGame];
   const match = isLive ? liveMatch.match! : demoFix.match;
@@ -132,7 +156,7 @@ export function WatchView() {
     : isLive
       ? []
       : synthesizeTraces(match, events, ownerPlayerId);
-  const badge: "live" | "demo" = hasLiveTraces || isLive ? "live" : "demo";
+  const badge: "live" | "demo" | "replay" = finished ? "replay" : hasLiveTraces || isLive ? "live" : "demo";
 
   const outcome = outcomeText(t, liveMatch.outcome);
   const replayHref =
@@ -190,17 +214,17 @@ export function WatchView() {
       )}
       <div className="min-h-0 flex-1">
         <CockpitPanel
-          key={`${match.id}:${isLive ? "live" : "demo"}`}
+          key={`${match.id}:${finished ? "fin" : isLive ? "live" : "demo"}`}
           game={boardGame}
           match={match}
           events={events}
           ownerPlayerId={ownerPlayerId}
           ownerPrivate={ownerPrivate}
           traces={traces.slice()}
-          isLive={isLive}
+          isLive={isLive && !finished}
           badge={badge}
-          note={isLive ? t("cockpit.liveNote") : t("cockpit.note")}
-          emptyTraceHint={isLive ? t("cockpit.waitingTrace") : undefined}
+          note={finished ? t("cockpit.finishedNote") : isLive ? t("cockpit.liveNote") : t("cockpit.note")}
+          emptyTraceHint={isLive && !finished ? t("cockpit.waitingTrace") : undefined}
           headerLeft={headerLeft}
           headerRight={bridgeChip}
         />

@@ -58,6 +58,7 @@ import type {
   LeaderboardScope,
 } from "../shared/ipc";
 import { normalizeLeaderboard } from "./leaderboard";
+import { fetchReplayTail } from "./replay-tail";
 import { normalizeEvents } from "./events";
 import { normalizeAgentProfile } from "./agentProfile";
 import {
@@ -350,6 +351,37 @@ export class BridgeHost {
    * game). No auth — the leaderboard is public. Returns null on any error so the
    * renderer can show an empty/retry state. Never throws.
    */
+  /**
+   * Complete PUBLIC frame list for a finished match (see replay-tail.ts for
+   * why). `replayPath` comes from game_over's replay_url. The bridge's baseUrl
+   * may be a ws(s):// endpoint — normalize to the http(s) origin the public
+   * API lives on. Returns null on any failure; never throws.
+   */
+  async getReplayTail(replayPath: string): Promise<readonly import("../shared/ipc").ReplayTailFrame[] | null> {
+    if (typeof replayPath !== "string" || replayPath === "") return null;
+    let config: BridgeConfig;
+    try {
+      config = readBridgeConfig();
+    } catch {
+      return null;
+    }
+    const base = config.baseUrl?.replace(/\/+$/, "");
+    if (!base) return null;
+    let origin: string;
+    try {
+      const u = new URL(base);
+      const proto = u.protocol === "ws:" ? "http:" : u.protocol === "wss:" ? "https:" : u.protocol;
+      origin = `${proto}//${u.host}`;
+    } catch {
+      return null;
+    }
+    try {
+      return await fetchReplayTail(origin, replayPath);
+    } catch {
+      return null;
+    }
+  }
+
   async getLeaderboard(scope: LeaderboardScope): Promise<LeaderboardData | null> {
     let config: BridgeConfig;
     try {

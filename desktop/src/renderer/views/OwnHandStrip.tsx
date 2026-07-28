@@ -23,7 +23,10 @@ const ROLE_CLASS: Record<string, string> = {
 };
 
 function PlayingCard({ card }: { card: string }) {
-  const rank = card.slice(0, card.length - 1);
+  const raw = card.slice(0, card.length - 1);
+  // Engine notation writes Ten as "T"; people read "10" (and the board's seat
+  // cards already say 10) — normalize so the two never disagree on screen.
+  const rank = raw === "T" ? "10" : raw;
   const suit = card.slice(-1).toLowerCase();
   const red = suit === "h" || suit === "d";
   return (

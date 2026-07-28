@@ -10,6 +10,7 @@ import type {
 } from "../wsclient/reconnect";
 import { PROCESS_INSTANCE_ID } from "../wsclient/instance";
 import type { ServerMessageEnvelope } from "../wsclient/frame-handler";
+import { displayGameName } from "./match-narrator";
 import { PROTOCOL_VERSION } from "../index";
 import type { MsgGameOver } from "../protocol/types";
 import { loadLocalStrategy } from "../strategy/local-strategy";
@@ -943,19 +944,6 @@ export function fullReplayURL(baseUrl: string, replayPath: string | undefined): 
     return new URL(replayPath, `${baseUrl.replace(/\/+$/, "")}/`).toString();
   } catch {
     return replayPath;
-  }
-}
-
-function displayGameName(game: string | undefined): string {
-  switch (game) {
-    case "texas_holdem":
-      return "Texas Hold'em";
-    case "liars_dice":
-      return "Liar's Dice";
-    case "coup":
-      return "Coup";
-    default:
-      return "AIFight match";
   }
 }
 

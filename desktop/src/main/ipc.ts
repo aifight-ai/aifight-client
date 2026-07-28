@@ -120,6 +120,9 @@ export function registerBridgeIpc(host: BridgeHost): void {
   handle(IPC.leaderboardGet, (_e, scope: unknown) =>
     host.getLeaderboard(typeof scope === "string" && scope !== "" ? scope : "all"),
   );
+  handle(IPC.replayTailGet, (_e, replayPath: unknown) =>
+    host.getReplayTail(typeof replayPath === "string" ? replayPath : ""),
+  );
 
   // Public events list (no auth). Registration is deep-linked to the web by the renderer.
   handle(IPC.eventsGet, () => host.getEvents());

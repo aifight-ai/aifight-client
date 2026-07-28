@@ -8,7 +8,8 @@ import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Brain, ArrowRight, AlertTriangle } from "lucide-react";
 
-import type { BridgeDecisionTrace, TraceAction } from "../../shared/ipc";
+import type { TraceAction } from "../../shared/ipc";
+import type { StampedTrace } from "../liveStore";
 
 function actionLabel(action: TraceAction, t: (k: string, o?: Record<string, unknown>) => string): string {
   const d = action.data ?? {};
@@ -20,7 +21,7 @@ function actionLabel(action: TraceAction, t: (k: string, o?: Record<string, unkn
   return verb;
 }
 
-function TraceRow({ trace }: { trace: BridgeDecisionTrace }) {
+function TraceRow({ trace, onJumpToStep }: { trace: StampedTrace; onJumpToStep?: (step: number) => void }) {
   const { t } = useTranslation();
   switch (trace.type) {
     case "decision_request":
@@ -31,6 +32,17 @@ function TraceRow({ trace }: { trace: BridgeDecisionTrace }) {
             <b>{t("cockpit.decision")}</b>
             {` · ${trace.legalActionCount} ${t("cockpit.legalActions")}`}
           </span>
+          {/* Which board step this decision belongs to — click to scrub there. */}
+          {trace.step !== undefined && (
+            <button
+              className="v3-tr-step"
+              title={t("cockpit.seek")}
+              onClick={onJumpToStep === undefined ? undefined : () => onJumpToStep(trace.step!)}
+              disabled={onJumpToStep === undefined}
+            >
+              {t("cockpit.step", { n: trace.step })}
+            </button>
+          )}
         </div>
       );
     case "runtime_success":
@@ -87,11 +99,14 @@ export function ReasoningTracePanel({
   traces,
   badge,
   emptyHint,
+  onJumpToStep,
 }: {
-  traces: BridgeDecisionTrace[];
+  traces: readonly StampedTrace[];
   badge: TraceBadge;
   /** Override for the empty-state text (e.g. "waiting for first decision" when live). */
   emptyHint?: string;
+  /** Scrub the board to a trace's step (wired to the cockpit transport). */
+  onJumpToStep?: (step: number) => void;
 }) {
   const { t } = useTranslation();
   const endRef = useRef<HTMLDivElement>(null);
@@ -118,7 +133,7 @@ export function ReasoningTracePanel({
         {traces.length === 0 ? (
           <div className="v3-tr-empty">{emptyHint ?? t("cockpit.noTraces")}</div>
         ) : (
-          traces.map((tr, i) => <TraceRow key={i} trace={tr} />)
+          traces.map((tr, i) => <TraceRow key={i} trace={tr} onJumpToStep={onJumpToStep} />)
         )}
         <div ref={endRef} />
       </div>

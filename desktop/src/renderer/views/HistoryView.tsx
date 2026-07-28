@@ -270,7 +270,11 @@ function HistoryDetail({
   );
 
   return (
-    <div className="h-full">
+    // Document flow, NOT h-full: the review card stacks below the cockpit and
+    // the page scrolls. fill={false} sizes the cockpit by its content — with the
+    // old h-full pair, a board taller than the viewport painted over the review
+    // card (Generate button floating on the hand ledger, owner 2026-07-28).
+    <div className="pb-4">
       <CockpitPanel
         game={state.game}
         match={state.match}
@@ -282,6 +286,7 @@ function HistoryDetail({
         badge="replay"
         note={t("history.replayNote")}
         headerLeft={headerLeft}
+        fill={false}
       />
       <ReviewSection sessionId={item.session_id} />
     </div>

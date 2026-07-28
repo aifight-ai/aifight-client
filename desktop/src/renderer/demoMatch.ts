@@ -7,7 +7,8 @@
 // renders both identically.
 
 import type { MatchDetail, MatchEvent } from "@aifight/api-types";
-import type { BridgeDecisionTrace, TraceAction } from "../shared/ipc";
+import type { TraceAction } from "../shared/ipc";
+import type { StampedTrace } from "./liveStore";
 
 const DECISION_TYPES = new Set(["player_action", "bid", "challenge"]);
 
@@ -75,14 +76,17 @@ export function synthesizeTraces(
   match: MatchDetail,
   events: readonly MatchEvent[],
   ownerPlayerId: string,
-): BridgeDecisionTrace[] {
-  const out: BridgeDecisionTrace[] = [];
+): StampedTrace[] {
+  const out: StampedTrace[] = [];
   let attempt = 0;
-  for (const ev of events) {
-    if (!DECISION_TYPES.has(ev.type)) continue;
-    if (ev.player_id !== ownerPlayerId) continue;
+  events.forEach((ev, i) => {
+    if (!DECISION_TYPES.has(ev.type)) return;
+    if (ev.player_id !== ownerPlayerId) return;
     const matchId = match.id;
     const preview = previewFor(match.game, ev);
+    // The decision preceded its own action event: at that moment the board held
+    // events 0..i-1, i.e. step i — same anchoring the live store stamps.
+    const step = i;
     out.push({
       type: "decision_request",
       matchId,
@@ -90,6 +94,7 @@ export function synthesizeTraces(
       ...(ev.player_id !== undefined ? { playerId: ev.player_id } : {}),
       legalActionCount: legalCountFor(match.game),
       timeoutMs: 300_000,
+      step,
     });
     attempt += 1;
     out.push({
@@ -97,8 +102,9 @@ export function synthesizeTraces(
       matchId,
       attempt,
       raw: { kind: "text", sha256: shortHash(preview), bytes: preview.length, preview },
+      step,
     });
-    out.push({ type: "final_action", matchId, source: "runtime", action: actionFromEvent(ev) });
-  }
+    out.push({ type: "final_action", matchId, source: "runtime", action: actionFromEvent(ev), step });
+  });
   return out;
 }

@@ -560,6 +560,23 @@ export interface GameOverData {
 }
 
 /**
+ * One frame of a finished match's PUBLIC replay (GET /api/replays/{id}/frames),
+ * fetched by main after game_over to complete the local board: the bridge's own
+ * event stream ends at this player's last decision, so everything after it —
+ * opponents' closing actions, the showdown, the result — only exists in the
+ * public replay. Public data by definition; fetched only once a match is over.
+ */
+export interface ReplayTailFrame {
+  readonly seq?: number;
+  readonly type?: string;
+  /** Some payloads carry the event name as `kind` instead of `type`. */
+  readonly kind?: string;
+  readonly data?: Record<string, unknown>;
+  readonly player_id?: string;
+  readonly created_at?: string;
+}
+
+/**
  * The raw protocol envelope forwarded over IPC (mirror of the runtime's
  * ServerMessageEnvelope). `data` is `unknown`; liveMatch.ts narrows on `type`
  * then casts to the matching *Data interface above.
@@ -677,6 +694,7 @@ export const IPC = {
   configSetRoute: "config:set-route",
   configDeleteProfile: "config:delete-profile",
   usageGet: "usage:get",
+  replayTailGet: "replay:tail-get",
   updateCheck: "update:check",
   updateDownload: "update:download",
   updateInstall: "update:install",
@@ -757,6 +775,13 @@ export interface AifightBridgeApi {
   uploadAgentAvatar(bytes: ArrayBuffer, contentType: string): Promise<{ ok: boolean; avatar_url?: string; error?: string }>;
   /** Public ranking board for a scope ("all" = cross-game). Null on error. No auth. */
   getLeaderboard(scope: LeaderboardScope): Promise<LeaderboardData | null>;
+  /**
+   * Fetch the complete PUBLIC frame list of a finished match's replay (paged
+   * behind the scenes). `replayPath` is game_over's replay_url (e.g.
+   * "/replay/<public-id>"). Returns null when the replay isn't available —
+   * callers keep the board they already have.
+   */
+  getReplayTail(replayPath: string): Promise<readonly ReplayTailFrame[] | null>;
   /** Public list of events (赛事). Null on error. No auth; registration is deep-linked to the web. */
   getEvents(): Promise<EventsData | null>;
   /** Pause/resume automatic matchmaking without going offline. Session-only (resets to un-paused each launch). */

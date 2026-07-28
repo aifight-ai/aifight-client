@@ -190,6 +190,43 @@
   color: var(--v3-t3);
   font-variant-numeric: tabular-nums;
 }
+/* 走带进度滑杆:窄轨 + 品牌色圆点,live 拖动即脱离跟随(逻辑在 CockpitPanel) */
+.v3-cp-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 120px;
+  height: 3px;
+  margin-left: 6px;
+  border-radius: 2px;
+  background: var(--v3-line);
+  outline: none;
+  cursor: pointer;
+}
+.v3-cp-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--v3-acc);
+  border: 2px solid var(--v3-bg, #fff);
+  box-shadow: 0 0 0 1px var(--v3-line);
+}
+.v3-cp-slider:hover::-webkit-slider-thumb { background: var(--v3-acc-deep); }
+/* 播放速度档(回放模式) */
+.v3-cp-speed {
+  margin-left: 2px;
+  border: 1px solid var(--v3-line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--v3-t3);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  padding: 3px 6px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.v3-cp-speed:hover { color: var(--v3-ink); background: var(--v3-warm); }
 
 /* ═══ ② 对局台:统一解剖覆盖(顶层画布) ═══ */
 .v3-cockpit .aifight-game-canvas {
@@ -570,6 +607,22 @@
 .v3-tr-row svg { flex: 0 0 auto; }
 .v3-tr-decision { color: var(--v3-t2); }
 .v3-tr-decision b { color: var(--v3-ink); font-weight: 600; }
+/* 决策条目的步号锚点:点了让棋盘跳到那一步 */
+.v3-tr-step {
+  margin-left: auto;
+  flex: 0 0 auto;
+  border: 1px solid var(--v3-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--v3-t3);
+  font-size: 9.5px;
+  font-family: var(--font-mono);
+  padding: 1px 7px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.v3-tr-step:hover { color: var(--v3-acc-deep); border-color: var(--v3-acc); }
+.v3-tr-step:disabled { cursor: default; color: var(--v3-t3); border-color: var(--v3-line); }
 .v3-tr-final b { color: var(--v3-ink); font-weight: 600; font-family: var(--font-mono); }
 .v3-tr-src {
   padding: 1.5px 6px;

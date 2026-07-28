@@ -32,6 +32,7 @@ import {
   startTelegramCompanion,
   type TelegramCompanion,
 } from "../../notify/telegram/companion";
+import { MatchNarrator, type NarratorLine } from "../../bridge/match-narrator";
 import { RUNTIME_VERSION } from "../../index";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, expectArity } from "../shared";
@@ -151,6 +152,10 @@ export async function runBridgeWithConfig(opts: {
   // configured), so every call site is `?.` — a notification channel must never
   // be able to stand between the bridge and a match.
   let telegram: TelegramCompanion | null = null;
+  // In-match terminal narrator: match start, one line per decision, model-error
+  // warnings. Without it the terminal is silent from "queue joined" until the
+  // final match_complete block.
+  const narrator = new MatchNarrator();
   // Resolves if the reconnect loop ever stops for good. Without this the process
   // stays alive around a dead socket: waitForStopSignal only wakes on a signal,
   // so the supervisor sees a healthy process, never restarts it, and the agent is
@@ -173,12 +178,14 @@ export async function runBridgeWithConfig(opts: {
       },
       onServerMessage: (message) => {
         telegram?.observeServerMessage(message);
+        writeNarratorLine(narrator.observeServerMessage(message), env);
       },
       // A failed model call does not throw — the provider substitutes its own
-      // move and carries on — so the only place that degradation is visible is
-      // the decision trace.
+      // move and carries on — so without the narrator the terminal in front of
+      // the user is silent for the whole match and blind to that degradation.
       onTrace: (trace) => {
         telegram?.observeTrace(trace);
+        writeNarratorLine(narrator.observeTrace(trace), env);
       },
     });
   let runner = makeRunner(config);
@@ -641,6 +648,13 @@ export function shouldWriteRefusalLog(code: string, now: number): boolean {
   if (last !== undefined && now - last < REFUSAL_LOG_REPEAT_MS) return false;
   refusalLoggedAt.set(code, now);
   return true;
+}
+
+/** Print one narrator line (or nothing), matching writeBridgeLog's tone. */
+function writeNarratorLine(line: NarratorLine | null, env: HandlerEnv): void {
+  if (line === null) return;
+  const text = line.level === "warning" ? `warning: ${line.message}` : line.message;
+  env.stdout(`${line.blockStart === true ? "\n" : ""}${text}\n`);
 }
 
 function writeBridgeLog(event: BridgeRunnerLogEvent, env: HandlerEnv): void {

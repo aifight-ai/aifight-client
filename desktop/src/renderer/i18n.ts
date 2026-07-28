@@ -367,6 +367,10 @@ const en = {
       outcomeDraw: "Draw",
       waitingTrace: "Waiting for your agent's first decision…",
       liveNote: "Your live match — zero delay. You see only YOUR agent's cards and reasoning; opponents' hidden info stays hidden, exactly as the platform enforces.",
+      finishedNote: "Match finished — the closing stretch (opponents' final moves and the showdown) has been completed from the public replay. Scrub through any step.",
+      step: "step {{n}}",
+      seek: "Jump to this step",
+      speed: "Playback speed",
     },
     review: {
       panel: "Review",
@@ -1001,6 +1005,10 @@ const zh = {
       outcomeDraw: "平局",
       waitingTrace: "等待你的 agent 做出第一个决策…",
       liveNote: "你的实时对局——零延迟。你只能看到自己 agent 的牌与推理;对手隐藏信息保持隐藏,与平台规则一致。",
+      finishedNote: "对局已结束——完整终局(含对手收尾与摊牌)已从公开回放补齐,可拖动进度条回看每一步。",
+      step: "步 {{n}}",
+      seek: "跳到该步",
+      speed: "播放速度",
     },
     review: {
       panel: "复盘",

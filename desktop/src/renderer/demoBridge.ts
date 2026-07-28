@@ -176,6 +176,7 @@ export function installDemoBridge(): void {
     clearAgentAvatar: () => Promise.resolve({ ok: true }),
     uploadAgentAvatar: () => Promise.resolve({ ok: true, avatar_url: "" }),
     getLeaderboard: () => Promise.resolve(null),
+    getReplayTail: () => Promise.resolve(null),
     getEvents: () => Promise.resolve(null),
     setMatchingPaused: () => Promise.resolve({ ok: true }),
     openConfigDir: () => Promise.resolve(""),

@@ -26,6 +26,7 @@ import type {
   GameStartData,
   GameStateData,
   ProtocolEvent,
+  ReplayTailFrame,
   ServerMessage,
 } from "../shared/ipc";
 
@@ -247,6 +248,46 @@ function onGameOver(state: LiveMatchState, data: GameOverData): LiveMatchState {
     outcome: ownerOutcome(data.result, state.ownerPlayerId),
     replayPath: data.replay_url ?? null,
   };
+}
+
+// ── final-tail merge (post-game_over) ───────────────────────────────────────
+
+/**
+ * Fold the finished match's PUBLIC replay frames into the local event log.
+ *
+ * The bridge's own stream ends at this player's last decision — the closing
+ * stretch (opponents' final actions, showdown, result) only exists in the
+ * public replay. Frames share the engine's seq space with the events we
+ * already hold, so everything at/below maxSeq is a duplicate and is skipped;
+ * only the genuinely-missing tail is appended. The owner's earlier synthetic
+ * cards_dealt injections are untouched (they never advanced maxSeq).
+ *
+ * 🔒 Public data only: these frames are what any anonymous visitor gets from
+ * the replay page of a FINISHED match. Nothing private is added or revealed
+ * beyond what the platform itself published.
+ */
+export function appendFinalEvents(state: LiveMatchState, frames: readonly ReplayTailFrame[]): LiveMatchState {
+  if (frames.length === 0) return state;
+  let events = state.events;
+  let maxSeq = state.maxSeq;
+  let appended: MatchEvent[] | null = null;
+  for (const f of frames) {
+    const type = f.type ?? f.kind;
+    if (typeof type !== "string" || type === "") continue;
+    if (typeof f.seq !== "number" || f.seq <= maxSeq) continue; // already have it
+    appended ??= events.slice();
+    appended.push({
+      seq: f.seq,
+      type,
+      data: f.data ?? {},
+      created_at: f.created_at ?? "",
+      ...(f.player_id ? { player_id: f.player_id } : {}),
+    });
+    maxSeq = f.seq;
+  }
+  if (appended === null) return state;
+  events = appended;
+  return { ...state, events, maxSeq };
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

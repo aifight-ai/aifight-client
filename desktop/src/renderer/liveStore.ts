@@ -7,24 +7,67 @@
 // notifications can react to lifecycle transitions.
 //
 // 🔒 Information-hiding is inherited verbatim from liveMatch.ts — this store only
-// re-hosts that reducer; it never surfaces anything the reducer wouldn't.
+// re-hosts that reducer; it never surfaces anything the reducer wouldn't. The
+// post-game tail fetch adds ONLY the finished match's public replay frames.
 
 import { useEffect, useState } from "react";
 
-import { emptyLiveMatch, reduceServerMessage, type LiveMatchState } from "./liveMatch";
+import { appendFinalEvents, emptyLiveMatch, reduceServerMessage, type LiveMatchState } from "./liveMatch";
 import type { AifightBridgeApi, BridgeDecisionTrace } from "../shared/ipc";
+
+/**
+ * A trace as the store hands it to views: the bridge's frame plus the board
+ * step it belongs to. `step` is the event count at arrival — the bridge's
+ * stdout is a FIFO, so the action_request (whose new_events advance the board)
+ * always lands before the decision traces it provoked, making "events so far"
+ * exactly the board position the decision was taken at.
+ */
+export type StampedTrace = BridgeDecisionTrace & { readonly step?: number };
 
 export interface LiveStoreState {
   readonly match: LiveMatchState;
-  readonly traces: readonly BridgeDecisionTrace[];
+  readonly traces: readonly StampedTrace[];
 }
 
 let state: LiveStoreState = { match: emptyLiveMatch(), traces: [] };
 const listeners = new Set<() => void>();
 let started = false;
+/** Session whose finished-match tail fetch has been launched (once per match). */
+let tailFetchedFor: string | null = null;
 
 function emit(): void {
   for (const l of listeners) l();
+}
+
+/**
+ * After game_over, pull the finished match's PUBLIC replay frames and append
+ * the closing stretch the bridge never received (opponents' final actions,
+ * showdown, result) — without this the board freezes mid-hand on "opponent
+ * thinking…". Retries a few times because the replay row is written at
+ * settlement, effectively concurrent with game_over's broadcast.
+ */
+function fetchFinalTail(bridge: AifightBridgeApi, sessionId: string, replayPath: string): void {
+  if (typeof bridge.getReplayTail !== "function") return; // older preload — degrade quietly
+  const attempt = (retriesLeft: number): void => {
+    void bridge
+      .getReplayTail(replayPath)
+      .then((frames) => {
+        if (state.match.sessionId !== sessionId) return; // a new match took over
+        if (frames === null || frames.length === 0) {
+          if (retriesLeft > 0) setTimeout(() => attempt(retriesLeft - 1), 2500);
+          return;
+        }
+        const merged = appendFinalEvents(state.match, frames);
+        if (merged === state.match) return; // nothing new — no emit
+        state = { match: merged, traces: state.traces };
+        emit();
+      })
+      .catch(() => {
+        if (state.match.sessionId !== sessionId) return;
+        if (retriesLeft > 0) setTimeout(() => attempt(retriesLeft - 1), 2500);
+      });
+  };
+  attempt(2);
 }
 
 /**
@@ -43,13 +86,27 @@ export function ensureLiveStoreStarted(api?: AifightBridgeApi): void {
   started = true;
   bridge.onServerMessage((msg) => {
     const prevSession = state.match.sessionId;
+    const wasFinished = state.match.finished;
     const match = reduceServerMessage(state.match, msg);
     const traces = match.sessionId !== prevSession ? [] : state.traces;
     state = { match, traces };
     emit();
+    // Newly finished with a replay available → complete the board's tail.
+    if (
+      match.finished &&
+      !wasFinished &&
+      match.sessionId !== null &&
+      match.replayPath !== null &&
+      tailFetchedFor !== match.sessionId
+    ) {
+      tailFetchedFor = match.sessionId;
+      fetchFinalTail(bridge, match.sessionId, match.replayPath);
+    }
   });
   bridge.onTrace((tr) => {
-    state = { match: state.match, traces: [...state.traces, tr] };
+    // Stamp the board step this trace belongs to (see StampedTrace).
+    const stamped: StampedTrace = { ...tr, step: state.match.events.length };
+    state = { match: state.match, traces: [...state.traces, stamped] };
     emit();
   });
 }
@@ -81,4 +138,5 @@ export function __resetLiveStoreForTest(): void {
   state = { match: emptyLiveMatch(), traces: [] };
   listeners.clear();
   started = false;
+  tailFetchedFor = null;
 }

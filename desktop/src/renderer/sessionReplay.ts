@@ -11,11 +11,28 @@
 // (already redacted for storage by the runtime) and flattened in order.
 
 import { emptyLiveMatch, reduceServerMessage, type LiveMatchState } from "./liveMatch";
-import type { BridgeDecisionTrace, ServerMessage } from "../shared/ipc";
+import type { StampedTrace } from "./liveStore";
+import type { ServerMessage } from "../shared/ipc";
+
+/**
+ * Extract the path of a stored replay URL ("https://aifight.ai/replay/x?y" →
+ * "/replay/x") so a History-opened replay can complete its final stretch from
+ * the public replay — a stored session's inbound frames end at this player's
+ * last decision, exactly like the live stream. Accepts a bare path unchanged;
+ * null when there is nothing usable.
+ */
+export function replayPathOf(replayUrl: string | undefined): string | null {
+  if (replayUrl === undefined || replayUrl === "") return null;
+  try {
+    return new URL(replayUrl).pathname;
+  } catch {
+    return replayUrl.startsWith("/") ? replayUrl : null;
+  }
+}
 
 export interface SessionReplay {
   readonly state: LiveMatchState;
-  readonly traces: BridgeDecisionTrace[];
+  readonly traces: StampedTrace[];
 }
 
 function isMessage(x: unknown): x is ServerMessage {
@@ -32,22 +49,36 @@ export function buildReplayFromExport(exp: unknown): SessionReplay {
 
   let state = emptyLiveMatch();
   const inbound = Array.isArray(e.inbound) ? e.inbound : [];
+  // Board position at each decision: the k-th action_request provoked the k-th
+  // decision, and its new_events land in the reducer BEFORE the agent decides —
+  // so the event count right after folding it is the step that decision was
+  // taken at (same anchoring the live store stamps). Best-effort: a reconnect
+  // re-request shifts the pairing by one; traces then anchor a step early,
+  // which still lands the click in the right neighbourhood.
+  const stepAtDecision: number[] = [];
   for (const rec of inbound) {
     const msg = (rec as { message?: unknown })?.message;
-    if (isMessage(msg)) state = reduceServerMessage(state, msg);
+    if (!isMessage(msg)) continue;
+    state = reduceServerMessage(state, msg);
+    if (msg.type === "action_request") stepAtDecision.push(state.events.length);
   }
 
-  const traces: BridgeDecisionTrace[] = [];
+  const traces: StampedTrace[] = [];
   const decisions = Array.isArray(e.decisions) ? e.decisions : [];
-  for (const d of decisions) {
+  decisions.forEach((d, i) => {
     const ts = (d as { traces?: unknown })?.traces;
-    if (!Array.isArray(ts)) continue;
+    if (!Array.isArray(ts)) return;
+    const step = stepAtDecision[Math.min(i, stepAtDecision.length - 1)];
     for (const tr of ts) {
       if (tr && typeof tr === "object" && typeof (tr as { type?: unknown }).type === "string") {
-        traces.push(tr as BridgeDecisionTrace);
+        traces.push(
+          step === undefined
+            ? (tr as StampedTrace)
+            : ({ ...(tr as object), step } as StampedTrace),
+        );
       }
     }
-  }
+  });
 
   return { state, traces };
 }
