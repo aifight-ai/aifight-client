@@ -12,9 +12,9 @@
 // it never derives opponent secrets. The caller (liveMatch / sessionReplay) is
 // responsible for never putting an opponent's hidden info into these props.
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Play, Pause, SkipBack, SkipForward, RotateCcw, Radio } from "lucide-react";
+import { Play, Pause, SkipBack, SkipForward, ChevronLeft, ChevronRight, Radio } from "lucide-react";
 
 import { GameStateVisual } from "@aifight/ui";
 import type { MatchDetail, MatchEvent } from "@aifight/api-types";
@@ -80,6 +80,21 @@ export function CockpitPanel(props: CockpitPanelProps) {
     if (isLive && following) setStep(events.length);
   }, [isLive, following, events.length]);
 
+  // Replay: when the event log EXTENDS (the finished match's public-replay tail
+  // merging in after mount — it always lands late, the replay row is written at
+  // settlement), a transport parked at the old tip follows to the new tip.
+  // Without this the "re-park at the final board" promise silently broke: the
+  // panel remounted at game_over with the pre-tail length and then sat mid-
+  // showdown once the tail arrived. A user who already scrubbed elsewhere is
+  // left alone.
+  const prevLenRef = useRef(events.length);
+  useEffect(() => {
+    const prev = prevLenRef.current;
+    prevLenRef.current = events.length;
+    if (isLive || events.length <= prev) return;
+    setStep((s) => (s >= prev ? events.length : s));
+  }, [events.length, isLive]);
+
   // Replay: timed auto-advance during playback, paced by the speed dial
   // (base 1100ms/step — the same cadence the website's replay page uses at 1×).
   useEffect(() => {
@@ -95,6 +110,15 @@ export function CockpitPanel(props: CockpitPanelProps) {
 
   const visible = events.slice(0, step);
   const atEnd = step >= events.length;
+
+  // Replay/demo: the reasoning panel tracks the transport — a decision's trace
+  // appears only once the board has reached the step it was taken at, exactly
+  // like the live stream builds up. Without this, a replay parked mid-match
+  // already showed EVERY later decision on the right while the board sat
+  // earlier (board/panel desync; also spoils the run-out when stepping
+  // through). Unstamped traces (older stored sessions) stay always-visible.
+  // Live keeps the full stream — arrival order IS the live experience.
+  const shownTraces = isLive ? traces : traces.filter((tr) => tr.step === undefined || tr.step <= step);
 
   // v3: which seat is "your agent" — derived from the same props the board
   // already gets (no new data). The canvas carries it as data-owner-seat so the
@@ -134,6 +158,12 @@ export function CockpitPanel(props: CockpitPanelProps) {
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
         stepTo(step + 1);
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        stepTo(0);
+      } else if (e.key === "End") {
+        e.preventDefault();
+        stepTo(events.length);
       } else if (e.key === " ") {
         e.preventDefault();
         if (isLive) goLive();
@@ -151,14 +181,17 @@ export function CockpitPanel(props: CockpitPanelProps) {
         <div className="v3-cp-left">{headerLeft}</div>
         <div className="v3-cp-right">
           {headerRight}
+          {/* Full five-key transport (owner ask 2026-07-28): ⏮ first / ◀ prev /
+              ▶|Radio / ▶ next / ⏭ last. SkipBack/SkipForward now mean what
+              their bar-glyphs say — jump to the ends; single-stepping moved to
+              the chevrons. In live, ⏭ jumps to the newest step WITHOUT
+              re-following; Radio is the "follow the tip again" switch. */}
           <div className="v3-cp-transport">
-            {!isLive && (
-              <TransportButton title={t("cockpit.restart")} onClick={() => stepTo(0)}>
-                <RotateCcw size={15} />
-              </TransportButton>
-            )}
-            <TransportButton title={t("cockpit.prev")} onClick={() => stepTo(step - 1)}>
+            <TransportButton title={t("cockpit.toStart")} onClick={() => stepTo(0)}>
               <SkipBack size={15} />
+            </TransportButton>
+            <TransportButton title={t("cockpit.prev")} onClick={() => stepTo(step - 1)}>
+              <ChevronLeft size={15} />
             </TransportButton>
             {isLive ? (
               <TransportButton title={t("cockpit.liveMatch")} onClick={goLive} accent={!following}>
@@ -170,6 +203,9 @@ export function CockpitPanel(props: CockpitPanelProps) {
               </TransportButton>
             )}
             <TransportButton title={t("cockpit.next")} onClick={() => stepTo(step + 1)}>
+              <ChevronRight size={15} />
+            </TransportButton>
+            <TransportButton title={t("cockpit.toEnd")} onClick={() => stepTo(events.length)}>
               <SkipForward size={15} />
             </TransportButton>
             {!isLive && (
@@ -230,8 +266,19 @@ export function CockpitPanel(props: CockpitPanelProps) {
           </div>
           <p className="v3-board-note">{note}</p>
         </div>
-        <div className="min-h-[320px] xl:h-auto xl:w-[340px] xl:shrink-0">
-          <ReasoningTracePanel traces={traces} badge={badge} emptyHint={emptyTraceHint} onJumpToStep={stepTo} />
+        {/* fill=false (History detail, document flow): without a bounded height
+            the trace panel renders EVERY trace and the page grows without end
+            (owner report 2026-07-28) — cap it so the panel scrolls internally,
+            sticky beside the board on wide layouts. fill mode keeps the
+            viewport-driven height it always had. */}
+        <div
+          className={
+            fill
+              ? "min-h-[320px] xl:h-auto xl:w-[340px] xl:shrink-0"
+              : "h-[420px] xl:sticky xl:top-4 xl:h-[calc(100vh-8rem)] xl:w-[340px] xl:shrink-0"
+          }
+        >
+          <ReasoningTracePanel traces={shownTraces} badge={badge} emptyHint={emptyTraceHint} onJumpToStep={stepTo} />
         </div>
       </div>
     </div>

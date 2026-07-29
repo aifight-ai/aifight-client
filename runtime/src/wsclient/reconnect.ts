@@ -131,6 +131,12 @@ export interface ReconnectStateSnapshot {
   readonly connectedAt: number | null;
   readonly welcome: WSWelcome | null;
   readonly parkedReason: ParkedReason | null;
+  /** Consecutive auth-class dial failures (handshake 401/404 — revoked key,
+   *  deleted agent, or a server whose auth isn't up yet). Resets on success,
+   *  on a non-auth failure, and on a successful refreshApiKey (new credential
+   *  = new story). Lets the UI escalate「连接中…」into an actionable
+   *  credential warning without the loop ever giving up (连接审计 #5). */
+  readonly authFailures: number;
   /** Monotonic per-facade sequence. Consumers must drop snapshots whose seq is
    *  ≤ the last applied one (IPC reorder/stale-pull guard, 审查 F6). */
   readonly seq: number;
@@ -445,6 +451,11 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
    *  Decoupled from `attempt` (which serves caller telemetry and resets
    *  to 0 per TED rev 4). Drives `computeBackoff(#failures, ...)`. */
   #failures = 0;
+  /** Consecutive auth-class (401/404 handshake) dial failures — see the
+   *  snapshot field doc. Distinct from #failures: a network blip inside an
+   *  auth outage resets THIS counter (the streak is only meaningful when the
+   *  server itself keeps saying "no"), while #failures keeps the curve. */
+  #authFailures = 0;
   /** Wall-clock ms when the current/last session reached "connected".
    *  Together with stabilityWindowMs this distinguishes a real session
    *  (its close starts a fresh cycle) from a FLAP (its close must keep
@@ -576,6 +587,7 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
       connectedAt: this.connectedAtMs,
       welcome: this.welcome,
       parkedReason: this.parkedReason,
+      authFailures: this.#authFailures,
       seq: this.#seq,
     };
   }
@@ -731,6 +743,7 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
         //     next disconnect cycle
         this.attempt = 0;
         this.#failures = 0;
+        this.#authFailures = 0;
         this.#connectedAt = Date.now();
         this.connectedAtMs = this.#connectedAt;
         this.nextRetryAt = null;
@@ -902,6 +915,7 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
           if (typeof fresh === "string" && fresh !== "" && fresh !== this.#apiKey) {
             this.#apiKey = fresh;
             this.#failures = 0; // fresh credential → fresh backoff cycle
+            this.#authFailures = 0; // new key = new story for the escalation UI
           }
         } catch {
           // Keep the cached key — refresh must never break the reconnect loop.
@@ -919,6 +933,9 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
       const isAuthFailure =
         lastErr instanceof WSHandshakeError &&
         (lastErr.statusCode === 401 || lastErr.statusCode === 404);
+      // 连接审计 #5: the streak the UI escalates on. Stamped before #sleepUntil's
+      // projection so this backoff snapshot already carries the fresh count.
+      this.#authFailures = isAuthFailure ? this.#authFailures + 1 : 0;
       const cappedBase = computeBackoff(
         this.#failures,
         this.#opts.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS,
@@ -1202,14 +1219,23 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
   }
 
   /** Suspended wait (P5): non-terminal parking for host sleep. Exits on
-   *  poke ("resume"), or dispatches terminal state and returns "stopped". */
+   *  poke ("resume") or a detected wall-clock jump, or dispatches terminal
+   *  state and returns "stopped".
+   *
+   *  连接审计 #4 (2026-07-28): this used to be ONE multi-week delay whose only
+   *  exit was poke() — if Electron's powerMonitor "resume" event was lost
+   *  (observed on macOS), the facade stayed suspended forever and the app sat
+   *  on「连接中…」until restart. Sleep in chunks like #sleepUntil and treat a
+   *  wall-clock jump as the wake signal, so waking self-heals even when the
+   *  resume event never arrives. */
   async #suspendWait(): Promise<"resume" | "stopped"> {
     this.#suspendRequested = false;
     this.nextRetryAt = null;
     this.connectedAtMs = null;
     this.#setState("suspended");
     for (;;) {
-      const outcome = await this.#interruptibleDelay(2_147_000_000);
+      const expectedFire = Date.now() + SLEEP_CHUNK_MS;
+      const outcome = await this.#interruptibleDelay(SLEEP_CHUNK_MS);
       switch (outcome) {
         case "poke":
         case "wake":
@@ -1229,8 +1255,16 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
           });
           return "stopped";
         case "suspend":
+          continue; // already suspended — keep waiting
         case "timeout":
-          continue; // already suspended / timer horizon reached — keep waiting
+          if (Date.now() - expectedFire > WALL_JUMP_THRESHOLD_MS) {
+            // The machine slept THROUGH this chunk and woke without a resume
+            // event — that IS the wake.
+            this.#failures = 0;
+            this.#flapStreak = 0;
+            return "resume";
+          }
+          continue;
       }
     }
   }

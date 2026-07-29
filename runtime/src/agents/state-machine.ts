@@ -687,13 +687,29 @@ function reconnectEvent(state: AgentFSMState, event: ReconnectEvent): AgentFSMTr
     // The success MUST be told (审查 F8): this used to emit nothing, leaving
     // every host blind to recovery — the desktop pill sat on「连接中」while
     // the bridge was online for 82 minutes (2026-07-25 incident).
-    return ok({ ...state, transport: "connected" }, [
-      notify(
-        "info",
-        "reconnect.attempt_success",
-        `Reconnected (attempt ${event.attempt})`,
-      ),
-    ]);
+    //
+    // Queue truth (连接审计 #15, 2026-07-28): the server drops this agent from
+    // every queue the moment the old socket dies (hub.OnQueueLeave), so any
+    // queue/pendingConfirm carried across a reconnect is a stale belief —
+    // Telegram/control-API kept reporting「匹配中」for a queue that no longer
+    // existed. Clear it; the caller re-joins explicitly (BridgeRunner rejoin).
+    // activeMatches is untouched: a mid-match reconnect stays in_match.
+    return ok(
+      withDerivedPhase({
+        ...state,
+        transport: "connected",
+        queue: undefined,
+        pendingConfirm: undefined,
+        confirmed: undefined,
+      }),
+      [
+        notify(
+          "info",
+          "reconnect.attempt_success",
+          `Reconnected (attempt ${event.attempt})`,
+        ),
+      ],
+    );
   }
   if (event.type === "attempt-start") {
     return ok({ ...state, transport: "backoff" }, [

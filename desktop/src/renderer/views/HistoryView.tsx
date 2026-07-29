@@ -9,20 +9,23 @@
 //
 // 🔒 Replays inherit the live cockpit's information hiding (see sessionReplay).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronLeft, ExternalLink, RotateCw } from "lucide-react";
 
 import { runCli } from "../useBridge";
-import { buildReplayFromExport, type SessionReplay } from "../sessionReplay";
+import { buildReplayFromExport, replayPathOf, type SessionReplay } from "../sessionReplay";
+import { appendFinalEvents } from "../liveMatch";
+import { isStaleLiveSession } from "../staleSession";
 import { Chip, PageHeader } from "../components/ui";
 import { gameLabel } from "../../shared/games";
 import { CockpitPanel } from "./CockpitPanel";
 import { ReviewSection } from "./ReviewSection";
 
 // The runtime returns the FULL session list (no server-side pagination), so we
-// filter + page on the client. PAGE_SIZE rows show first; "load more" reveals more.
-const PAGE_SIZE = 20;
+// filter + page on the client. Real pages, 10 per page (owner ruling 2026-07-28
+// — a growing history needs pagination, not an ever-longer load-more pile).
+const PAGE_SIZE = 10;
 type StatusFilter = "all" | "active" | "completed";
 // Match mode filter: friendly = a 约战 (challenge), everything else is ranked/manual.
 type ModeFilter = "all" | "ranked" | "friendly";
@@ -35,9 +38,14 @@ interface SessionListItem {
   game?: string;
   /** Match mode from game_start ("ranked" | "friendly"); friendly = a 约战. */
   mode?: string;
+  started_at?: string;
+  ended_at?: string;
   updated_at?: string;
   result_label?: string;
   decision_count?: number;
+  player_count?: number;
+  /** Opponent names from game_over (server-masked); absent on old sessions. */
+  opponents?: string[];
   real_match_id?: string;
   replay_url?: string;
 }
@@ -46,6 +54,73 @@ function fmtDate(iso: string | undefined, locale: string): string {
   if (!iso) return "";
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(locale);
+}
+
+/** Wall-clock length of the match, website-style compact ("29m16s"). */
+function fmtDuration(startISO: string | undefined, endISO: string | undefined): string | null {
+  if (!startISO || !endISO) return null;
+  const ms = new Date(endISO).getTime() - new Date(startISO).getTime();
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${s % 60 > 0 ? `${s % 60}s` : ""}`;
+  return `${Math.floor(m / 60)}h${m % 60}m`;
+}
+
+/** "/replay/<publicID>" (path or full URL) → publicID; null when unusable. */
+function publicReplayIdOf(replayUrl: string | undefined): string | null {
+  const path = replayPathOf(replayUrl);
+  if (path === null) return null;
+  const m = /^\/replay\/([^/?#]+)/.exec(path);
+  return m === null ? null : m[1];
+}
+
+/**
+ * 对局强度 per public replay id, from the OWN agent's public profile
+ * (recent_matches[].avg_player_rating — the pre-match rating average across
+ * ALL seats, the same number the website's agent page shows). Best-effort:
+ * the profile covers the recent window only, older local sessions simply
+ * show no strength.
+ */
+function readStrengthMap(profile: Record<string, unknown> | null): Map<string, number> {
+  const map = new Map<string, number>();
+  const rows = (profile as { recent_matches?: unknown })?.recent_matches;
+  if (!Array.isArray(rows)) return map;
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as { public_replay_id?: unknown; id?: unknown; avg_player_rating?: unknown };
+    const id = typeof r.public_replay_id === "string" ? r.public_replay_id : typeof r.id === "string" ? r.id : null;
+    if (id !== null && typeof r.avg_player_rating === "number") map.set(id, r.avg_player_rating);
+  }
+  return map;
+}
+
+/**
+ * The store keeps result_label in English ("3rd place", "draw", "forfeit"…) —
+ * localize the known shapes for zh readers, pass anything unknown through, and
+ * leave English UI on the original wording.
+ */
+function localizeResult(label: string | undefined, lang: string, t: (k: string, o?: Record<string, unknown>) => string): string | undefined {
+  if (label === undefined || label === "" || !lang.startsWith("zh")) return label;
+  const place = /^(\d+)(?:st|nd|rd|th) place$/.exec(label);
+  if (place !== null) return t("history.placeN", { n: place[1] });
+  switch (label.toLowerCase()) {
+    case "win":
+      return t("history.resultWin");
+    case "loss":
+      return t("history.resultLoss");
+    case "draw":
+      return t("history.resultDraw");
+    case "forfeit":
+      return t("history.resultForfeit");
+    case "opponent forfeit":
+      return t("history.resultOppForfeit");
+    case "completed":
+      return t("history.resultCompleted");
+    default:
+      return label;
+  }
 }
 
 type ListState =
@@ -61,9 +136,30 @@ export function HistoryView() {
   const [gameFilter, setGameFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [modeFilter, setModeFilter] = useState<ModeFilter>("all");
-  const [shown, setShown] = useState(PAGE_SIZE);
-  // Reset pagination whenever a filter changes so "load more" starts from the top.
-  useEffect(() => setShown(PAGE_SIZE), [gameFilter, statusFilter, modeFilter]);
+  const [page, setPage] = useState(0);
+  // Back to page 1 whenever a filter changes — a kept page index could point
+  // past the shrunken filtered list.
+  useEffect(() => setPage(0), [gameFilter, statusFilter, modeFilter]);
+
+  // Opening / closing a detail swaps the whole page content inside the app
+  // shell's ONE scroller — reset it, or the list's scroll position leaks into
+  // the detail (opened mid-page, header off screen) and vice versa. The App
+  // shell only resets on nav-view switches; this transition stays in "history".
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let p: HTMLElement | null | undefined = rootRef.current?.parentElement;
+    while (p) {
+      const oy = getComputedStyle(p).overflowY;
+      if (oy === "auto" || oy === "scroll") {
+        p.scrollTo({ top: 0 });
+        break;
+      }
+      p = p.parentElement;
+    }
+  }, [selected]);
+
+  // 对局强度 joined from the own public profile (see readStrengthMap).
+  const [strengthMap, setStrengthMap] = useState<Map<string, number>>(() => new Map());
 
   const loadList = () => {
     setList({ kind: "loading" });
@@ -75,6 +171,12 @@ export function HistoryView() {
       const sessions = (r.json as { sessions?: unknown })?.sessions;
       setList({ kind: "ready", sessions: Array.isArray(sessions) ? (sessions as SessionListItem[]) : [] });
     });
+    if (typeof window.aifight?.getOwnProfileRaw === "function") {
+      void window.aifight
+        .getOwnProfileRaw()
+        .then((profile) => setStrengthMap(readStrengthMap(profile)))
+        .catch(() => {});
+    }
   };
 
   // Lazy: load ONLY the list (metadata) on mount.
@@ -87,11 +189,36 @@ export function HistoryView() {
       setOpening(null);
       if (r.error !== undefined || r.exitCode !== 0 || r.json === undefined) return;
       setSelected({ item, replay: buildReplayFromExport(r.json) });
+      // Same gap as the live stream and the dashboard-opened replay: stored
+      // inbound frames end at this player's LAST decision, so the closing
+      // stretch (opponents' final moves, showdown, result) only exists in the
+      // finished match's public replay. Best-effort — on failure the replay
+      // stays as stored. (The dashboard path got this in 9ef8fa53; this History
+      // entry point was missed then.)
+      const tailPath = replayPathOf(item.replay_url);
+      if (tailPath !== null && typeof window.aifight?.getReplayTail === "function") {
+        void window.aifight
+          .getReplayTail(tailPath)
+          .then((frames) => {
+            if (frames === null || frames.length === 0) return;
+            setSelected((cur) => {
+              if (cur === null || cur.item.session_id !== item.session_id) return cur;
+              const state = appendFinalEvents(cur.replay.state, frames);
+              if (state === cur.replay.state) return cur;
+              return { item: cur.item, replay: { state, traces: cur.replay.traces } };
+            });
+          })
+          .catch(() => {});
+      }
     });
   };
 
   if (selected !== null) {
-    return <HistoryDetail item={selected.item} replay={selected.replay} onBack={() => setSelected(null)} />;
+    return (
+      <div ref={rootRef}>
+        <HistoryDetail item={selected.item} replay={selected.replay} onBack={() => setSelected(null)} />
+      </div>
+    );
   }
 
   const refreshBtn = (
@@ -113,10 +240,12 @@ export function HistoryView() {
       (statusFilter === "all" || s.status === statusFilter) &&
       matchesMode(s),
   );
-  const visible = filtered.slice(0, shown);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount - 1);
+  const visible = filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
 
   return (
-    <div className="mx-auto max-w-3xl">
+    <div ref={rootRef} className="mx-auto max-w-3xl">
       <PageHeader
         eyebrow={t("eyebrow.history")}
         title={t("nav.history")}
@@ -184,13 +313,37 @@ export function HistoryView() {
                         <span className="text-[13.5px] font-medium text-[var(--text)]">
                           {s.game ? gameLabel(s.game) : t("history.unknownGame")}
                         </span>
-                        {s.result_label && <Chip tone="neutral">{s.result_label}</Chip>}
-                        {s.status === "active" && <Chip tone="live">{t("history.active")}</Chip>}
+                        {s.result_label && <Chip tone="neutral">{localizeResult(s.result_label, i18n.language, t)}</Chip>}
+                        {s.status === "active" &&
+                          (isStaleLiveSession(s.status, s.updated_at, Date.now()) ? (
+                            <Chip tone="neutral">{t("history.interrupted")}</Chip>
+                          ) : (
+                            <Chip tone="live">{t("history.active")}</Chip>
+                          ))}
                         {s.mode === "friendly" && <Chip tone="accent">{t("history.friendly")}</Chip>}
                       </div>
                       <div className="mt-1 truncate font-mono text-[11px] text-[var(--text-faint)]">
-                        {fmtDate(s.updated_at, i18n.language)} · {t("history.decisions", { n: s.decision_count ?? 0 })}
+                        {(() => {
+                          const rid = publicReplayIdOf(s.replay_url);
+                          const strength = rid !== null ? strengthMap.get(rid) : undefined;
+                          return [
+                            fmtDate(s.updated_at, i18n.language),
+                            typeof s.player_count === "number" && s.player_count > 0
+                              ? t("history.playersN", { n: s.player_count })
+                              : null,
+                            fmtDuration(s.started_at, s.ended_at),
+                            strength !== undefined ? t("history.strengthN", { n: strength }) : null,
+                            t("history.decisions", { n: s.decision_count ?? 0 }),
+                          ]
+                            .filter(Boolean)
+                            .join(" · ");
+                        })()}
                       </div>
+                      {s.opponents !== undefined && s.opponents.length > 0 && (
+                        <div className="mt-0.5 truncate font-mono text-[11px] text-[var(--text-faint)]">
+                          vs {s.opponents.join(" · ")}
+                        </div>
+                      )}
                     </div>
                     <span className="shrink-0 font-mono text-[11px] text-[var(--text-muted)]">
                       {opening === s.session_id ? t("history.opening") : t("history.open")}
@@ -198,10 +351,24 @@ export function HistoryView() {
                   </button>
                 ))}
               </div>
-              {visible.length < filtered.length && (
-                <div className="mt-3 flex justify-center">
-                  <button onClick={() => setShown((n) => n + PAGE_SIZE)} className="v3-dv-btn v3-dv-btn--ghost">
-                    {t("common.loadMore")} ({filtered.length - visible.length})
+              {pageCount > 1 && (
+                <div className="mt-3 flex items-center justify-center gap-3">
+                  <button
+                    onClick={() => setPage(Math.max(0, safePage - 1))}
+                    disabled={safePage === 0}
+                    className="v3-dv-btn v3-dv-btn--ghost v3-dv-btn--sm disabled:opacity-40"
+                  >
+                    {t("common.prev")}
+                  </button>
+                  <span className="font-mono text-[11px] text-[var(--text-muted)]">
+                    {t("history.pageOf", { x: safePage + 1, y: pageCount })}
+                  </span>
+                  <button
+                    onClick={() => setPage(Math.min(pageCount - 1, safePage + 1))}
+                    disabled={safePage >= pageCount - 1}
+                    className="v3-dv-btn v3-dv-btn--ghost v3-dv-btn--sm disabled:opacity-40"
+                  >
+                    {t("common.next")}
                   </button>
                 </div>
               )}
@@ -258,7 +425,10 @@ function HistoryDetail({
     <div className="flex flex-wrap items-center gap-2.5">
       {backBtn}
       <span className="text-[13px] font-medium text-[var(--text)]">{gameLabel(state.game)}</span>
-      {item.result_label && <span className="v3-dv-chip">{item.result_label}</span>}
+      {item.result_label && <span className="v3-dv-chip">{localizeResult(item.result_label, i18n.language, t)}</span>}
+      {isStaleLiveSession(item.status, item.updated_at, Date.now()) && (
+        <span className="v3-dv-chip">{t("history.interrupted")}</span>
+      )}
       <span className="font-mono text-[11px] text-[var(--text-faint)]">{fmtDate(item.updated_at, i18n.language)}</span>
       {item.replay_url && (
         <a href={item.replay_url} target="_blank" rel="noreferrer" className="v3-cp-link">

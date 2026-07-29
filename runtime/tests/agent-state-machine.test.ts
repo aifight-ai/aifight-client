@@ -744,4 +744,40 @@ describe("Agent FSM", () => {
       expect(over.state.lastRequestIds?.[SESSION]).toBeUndefined();
     });
   });
+
+  // 连接审计 #15 (2026-07-28): the server drops this agent from every queue the
+  // moment its socket dies (hub.OnQueueLeave), so queue/pendingConfirm carried
+  // across a reconnect is a stale belief — Telegram/control-API kept showing
+  // 「匹配中」for a queue that no longer existed.
+  describe("reconnect queue truth", () => {
+    const success = {
+      type: "reconnect.event",
+      event: { type: "attempt-success", attempt: 3, elapsedMs: 1200, severity: "info" },
+    } as const;
+
+    it("attempt-success clears the stale queue belief and derives phase connected", () => {
+      const out = transitionAgentFSM(
+        initial({ phase: "queuing", transport: "backoff", queue: { game: "coup", mode: "ranked" } }),
+        success,
+      );
+      expect(out.state.queue).toBeUndefined();
+      expect(out.state.pendingConfirm).toBeUndefined();
+      expect(out.state.confirmed).toBeUndefined();
+      expect(out.state.transport).toBe("connected");
+      expect(out.state.phase).toBe("connected");
+    });
+
+    it("attempt-success keeps a mid-match reconnect in its match", () => {
+      const out = transitionAgentFSM(
+        initial({
+          phase: "in_match",
+          transport: "backoff",
+          activeMatches: { "session-9": { sessionId: "session-9", game: "coup", startedAt: 1 } },
+        }),
+        success,
+      );
+      expect(out.state.phase).toBe("in_match");
+      expect(out.state.activeMatches?.["session-9"]).toBeDefined();
+    });
+  });
 });

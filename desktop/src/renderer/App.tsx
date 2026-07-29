@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Swords, MonitorPlay, Trophy, CalendarDays, Cpu, ScrollText, History, Settings, PanelLeft, Sun, Moon, Monitor, FolderOpen, LayoutDashboard, Download, ShieldAlert, Link2, Loader2, RefreshCw, ExternalLink, UserPlus, Trash2, ChevronDown } from "lucide-react";
+import { Swords, MonitorPlay, Trophy, CalendarDays, Cpu, ScrollText, History, Settings, PanelLeft, Sun, Moon, Monitor, FolderOpen, LayoutDashboard, Download, ShieldAlert, Link2, Loader2, RefreshCw, ExternalLink, UserPlus, Trash2, ChevronDown, PauseCircle } from "lucide-react";
 
 import { useTheme, type ThemeMode } from "./theme";
 import { getLangPref, setLangPref, type LangPref } from "./i18n";
@@ -54,6 +54,14 @@ export function App() {
   const [collapsed, setCollapsed] = useState<boolean>(() => localStorage.getItem(SIDEBAR_KEY) === "1");
   const live = useLiveStore();
   const prevMatchRef = useRef<LiveMatchState>(emptyLiveMatch());
+  // One shared scroller hosts every view — without this reset, the scroll
+  // position of the OLD view leaks into the new one (scroll the History list
+  // to the bottom, open a session: the detail appeared mid-page, header off
+  // screen — owner walkthrough 2026-07-28).
+  const contentRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0 });
+  }, [active]);
 
   // OS-level prompt when YOUR agent starts or finishes a match — even if the app is
   // backgrounded or you're on another view. The in-app banner below is the always-
@@ -190,9 +198,11 @@ export function App() {
           </div>
         </header>
         <ConnectionBanners />
+        <ServerRejectionNotice />
+        <MatchingPausedBanner />
         <UpdateReadyBanner />
         <MatchBanner live={live.match} onWatch={() => setActive("watch")} />
-        <section className="flex-1 overflow-auto p-6">
+        <section ref={contentRef} className="flex-1 overflow-auto p-6">
           {active === "settings" ? (
             <SettingsView />
           ) : active === "watch" ? (
@@ -267,6 +277,150 @@ function useClientMismatch(): { active: boolean; dismiss: () => void } {
   return { active, dismiss: () => setActive(false) };
 }
 
+// 连接审计 #3 — server rejections and send failures used to go straight to the
+// log file: the pill stayed green while the server refused our enroll or an
+// action never left the socket. Surface the latest one as a dismissable strip.
+// error-level only: the FSM's warn-level fsm.send_failed (non-action sends) is
+// benign redelivery noise. Cleared manually, replaced by newer events, and
+// dropped when the bridge stops (a stale rejection outliving its connection
+// would read as "still failing").
+const REJECTION_CODES = new Set(["server.error", "agent.send_failed", "fsm.send_failed"]);
+function useServerRejection(): { notice: { code: string; message: string; at: number } | null; dismiss: () => void } {
+  const [notice, setNotice] = useState<{ code: string; message: string; at: number } | null>(null);
+  useEffect(() => {
+    const api = window.aifight;
+    if (api === undefined) return;
+    const offLog = api.onLog((e) => {
+      if (e.level === "error" && REJECTION_CODES.has(e.code)) {
+        setNotice({ code: e.code, message: e.message, at: Date.now() });
+      }
+    });
+    const offStatus = api.onStatus((s) => {
+      if (s.phase === "stopped" || s.config === undefined) setNotice(null);
+    });
+    return () => {
+      offLog();
+      offStatus();
+    };
+  }, []);
+  return { notice, dismiss: () => setNotice(null) };
+}
+
+function ServerRejectionNotice() {
+  const { t, i18n } = useTranslation();
+  const { notice, dismiss } = useServerRejection();
+  if (notice === null) return null;
+  const title = notice.code === "server.error" ? t("bridge.reject.server") : t("bridge.reject.send");
+  // server.error carries the server's raw English message (worth mapping through
+  // the known-error table); send failures carry our own transport diagnostics —
+  // show those verbatim in mono, the timestamp makes the age self-evident.
+  const detail = notice.code === "server.error" ? localizeServerError(notice.message) : notice.message;
+  const at = new Date(notice.at).toLocaleTimeString(i18n.language === "zh" ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className="border-b border-[var(--border)] bg-[var(--color-warn,#b45309)]/10 px-4 py-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <ShieldAlert size={14} className="shrink-0 text-[var(--color-warn,#b45309)]" />
+          <span className="shrink-0 text-[12px] font-medium text-[var(--text)]">{title}</span>
+          <span className="shrink-0 font-mono text-[11px] text-[var(--text-faint)]">{at}</span>
+          <span className="truncate font-mono text-[11px] text-[var(--text-muted)]" title={detail}>{detail}</span>
+        </div>
+        <button onClick={dismiss} className="shrink-0 text-[12px] text-[var(--text-muted)] transition-colors hover:text-[var(--text)]">
+          {t("bridge.reject.dismiss")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// 连接审计 #13 (owner ruling 2026-07-28) — pausing automatic matchmaking now
+// survives relaunches, so the app must SAY so on every launch rather than let a
+// silently-paused agent look idle. Shown once per session (dismissable): the
+// pause is a deliberate choice, and nagging after the user has seen and kept it
+// would be its own kind of noise. The resume button is right here so the answer
+// to "how do I turn it back on" never requires hunting.
+function MatchingPausedBanner() {
+  const { t } = useTranslation();
+  const status = useBridgeStatus();
+  const [dismissed, setDismissed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const paused = status?.matchingPaused === true;
+  // Only while the bridge is up: a paused notice over an offline/erroring agent
+  // would be a second, competing explanation for "nothing is happening".
+  const online = status?.phase === "running" || status?.phase === "starting";
+  if (!paused || !online || dismissed) return null;
+  const resume = () => {
+    setBusy(true);
+    void window.aifight?.setMatchingPaused(false).finally(() => setBusy(false));
+  };
+  return (
+    <div className="border-b border-[var(--border)] bg-[var(--accent)]/10 px-4 py-2.5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <PauseCircle size={14} className="shrink-0 text-[var(--accent)]" />
+          <span className="shrink-0 text-[13px] font-medium text-[var(--text)]">{t("play.pausedBanner.title")}</span>
+          <span className="truncate text-[12px] text-[var(--text-muted)]">{t("play.pausedBanner.body")}</span>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            onClick={resume}
+            disabled={busy}
+            className="flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-2.5 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+          >
+            {t("play.auto.resume")}
+          </button>
+          <button
+            onClick={() => setDismissed(true)}
+            className="text-[12px] text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
+          >
+            {t("play.pausedBanner.keep")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 连接审计 #5 — the reconnect loop never gives up on 401/404 (by design: a
+// server mid-restart looks identical to a revoked key at first). But when the
+// server KEEPS rejecting the credential, an endless silent「连接中…」is a lie
+// of omission. Past this streak the odds have flipped to "revoked key /
+// deleted agent" — say so, and point at the fix. No dismiss button: the
+// condition is live, and the banner clears itself the moment a connect
+// succeeds or a rotated key is picked up (authFailures resets to 0).
+const AUTH_TROUBLE_THRESHOLD = 5;
+function AuthTroubleBanner() {
+  const { t } = useTranslation();
+  const status = useBridgeStatus();
+  const conn = status?.conn ?? null;
+  const origin = webOrigin(status?.config?.baseUrl);
+  if (conn === null || (conn.authFailures ?? 0) < AUTH_TROUBLE_THRESHOLD) return null;
+  return (
+    <div className="border-b border-[var(--border)] bg-[var(--color-warn,#b45309)]/10 px-4 py-2.5">
+      <div className="flex items-start gap-2">
+        <ShieldAlert size={14} className="mt-0.5 shrink-0 text-[var(--color-warn,#b45309)]" />
+        <div className="min-w-0">
+          <span className="text-[12.5px] font-medium text-[var(--text)]">{t("authTrouble.title")}</span>
+          <span className="ml-2 text-[12px] text-[var(--text-muted)]">
+            {t("authTrouble.body", { n: conn.authFailures })}
+            {origin !== undefined && (
+              <a
+                href={`${origin}/dashboard`}
+                target="_blank"
+                rel="noreferrer"
+                className="ml-1.5 inline-flex items-center gap-1 text-[var(--accent)] hover:underline"
+              >
+                <ExternalLink size={11} />
+                {t("deviceMismatch.openDashboard")}
+              </a>
+            )}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // F2 — a device mismatch used to stack TWO red banners (this takeover's ancestor +
 // the generic BridgeErrorBanner, the latter truncating the same multi-line message
 // mid-sentence). Now exactly one shows: the takeover while a mismatch is active,
@@ -277,7 +431,12 @@ function ConnectionBanners() {
   const client = useClientMismatch();
   if (device.active) return <DeviceMismatchTakeover onDismiss={device.dismiss} />;
   if (client.active) return <ClientMismatchTakeover onDismiss={client.dismiss} />;
-  return <BridgeErrorBanner />;
+  return (
+    <>
+      <AuthTroubleBanner />
+      <BridgeErrorBanner />
+    </>
+  );
 }
 
 // The "one agent, one client" card. Deliberately calmer than the device takeover:
@@ -762,10 +921,17 @@ function BridgeErrorBanner() {
       : raw;
   const firstLine = message.split("\n", 1)[0] ?? "";
   const hasMore = message.length > firstLine.length;
-  // "Another bridge on this machine holds the agent seat" — recoverable by
-  // stopping that one, and NOT by anything that changes this agent's identity.
+  // "Another connection holds the agent seat" — local lock OR a bridge on a
+  // DIFFERENT machine (parked, 连接审计 #7). Both recover by stopping the other
+  // side, and NOT by anything that changes this agent's identity: registering a
+  // fresh agent would archive the real one, lose its history, and the seat
+  // would STILL be held.
   const seatConflict =
-    status.code === "lockHeld" || status.code === "lockHeldUnknown" || status.code === "lockFailed";
+    status.code === "lockHeld" ||
+    status.code === "lockHeldUnknown" ||
+    status.code === "lockFailed" ||
+    status.code === "seatTakenParked" ||
+    status.code === "seatSupersededSelf";
   const retry = () => {
     setRetrying(true);
     void window.aifight?.start().finally(() => setRetrying(false));
@@ -810,11 +976,23 @@ function BridgeErrorBanner() {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {/* 连接审计 #6: protocol-version close — an app update is the ONLY fix,
+              so lead with it. Retry stays available (harmless; useful right
+              after updating), but a fresh agent would not help and is hidden. */}
+          {status.code === "updateRequired" && (
+            <button
+              onClick={() => void window.aifight?.checkForUpdates()}
+              disabled={busy}
+              className="flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-2.5 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+            >
+              {t("about.checkUpdates")}
+            </button>
+          )}
           {/* Hidden when the seat is simply taken by another bridge on this
               machine: registering a fresh agent would archive the user's real
               one, lose its rating history, and STILL not connect — the seat
               would remain held. Retry is the only correct action there. */}
-          {!seatConflict && (
+          {!seatConflict && status.code !== "updateRequired" && (
             <button
               onClick={newAgent}
               disabled={busy}
@@ -826,7 +1004,11 @@ function BridgeErrorBanner() {
           <button
             onClick={retry}
             disabled={busy}
-            className="flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-2.5 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+            className={
+              status.code === "updateRequired"
+                ? "text-[12px] text-[var(--text-muted)] underline-offset-2 hover:underline disabled:opacity-60"
+                : "flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-2.5 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+            }
           >
             {t("play.status.retry")}
           </button>
@@ -881,13 +1063,30 @@ function StatusPill() {
   const { t } = useTranslation();
   const status = useBridgeStatus();
   const phase: BridgeHostPhase = status?.phase ?? "idle";
+  // 连接审计 #8: during backoff show LIVE progress — attempt number + seconds
+  // to the next dial — instead of a frozen「连接中…」. A 1s tick keeps the
+  // countdown honest; it only runs while actually in backoff.
+  const conn = status?.conn ?? null;
+  const counting = conn?.state === "backoff" && typeof conn.nextRetryAt === "number";
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!counting) return;
+    const id = window.setInterval(() => setTick((n) => n + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [counting]);
+  const label = counting
+    ? t("bridge.reconnectIn", {
+        n: conn.attempt,
+        s: Math.max(0, Math.ceil(((conn.nextRetryAt ?? 0) - Date.now()) / 1000)),
+      })
+    : t(`bridge.phase.${phase}`);
   return (
     <span
       title={status?.message ?? undefined}
       className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] text-[var(--text-muted)]"
     >
       <span className={"inline-block h-1.5 w-1.5 rounded-full " + PHASE_DOT[phase]} />
-      {t(`bridge.phase.${phase}`)}
+      {label}
     </span>
   );
 }

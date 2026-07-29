@@ -67,6 +67,7 @@ class FakeReconnectClient implements ReconnectingWSClient {
       connectedAt: this.connectedAtMs,
       welcome: this.welcome,
       parkedReason: this.parkedReason,
+      authFailures: 0,
       seq: 0,
     };
   }
@@ -311,6 +312,79 @@ describe("BridgeRunner", () => {
     expect(complete?.message).toContain("Match complete: Liar's Dice");
     expect(complete?.message).not.toContain("set daily");
     expect(complete?.message).not.toContain("per day");
+  });
+
+  // 连接审计 #2 (2026-07-28): the server drops the agent from every queue when
+  // its socket dies, so a recovered connection that never re-joins sits
+  // "online" but plays nothing until the process restarts (the CLI half of the
+  // desktop F9 fix, now in the shared runner).
+  it("re-joins the auto queue on every reconnect", async () => {
+    const client = new FakeReconnectClient();
+    const connect = vi.fn(async (_opts: ReconnectingWSClientOptions) => client);
+    const logs: Array<{ code: string; message: string }> = [];
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      autoJoinGame: "liars_dice",
+      autoJoinMode: "ranked",
+      connect,
+      onLog: (event) => logs.push(event),
+      sessionStore: false,
+    });
+    await runner.start();
+    const joins = () => client.sent.filter((m) => m.type === "join_queue").length;
+    await flushEffects();
+    expect(joins()).toBe(1); // launch join
+
+    // Drop and recover the link; the fake mirrors the real facade by firing
+    // every subscribed handler with the fresh snapshot.
+    const fire = () => {
+      for (const h of [...client.stateHandlers]) h(client.snapshot());
+    };
+    client.state = "backoff";
+    fire();
+    client.state = "connected";
+    fire();
+    await flushEffects();
+
+    expect(joins()).toBe(2);
+    expect(logs.some((e) => e.code === "bridge.queue_rejoined")).toBe(true);
+
+    await runner.stop();
+  });
+
+  it("one-shot auto-join never re-joins on reconnect (manual matches must not multiply)", async () => {
+    const client = new FakeReconnectClient();
+    const connect = vi.fn(async (_opts: ReconnectingWSClientOptions) => client);
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      autoJoinGame: "liars_dice",
+      autoJoinMode: "ranked",
+      autoJoinOneShot: true,
+      connect,
+      onLog: () => {},
+      sessionStore: false,
+    });
+    await runner.start();
+    await flushEffects();
+    const joins = () => client.sent.filter((m) => m.type === "join_queue").length;
+    expect(joins()).toBe(1);
+
+    const fire = () => {
+      for (const h of [...client.stateHandlers]) h(client.snapshot());
+    };
+    client.state = "backoff";
+    fire();
+    client.state = "connected";
+    fire();
+    await flushEffects();
+
+    expect(joins()).toBe(1);
+
+    await runner.stop();
   });
 
   it("forwards raw server messages to onServerMessage even without a session store", async () => {

@@ -605,6 +605,11 @@
 
 .v3-tr-row { display: flex; align-items: center; gap: 8px; padding: 0 2px; }
 .v3-tr-row svg { flex: 0 0 auto; }
+/* 当前步的决策组(最后一条 decision 起到末尾):左侧细橙条,让「棋盘停在哪步、
+   右侧哪段推理对应它」一眼可辨——回放拖动时这组会跟着步号切换。 */
+.v3-tr-cur { box-shadow: inset 2px 0 0 var(--v3-acc); }
+.v3-tr-row.v3-tr-cur { padding-left: 9px; }
+.v3-tr-card.v3-tr-cur { border-left-color: transparent; }
 .v3-tr-decision { color: var(--v3-t2); }
 .v3-tr-decision b { color: var(--v3-ink); font-weight: 600; }
 /* 决策条目的步号锚点:点了让棋盘跳到那一步 */

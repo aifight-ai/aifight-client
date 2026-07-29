@@ -1,6 +1,7 @@
 // AvatarPicker — owner-facing avatar chooser for an agent. Two ways to set one:
 //   · pick a built-in preset (icon or geometric) from the gallery, or
-//   · upload an image (the server center-crops + resizes; we just POST the file).
+//   · upload an image (downscaled here first; the server still center-crops,
+//     resizes and re-validates — the client is an optimization, never a guard).
 // Plus a "use auto" clear that drops back to the deterministic fallback.
 //
 // Used in three places with DIFFERENT auth paths, so the network calls are
@@ -16,6 +17,58 @@ import { AgentAvatar } from './AgentAvatar'
 import { ICON_PRESETS, GEO_PRESETS } from '../lib/avatarPresets'
 
 const MAX_UPLOAD_BYTES = 6 * 1024 * 1024
+
+// Longest edge we send. The largest rendered avatar is 256px, so 512 leaves 2×
+// headroom for a future retina/bigger bucket while making a phone photo
+// (4032×3024 ≈ 12M px, ~6 MB) arrive as ~0.26M px and a couple hundred KB.
+//
+// Why downscale here at all: the server must decode the WHOLE image before it
+// can crop, and that decode is where the memory goes (a 16.7M px PNG expands to
+// ~64 MiB). Shrinking first means a real user's upload never costs the server
+// that — and their upload finishes far quicker on a slow connection too.
+// This is NOT a security control: an attacker just posts to the API directly,
+// which is what the server-side pixel cap + decode concurrency limit are for.
+const MAX_UPLOAD_EDGE = 512
+
+/**
+ * Returns a downscaled copy of `file` when it is larger than MAX_UPLOAD_EDGE,
+ * else the original untouched (no needless re-encode / quality loss).
+ * Any failure falls back to the original — the server re-validates regardless.
+ */
+export async function downscaleForUpload(file: File): Promise<File> {
+  if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') return file
+  let bitmap: ImageBitmap
+  try {
+    bitmap = await createImageBitmap(file)
+  } catch {
+    return file // undecodable here (e.g. exotic colour profile) — let the server judge
+  }
+  try {
+    const { width, height } = bitmap
+    if (width <= MAX_UPLOAD_EDGE && height <= MAX_UPLOAD_EDGE) return file
+    const scale = MAX_UPLOAD_EDGE / Math.max(width, height)
+    const w = Math.max(1, Math.round(width * scale))
+    const h = Math.max(1, Math.round(height * scale))
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')
+    if (ctx === null) return file
+    ctx.imageSmoothingQuality = 'high'
+    ctx.drawImage(bitmap, 0, 0, w, h)
+    // Keep JPEG for JPEG sources (photos compress far better that way); use PNG
+    // for everything else so logos keep their transparency.
+    const isJpeg = /^image\/jpe?g$/i.test(file.type)
+    const type = isJpeg ? 'image/jpeg' : 'image/png'
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, type, 0.92))
+    if (blob === null || blob.size === 0) return file
+    if (blob.size >= file.size) return file // re-encode did not help — send the original
+    const name = file.name.replace(/\.[^.]+$/, '') + (isJpeg ? '.jpg' : '.png')
+    return new File([blob], name, { type })
+  } finally {
+    bitmap.close?.()
+  }
+}
 
 /** The three avatar mutations, decoupled from any specific auth path. */
 export interface AvatarActions {
@@ -83,7 +136,7 @@ export function AvatarPicker({ agentId, name, avatarUrl, preset, actions, onChan
       return
     }
     run(async () => {
-      const res = await acts.upload(file)
+      const res = await acts.upload(await downscaleForUpload(file))
       setCurUrl(res.avatar_url)
       setCurPreset(null)
     })

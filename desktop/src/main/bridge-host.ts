@@ -58,6 +58,8 @@ import type {
   LeaderboardScope,
 } from "../shared/ipc";
 import { normalizeLeaderboard } from "./leaderboard";
+import { queueTransitionOf } from "./queueTruth";
+import { getFlag, setFlag } from "./ui-flags";
 import { fetchReplayTail } from "./replay-tail";
 import { normalizeEvents } from "./events";
 import { normalizeAgentProfile } from "./agentProfile";
@@ -102,6 +104,17 @@ const SEAT_SUPERSEDED_SELF_MESSAGE =
 const RECONNECT_GAVE_UP_MESSAGE =
   "Connection stopped and could not reconnect automatically. Retry below; if it keeps failing, re-pair this agent from the Dashboard.";
 
+/** 连接审计 #6: the one terminal close retrying can never fix — the client's
+ *  protocol version is older than the server requires. Localized in the
+ *  renderer via the "updateRequired" code; this text is the raw fallback. */
+/** ui-flags key for the persisted 暂停匹配 bit (连接审计 #13, owner ruling
+ *  2026-07-28). Main-process storage is deliberate: the connected edge must be
+ *  able to honour it BEFORE the renderer has even mounted. */
+const MATCHING_PAUSED_FLAG = "matchingPaused";
+
+const VERSION_MISMATCH_MESSAGE =
+  "This app is too old for the AIFight server (protocol version mismatch). Update the app, then reconnect — retrying without updating cannot succeed.";
+
 export class BridgeHost {
   readonly #callbacks: BridgeHostCallbacks;
   #runner: BridgeRunnerInstance | null = null;
@@ -111,6 +124,16 @@ export class BridgeHost {
   #connectedAt: number | null = null;
   #reconnects = 0;
   #lastActivityAt: number | null = null;
+  /** Last INBOUND protocol frame (连接审计 #9 — logs/snapshots do NOT count). */
+  #lastInboundAt: number | null = null;
+  /** Server-confirmed queue membership (连接审计 #3/#12) — see queueTruth.ts. */
+  #queued: { game: string; mode: string } | null = null;
+  /** Reconnect progress for the UI (连接审计 #8), from the facade snapshot. */
+  #connInfo: NonNullable<BridgeStatus["conn"]> | null = null;
+  /** The runner saw a protocol-version close this run (连接审计 #6) — the
+   *  agent.version_mismatch notify always precedes the give_up/closed log,
+   *  so this flag is set by the time the terminal error is composed. */
+  #closeCauseVersion = false;
   // Live-game allow-list — the BACKEND is the single source (shared/games.ts).
   // Filled from every welcome frame (data.games = engine.LiveNames()) and lazily
   // from GET /api/games; null until either has answered. Real data only — the
@@ -132,10 +155,15 @@ export class BridgeHost {
    *  facade.attempt resets on success and cannot feed this UI). */
   #attemptBase: number | null = null;
   #lastConnState: ReconnectStateSnapshot["state"] | null = null;
-  /** True once the app entered automatic matchmaking this session; a recovered
-   *  connection re-joins the pool (审查 F9: joinAutoMatch used to fire only on
-   *  launch, so an agent that reconnected sat online but never played again). */
-  #autoMatchWanted = false;
+  /** User pressed 暂停匹配. The connected edge is the ONE owner of automatic
+   *  enrollment — it joins whenever this is false (连接审计 #1, 2026-07-28: the
+   *  old #autoMatchWanted intent bit was set only on a successful FIRST launch,
+   *  so seat-retry / the Retry button connected fine but never enrolled — green
+   *  light, zero matches all session). PERSISTED since 连接审计 #13 (owner
+   *  ruling): read at construction so the very first connected edge already
+   *  honours yesterday's pause — no enrollment window, no silently resumed
+   *  spend. See setMatchingPaused. */
+  #matchingPaused = getFlag(MATCHING_PAUSED_FLAG);
   // In-flight start(), so two callers cannot both get past the "#runner is null"
   // check and race into two runners on one seat (#runner is only assigned after
   // an await). The renderer can trigger start() from several places at once —
@@ -169,6 +197,7 @@ export class BridgeHost {
       connectedAt: this.#connectedAt,
       reconnects: this.#reconnects,
       lastActivityAt: this.#lastActivityAt,
+      lastInboundAt: this.#lastInboundAt,
     };
   }
 
@@ -622,10 +651,16 @@ export class BridgeHost {
    */
   async start(): Promise<BridgeStatus> {
     if (this.#runner !== null) {
-      // Already running. If we are PARKED (seat held elsewhere), the Retry
-      // button's intent is "check the seat now" — poke the facade instead of
+      // Already running. If we are PARKED (seat held elsewhere), in backoff, or
+      // SUSPENDED (a lid-close whose powerMonitor resume never arrived —
+      // 连接审计 #4: that state previously had no manual exit at all), the
+      // Retry button's intent is "check now" — poke the facade instead of
       // silently returning the stale status.
-      if (this.#lastConnState === "parked" || this.#lastConnState === "backoff") {
+      if (
+        this.#lastConnState === "parked" ||
+        this.#lastConnState === "backoff" ||
+        this.#lastConnState === "suspended"
+      ) {
         this.#runner.poke();
       }
       return this.#status;
@@ -656,10 +691,14 @@ export class BridgeHost {
     }
 
     const summary = toSummary(config);
-    // Fresh session: reset connection-health counters.
+    // Fresh session: reset connection-health counters + truth projections.
     this.#connectedAt = null;
     this.#reconnects = 0;
     this.#lastActivityAt = null;
+    this.#lastInboundAt = null;
+    this.#queued = null;
+    this.#connInfo = null;
+    this.#closeCauseVersion = false;
     this.#setStatus({ phase: "starting", config: summary, message: undefined });
 
     // One agent, one bridge per machine — claim the seat BEFORE we can connect.
@@ -683,6 +722,7 @@ export class BridgeHost {
         clientKind: "desktop",
         onLog: (event) => {
           this.#noteActivity();
+          if (event.code === "agent.version_mismatch") this.#closeCauseVersion = true;
           // Phase/counter narration is GONE (重连重设计 2026-07-25 P4): the pill
           // used to flip to "starting" on attempt events and only flip back on a
           // welcome frame that — as the redesign audit proved — never reaches
@@ -704,6 +744,8 @@ export class BridgeHost {
             this.#connUnsub?.();
             this.#connUnsub = null;
             this.#connectedAt = null;
+            this.#queued = null;
+            this.#connInfo = null;
             // Seat release ONLY after stop() truly finished (审查 F3): the old
             // fire-and-forget released the lock while a mid-dial zombie of the
             // stopping runner could still land — a live connection holding the
@@ -716,7 +758,11 @@ export class BridgeHost {
             this.#setStatus({
               phase: "error",
               config: this.#status.config,
-              message: RECONNECT_GAVE_UP_MESSAGE,
+              // 连接审计 #6: a version close gets its own message + code — the
+              // generic "retry" advice is actively wrong there (only an app
+              // update can help), and the renderer keys the 更新 action off it.
+              message: this.#closeCauseVersion ? VERSION_MISMATCH_MESSAGE : RECONNECT_GAVE_UP_MESSAGE,
+              ...(this.#closeCauseVersion ? { code: "updateRequired" as const } : {}),
             });
           }
           this.#callbacks.onLog?.(event);
@@ -724,6 +770,13 @@ export class BridgeHost {
         onTrace: (trace) => this.#callbacks.onTrace?.(trace),
         onServerMessage: (message) => {
           this.#noteActivity();
+          this.#lastInboundAt = Date.now();
+          // 连接审计 #3/#12: the queue truth rides the protocol echoes.
+          const q = queueTransitionOf(message);
+          if (q !== undefined && JSON.stringify(q) !== JSON.stringify(this.#queued)) {
+            this.#queued = q;
+            this.#reemitStatus();
+          }
           // NOTE: no welcome handling here — the handshake consumes the welcome
           // frame before this handler exists (redesign audit F1), so a branch on
           // it is dead code. Live games + phase recovery come from
@@ -830,6 +883,8 @@ export class BridgeHost {
     }
     this.#runner = null;
     this.#connectedAt = null;
+    this.#queued = null;
+    this.#connInfo = null;
     try {
       await runner.stop();
     } catch (cause) {
@@ -959,14 +1014,22 @@ export class BridgeHost {
     if (this.#runner === null) return; // teardown raced this snapshot
     const prev = this.#lastConnState;
     this.#lastConnState = snap.state;
+    // 连接审计 #8: keep the UI's reconnect progress fresh on EVERY snapshot.
+    // (?? 0: a sandwich build whose runtime predates the authFailures field.)
+    this.#connInfo = { state: snap.state, attempt: snap.attempt, nextRetryAt: snap.nextRetryAt, authFailures: snap.authFailures ?? 0 };
+    // 连接审计 #3: any non-connected state means the server has already dropped
+    // us from every queue (hub.OnQueueLeave on socket death) — the belief dies
+    // with the socket; the connected edge re-earns it via the queue_joined echo.
+    if (snap.state !== "connected") this.#queued = null;
     switch (snap.state) {
       case "connected": {
         this.#connectedAt = snap.connectedAt ?? Date.now();
         this.#setStatus({ phase: "running", config: this.#status.config, message: undefined });
-        // 审查 F9: automatic matchmaking re-arms on EVERY recovery. It used to
-        // fire only on launch, so a bridge that reconnected sat online but
-        // never played again until the app was restarted.
-        if (prev !== null && prev !== "connected" && this.#autoMatchWanted) {
+        // The connected edge is the SINGLE owner of automatic enrollment —
+        // first connect, seat-retry, Retry button, and every reconnect all
+        // pass through here (审查 F9 + 连接审计 #1). Only an explicit pause
+        // stops it; the server's daily cap stays the final gate inside.
+        if (prev !== "connected" && !this.#matchingPaused) {
           void this.joinAutoMatch();
         }
         break;
@@ -975,8 +1038,23 @@ export class BridgeHost {
       case "backoff":
       case "suspended": {
         this.#connectedAt = null;
-        if (this.#status.phase === "running") {
+        // 连接审计 #11: a parked error must not outlive parking. Once the
+        // facade is dialing again (poke / wake / seat freed), leaving the
+        // phase on "error" kept the「席位被占」banner over what is now an
+        // ordinary reconnect — masking, e.g., a plain network outage. The
+        // parked codes are the ONLY errors reachable here: every other error
+        // path (give_up, start failure) nulls #runner first, and the guard
+        // above already returned.
+        const parkedError =
+          this.#status.phase === "error" &&
+          (this.#status.code === "seatTakenParked" || this.#status.code === "seatSupersededSelf");
+        if (this.#status.phase === "running" || parkedError) {
           this.#setStatus({ phase: "starting", config: this.#status.config, message: undefined });
+        } else {
+          // Still push the fresh conn/queued projection (attempt counter,
+          // next-retry clock) — repeated backoff edges arrive while the phase
+          // stays "starting", and without this the pill's countdown froze.
+          this.#reemitStatus();
         }
         break;
       }
@@ -1013,7 +1091,6 @@ export class BridgeHost {
 
   async joinAutoMatch(): Promise<void> {
     if (this.#runner === null) return;
-    this.#autoMatchWanted = true;
     const policy = await this.getAgentPolicy();
     if (policy !== null && policy.maxGamesPerDay <= 0) return; // auto-match disabled server-side
     try {
@@ -1026,15 +1103,27 @@ export class BridgeHost {
   /**
    * Pause/resume automatic matchmaking WITHOUT going offline. Pause = leave the
    * queue (the server stops auto-requeuing us); resume = re-enter the pool (gated
-   * on the server cap). Manual matches + challenges are unaffected. Session-only —
-   * every app launch starts un-paused.
+   * on the server cap). Manual matches + challenges are unaffected.
+   *
+   * PERSISTED across launches (owner ruling, 连接审计 #13): pausing is a spend
+   * decision, so it must survive a relaunch. The truth lives HERE, in the main
+   * process, precisely so the connected edge can honour it before any enrollment
+   * happens — the old renderer-localStorage bit could only re-apply the pause
+   * after mount + connect, leaving a window where a match could be picked up and
+   * burn tokens. The renderer shows it back via BridgeStatus.matchingPaused and
+   * reminds the user every launch (App's paused banner).
    */
   async setMatchingPaused(paused: boolean): Promise<void> {
+    // Persist FIRST, unconditionally: the flag is a user preference, not a
+    // property of the current connection. (An early return when the bridge is
+    // offline would silently drop a pause the user just asked for.)
+    this.#matchingPaused = paused;
+    setFlag(MATCHING_PAUSED_FLAG, paused);
+    this.#reemitStatus();
     if (this.#runner === null) return;
     if (paused) {
-      // Also drop the re-arm intent: a reconnect while paused must NOT sneak
-      // the agent back into the pool (the F9 re-arm honours the pause).
-      this.#autoMatchWanted = false;
+      // A reconnect while paused must NOT sneak the agent back into the pool —
+      // the connected-edge enrollment honours this flag.
       try {
         this.#runner.leaveQueue();
       } catch (cause) {
@@ -1328,8 +1417,24 @@ export class BridgeHost {
     // unless the patch re-supplies them: an inherited code would relabel a later,
     // unrelated failure with the wrong translated text (every other call site
     // clears `message` explicitly but knows nothing about codes).
-    this.#status = { ...this.#status, code: undefined, codeParams: undefined, ...patch };
+    // `queued`/`conn`/`matchingPaused` are NEVER patched by callers — they mirror
+    // the host's own fields on every emit, so no call site can carry a stale copy
+    // forward.
+    this.#status = {
+      ...this.#status,
+      code: undefined,
+      codeParams: undefined,
+      ...patch,
+      queued: this.#queued,
+      conn: this.#connInfo,
+      matchingPaused: this.#matchingPaused,
+    };
     this.#callbacks.onStatus?.(this.#status);
+  }
+
+  /** Re-emit the current status (fresh queued/conn projection, same phase). */
+  #reemitStatus(): void {
+    this.#setStatus({ phase: this.#status.phase, message: this.#status.message, code: this.#status.code, codeParams: this.#status.codeParams });
   }
 }
 

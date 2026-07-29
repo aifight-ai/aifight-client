@@ -12,8 +12,13 @@ import type {
   CliRunResult,
   UsageOverview,
 } from "../shared/ipc";
+import type { MatchEvent } from "@aifight/api-types";
+import { FIXTURES } from "./fixtures";
+import { DECISION_TYPES, synthesizeTraces } from "./demoMatch";
 
-const STATUS: BridgeStatus = {
+// Mutable in demo mode so the 暂停匹配 toggle actually round-trips through the
+// status push (连接审计 #13 made the main process the owner of that bit).
+let STATUS: BridgeStatus = {
   phase: "running",
   config: {
     agentId: "00000000-0000-4000-8000-00000000demo",
@@ -24,7 +29,13 @@ const STATUS: BridgeStatus = {
     autoDailyLimit: 2,
     autoGames: ["texas_holdem", "liars_dice", "coup"],
   },
+  // 连接审计 #12/#8 — demo the queue-truth pill ("in queue (Texas Hold'em)") and
+  // give the conn field a connected snapshot so the StatusPill code path runs.
+  queued: { game: "texas_holdem", mode: "ranked" },
+  conn: { state: "connected", attempt: 0, nextRetryAt: null, authFailures: 0 },
 };
+
+const statusListeners = new Set<(s: BridgeStatus) => void>();
 
 let demoPolicy: AgentPolicy = {
   maxGamesPerDay: 2,
@@ -56,6 +67,14 @@ function ratingHistory(): Array<{ game: string; rating: number; recorded_at: str
   return out;
 }
 
+// 对局强度 rows the History list joins by public_replay_id — mirrors the real
+// profile payload's recent_matches (avg_player_rating = pre-match table avg).
+const RECENT_MATCH_STRENGTH = Array.from({ length: 12 }, (_, i) => ({
+  id: `demo-r${i + 1}`,
+  public_replay_id: `demo-r${i + 1}`,
+  avg_player_rating: 1460 + ((i * 37) % 220),
+}));
+
 const RAW_PROFILE = {
   agent: {
     id: STATUS.config!.agentId,
@@ -73,7 +92,7 @@ const RAW_PROFILE = {
     { game: "liars_dice", rating: 1633, display_rating: 1571, performance_rating: 1644, deviation: 71, games_played: 41, wins: 22, losses: 17, draws: 2, win_rate: 0.537, avg_opponent_rating: 1602, upset_wins: 4, unique_opponents: 19, best_streak: 5, current_streak: -1, peak_rating: 1666 },
     { game: "coup", rating: 1668, display_rating: 1597, performance_rating: 1671, deviation: 78, games_played: 33, wins: 18, losses: 14, draws: 1, win_rate: 0.545, avg_opponent_rating: 1631, upset_wins: 3, unique_opponents: 17, best_streak: 4, current_streak: 2, peak_rating: 1694 },
   ],
-  recent_matches: [],
+  recent_matches: RECENT_MATCH_STRENGTH,
   rating_history: ratingHistory(),
   achievements: [
     {
@@ -109,21 +128,163 @@ const USAGE: UsageOverview = {
   hasPrices: true,
 };
 
+// Demo history rows: realistic store shapes — result_label in the store's
+// English forms ("1st place"…, exercising the zh localizer), started/ended
+// pairs (duration), and game_over-style opponents. 12 completed rows so the
+// 10-per-page pager shows a second page in the demo.
+function demoSession(
+  n: number,
+  game: string,
+  result: string,
+  hoursAgo: number,
+  minutes: number,
+  decisions: number,
+  events: number,
+  opponents: readonly string[],
+) {
+  const ended = Date.now() - hoursAgo * 3_600_000;
+  return {
+    session_id: `demo-s${n}`,
+    game,
+    status: "completed",
+    result_label: result,
+    mode: n % 5 === 0 ? "friendly" : "ranked",
+    started_at: new Date(ended - minutes * 60_000).toISOString(),
+    ended_at: new Date(ended).toISOString(),
+    updated_at: new Date(ended).toISOString(),
+    decision_count: decisions,
+    player_count: opponents.length + 1,
+    event_count: events,
+    opponents: opponents.slice(),
+    replay_url: `https://aifight.ai/replay/demo-r${n}`,
+  };
+}
+
 const SESSIONS = [
-  { session_id: "demo-s1", game: "texas_holdem", status: "completed", result_label: "win", updated_at: new Date(Date.now() - 2 * 3_600_000).toISOString(), decision_count: 41, player_count: 4, event_count: 164 },
-  { session_id: "demo-s2", game: "coup", status: "completed", result_label: "loss", updated_at: new Date(Date.now() - 7 * 3_600_000).toISOString(), decision_count: 18, player_count: 3, event_count: 57 },
-  { session_id: "demo-s3", game: "liars_dice", status: "completed", result_label: "win", updated_at: new Date(Date.now() - 26 * 3_600_000).toISOString(), decision_count: 22, player_count: 2, event_count: 48 },
-  { session_id: "demo-s4", game: "texas_holdem", status: "completed", result_label: "win", updated_at: new Date(Date.now() - 49 * 3_600_000).toISOString(), decision_count: 37, player_count: 4, event_count: 171 },
-  { session_id: "demo-s5", game: "coup", status: "completed", result_label: "draw", updated_at: new Date(Date.now() - 70 * 3_600_000).toISOString(), decision_count: 12, player_count: 4, event_count: 44 },
-  { session_id: "demo-s6", game: "liars_dice", status: "completed", result_label: "loss", updated_at: new Date(Date.now() - 76 * 3_600_000).toISOString(), decision_count: 19, player_count: 3, event_count: 63 },
-  { session_id: "demo-s7", game: "texas_holdem", status: "completed", result_label: "win", updated_at: new Date(Date.now() - 98 * 3_600_000).toISOString(), decision_count: 44, player_count: 2, event_count: 132 },
-  { session_id: "demo-s8", game: "coup", status: "completed", result_label: "win", updated_at: new Date(Date.now() - 121 * 3_600_000).toISOString(), decision_count: 15, player_count: 3, event_count: 49 },
-  { session_id: "demo-s9", game: "liars_dice", status: "completed", result_label: "win", updated_at: new Date(Date.now() - 144 * 3_600_000).toISOString(), decision_count: 27, player_count: 2, event_count: 57 },
-  { session_id: "demo-s10", game: "texas_holdem", status: "completed", result_label: "loss", updated_at: new Date(Date.now() - 170 * 3_600_000).toISOString(), decision_count: 33, player_count: 4, event_count: 149 },
+  // A zombie live session: the match died server-side (deploy restart / cancel)
+  // while nothing was listening, so no game_over ever arrived and the store
+  // still says "active". Old enough to trip isStaleLiveSession → the History
+  // list must show 已中断, not a live chip (owner report 2026-07-28).
+  { session_id: "demo-s0", game: "texas_holdem", status: "active", started_at: new Date(Date.now() - 3_900_000).toISOString(), updated_at: new Date(Date.now() - 3_600_000).toISOString(), decision_count: 7, player_count: 2, event_count: 36 },
+  demoSession(1, "texas_holdem", "1st place", 2, 29, 41, 164, ["GPT-5", "Kimi K3", "Gemini 3.6 Flash"]),
+  demoSession(2, "coup", "3rd place", 7, 14, 18, 57, ["GPT-5", "DeepSeek V4"]),
+  demoSession(3, "liars_dice", "1st place", 26, 11, 22, 48, ["GPT-5"]),
+  demoSession(4, "texas_holdem", "2nd place", 49, 33, 37, 171, ["Claude Opus", "GPT-5", "Grok 4.5"]),
+  demoSession(5, "coup", "draw", 70, 9, 12, 44, ["GPT-5", "Kimi K3", "GLM-5.2"]),
+  demoSession(6, "liars_dice", "opponent forfeit", 76, 6, 19, 63, ["DeepSeek V4", "GPT-5"]),
+  demoSession(7, "texas_holdem", "1st place", 98, 41, 44, 132, ["GPT-5"]),
+  demoSession(8, "coup", "1st place", 121, 12, 15, 49, ["Gemini 3.6 Flash", "GPT-5"]),
+  demoSession(9, "liars_dice", "2nd place", 144, 8, 27, 57, ["Claude Opus"]),
+  demoSession(10, "texas_holdem", "4th place", 170, 27, 33, 149, ["GPT-5", "Kimi K3", "GLM-5.2"]),
+  demoSession(11, "coup", "forfeit", 190, 5, 6, 21, ["GPT-5", "DeepSeek V4"]),
+  demoSession(12, "liars_dice", "1st place", 215, 10, 24, 52, ["Grok 4.5"]),
 ];
 
 function cliResult(json: unknown): CliRunResult {
   return { exitCode: 0, stdout: JSON.stringify(json), stderr: "", json };
+}
+
+/**
+ * Rebuild a `sessions export` payload from a game fixture so the History
+ * detail is fully renderable in the ?demo preview (board + traces + review).
+ * The inbound stream is chunked like a real bridge session: each owner
+ * decision was provoked by an action_request whose new_events carried
+ * everything since the previous request — the decision's own action event
+ * arrives with the NEXT one. `interrupted` truncates mid-match and omits
+ * game_over (the zombie-session shape).
+ */
+function demoSessionExport(sessionId: string, game: string, interrupted: boolean): unknown {
+  const fx = FIXTURES[game as keyof typeof FIXTURES];
+  if (fx === undefined) return { status: "ok" };
+  const owner = fx.ownerPlayerId;
+  const events = interrupted ? fx.events.slice(0, Math.max(1, Math.floor(fx.events.length * 0.6))) : fx.events;
+  // renderer MatchEvent → protocol event (player_id→player, created_at→ts).
+  const proto = (e: MatchEvent) => ({
+    type: e.type,
+    data: e.data,
+    seq: e.seq,
+    ts: e.created_at,
+    ...(e.player_id !== undefined ? { player: e.player_id } : {}),
+  });
+  // The owner's own private view rides action_request.state in the protocol
+  // shapes extractOwnerPrivate reads. Texas deliberately omits your_hand — the
+  // fixture already carries a cards_dealt event, and providing it here too
+  // would make the reducer inject a duplicate.
+  const stateFor = (): Record<string, unknown> => {
+    const own = fx.ownerPrivate;
+    if (game === "texas_holdem") {
+      return {
+        ...(own.chips !== undefined ? { your_chips: own.chips } : {}),
+        ...(own.position !== undefined ? { your_position: own.position } : {}),
+        hand_num: 1,
+      };
+    }
+    if (game === "liars_dice") return own.dice !== undefined ? { your_dice: own.dice.slice() } : {};
+    if (game === "coup") {
+      return {
+        ...(own.influence !== undefined ? { your_cards: own.influence.slice() } : {}),
+        ...(own.coins !== undefined ? { coins: own.coins } : {}),
+      };
+    }
+    return {};
+  };
+  const actionRequest = (chunk: readonly MatchEvent[]) => ({
+    at: "",
+    direction: "inbound",
+    type: "action_request",
+    message: {
+      type: "action_request",
+      data: { match_id: sessionId, timeout_ms: 300_000, state: stateFor(), legal_actions: [], players: [], new_events: chunk.map(proto) },
+    },
+  });
+  const inbound: unknown[] = [
+    {
+      at: "",
+      direction: "inbound",
+      type: "game_start",
+      message: {
+        type: "game_start",
+        data: {
+          match_id: sessionId,
+          game,
+          your_position: 0,
+          your_player_id: owner,
+          players: fx.match.players.map((p) => ({ position: p.position, name: p.agent_name, player_id: p.player_id })),
+        },
+      },
+    },
+  ];
+  let cursor = 0;
+  events.forEach((ev, i) => {
+    if (!DECISION_TYPES.has(ev.type) || ev.player_id !== owner) return;
+    inbound.push(actionRequest(events.slice(cursor, i)));
+    cursor = i;
+  });
+  if (cursor < events.length) inbound.push(actionRequest(events.slice(cursor)));
+  if (!interrupted) {
+    inbound.push({
+      at: "",
+      direction: "inbound",
+      type: "game_over",
+      message: {
+        type: "game_over",
+        data: {
+          match_id: `demo-real-${sessionId}`,
+          session_id: sessionId,
+          result: { winner: owner, payoffs: {}, is_draw: false },
+          players: fx.match.players.map((p) => ({ player_id: p.player_id, position: p.position, agent_id: p.agent_id, agent_name: p.agent_name })),
+          replay_url: "",
+        },
+      },
+    });
+  }
+  // One decisions[] entry per decision — synthesizeTraces emits a triple
+  // (request / runtime / final) per owner decision, in the same order as the
+  // action_requests above, so buildReplayFromExport's step re-stamping aligns.
+  const stamped = synthesizeTraces(fx.match, events, owner);
+  const decisions: unknown[] = [];
+  for (let i = 0; i < stamped.length; i += 3) decisions.push({ at: "", kind: "decision", traces: stamped.slice(i, i + 3) });
+  return { summary: { session_id: sessionId, game }, inbound, outbound: [], decisions, strategySnapshot: null };
 }
 
 const noopOff = (): (() => void) => () => {};
@@ -140,7 +301,7 @@ export function installDemoBridge(): void {
     requestMatches: () => Promise.resolve({ ok: true }),
     getLiveGames: () => Promise.resolve(["texas_holdem", "liars_dice", "coup"]),
     getConnectionHealth: () =>
-      Promise.resolve({ phase: "running", connectedAt: Date.now() - 3_600_000, reconnects: 0, lastActivityAt: Date.now() - 30_000 }),
+      Promise.resolve({ phase: "running", connectedAt: Date.now() - 3_600_000, reconnects: 0, lastActivityAt: Date.now() - 30_000, lastInboundAt: Date.now() - 45_000 }),
     openClaim: () => Promise.resolve({ ok: true }),
     openDashboard: () => Promise.resolve({ ok: true }),
     acceptLegal: () => Promise.resolve({ ok: true }),
@@ -178,13 +339,21 @@ export function installDemoBridge(): void {
     getLeaderboard: () => Promise.resolve(null),
     getReplayTail: () => Promise.resolve(null),
     getEvents: () => Promise.resolve(null),
-    setMatchingPaused: () => Promise.resolve({ ok: true }),
+    setMatchingPaused: (paused: boolean) => {
+      STATUS = { ...STATUS, matchingPaused: paused };
+      for (const fn of statusListeners) fn(STATUS);
+      return Promise.resolve({ ok: true });
+    },
     openConfigDir: () => Promise.resolve(""),
     getLaunchAtLogin: () => Promise.resolve(false),
     setLaunchAtLogin: () => Promise.resolve({ ok: true }),
     focusWindow: () => Promise.resolve(),
     runCli: (op: CliOp) => {
       if (op.kind === "sessionsList") return Promise.resolve(cliResult({ sessions: SESSIONS }));
+      if (op.kind === "sessionsExport") {
+        const s = SESSIONS.find((x) => x.session_id === op.sessionId);
+        return Promise.resolve(cliResult(demoSessionExport(op.sessionId, s?.game ?? "texas_holdem", s?.status === "active")));
+      }
       if (op.kind === "status") return Promise.resolve(cliResult({ platformAgentStatus: { kind: "ok", isClaimed: true } }));
       if (op.kind === "challenge") return Promise.resolve(cliResult({ join_url: "https://aifight.ai/challenge/demo-token" }));
       // Self-review settings (Settings tri-state reads autoMode).
@@ -247,7 +416,10 @@ export function installDemoBridge(): void {
     setLLMActive: () => Promise.resolve({ ok: false, error: "demo" }),
     setLLMRoute: () => Promise.resolve({ ok: false, error: "demo" }),
     deleteLLMProfile: () => Promise.resolve({ ok: false, error: "demo" }),
-    onStatus: noopOff,
+    onStatus: (fn: (s: BridgeStatus) => void) => {
+      statusListeners.add(fn);
+      return () => statusListeners.delete(fn);
+    },
     onLog: noopOff,
     onTrace: noopOff,
     onServerMessage: noopOff,

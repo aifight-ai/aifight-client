@@ -63,6 +63,7 @@ class FakeReconnectClient implements ReconnectingWSClient {
       connectedAt: this.connectedAtMs,
       welcome: this.welcome,
       parkedReason: this.parkedReason,
+      authFailures: 0,
       seq: 0,
     };
   }

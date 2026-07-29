@@ -43,6 +43,31 @@ export interface BridgeStatus {
   readonly code?: string;
   /** Interpolation values for `code`'s translation (e.g. { pid: 4211 }). */
   readonly codeParams?: Readonly<Record<string, string | number>>;
+  /**
+   * SERVER-confirmed queue membership (连接审计 #3/#12): set by the
+   * queue_joined echo, cleared by queue_left / game_start / any disconnect.
+   * Null/absent = not in any queue — the pill must not claim 候战 from local
+   * heuristics.
+   */
+  readonly queued?: { readonly game: string; readonly mode: string } | null;
+  /**
+   * Live reconnect progress projected from the facade snapshot (连接审计 #8),
+   * so the UI can say「重连中 · 第 N 次 · Xs 后」instead of a frozen 连接中.
+   */
+  /**
+   * Automatic matchmaking is paused by the user (连接审计 #13). PERSISTED in the
+   * main process, so it survives relaunches and is already in force at the first
+   * connected edge — the renderer reads this instead of keeping its own bit.
+   */
+  readonly matchingPaused?: boolean;
+  readonly conn?: {
+    readonly state: "connecting" | "connected" | "backoff" | "parked" | "suspended" | "closed";
+    readonly attempt: number;
+    readonly nextRetryAt: number | null;
+    /** Consecutive auth-class (401/404) dial failures — see the runtime
+     *  snapshot doc. Drives the credential-warning banner (连接审计 #5). */
+    readonly authFailures: number;
+  } | null;
 }
 
 /**
@@ -55,6 +80,13 @@ export interface ConnectionHealth {
   readonly connectedAt: number | null;
   readonly reconnects: number;
   readonly lastActivityAt: number | null;
+  /**
+   * Last INBOUND protocol frame from the server — the honest liveness signal
+   * (连接审计 #9: lastActivityAt is refreshed by our own reconnect logs too, so
+   * during an outage it kept looking "seconds ago" and buried the one number
+   * that diagnosed the 2026-07-25 incident).
+   */
+  readonly lastInboundAt?: number | null;
 }
 
 /**

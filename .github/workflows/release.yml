@@ -206,6 +206,28 @@ jobs:
             for f in *-x64.dmg; do [ -e "$f" ] && mv "$f" "${f%-x64.dmg}-macOS-Intel.dmg"; done )
           echo "Release files:"
           ls -la dist
+      - name: Compute SHA-256 manifest
+        id: sums
+        # SECURITY (codex-security 2026-07-28 #5): the Windows installer is not
+        # code-signed (no EV cert yet), so a user has no OS-level way to tell an
+        # authentic download from a substituted one. Publishing the checksums in
+        # the release body gives them a manual check that does not depend on the
+        # download itself. Only user-facing installers are listed — the
+        # auto-updater's zip/blockmap/yml carry their own integrity metadata.
+        run: |
+          set -euo pipefail
+          cd dist
+          {
+            for f in *.dmg *.exe *.AppImage *.tgz; do
+              [ -e "$f" ] || continue
+              sha256sum "$f" | awk '{printf "%s  %s\n", $1, $2}'
+            done
+          } > ../checksums.txt || true
+          cp ../checksums.txt SHA256SUMS.txt
+          echo "manifest<<EOSUMS" >> "$GITHUB_OUTPUT"
+          cat SHA256SUMS.txt >> "$GITHUB_OUTPUT"
+          echo "EOSUMS" >> "$GITHUB_OUTPUT"
+          cat SHA256SUMS.txt
       - name: Version label
         id: ver
         # Strip the leading "v" so the body can name the actual asset files,
@@ -247,3 +269,20 @@ jobs:
             **The remaining files are *not* for manual download.** `*.zip`,
             `*.blockmap` and `latest*.yml` are used by the app's built-in
             auto-updater. Every file carries the version in its name.
+
+            ---
+
+            ### Verify your download (SHA-256)
+
+            The Windows installer is **not code-signed yet**, so Windows cannot
+            vouch for it on your behalf. Compare the checksum instead — it must
+            match the line below exactly.
+
+            - Windows (PowerShell): `Get-FileHash .\AIFight-${{ steps.ver.outputs.v }}-x64.exe -Algorithm SHA256`
+            - macOS / Linux: `shasum -a 256 <file>`
+
+            ```
+            ${{ steps.sums.outputs.manifest }}
+            ```
+
+            `SHA256SUMS.txt` above carries the same list as a file.

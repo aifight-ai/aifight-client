@@ -206,6 +206,40 @@ describe("bridge-first CLI command surface", () => {
     expect(calls.some((c) => c.url.endsWith("/api/agents/me/status") && c.apiKey === "sk_test_secret")).toBe(true);
   });
 
+  // 连接审计 #14 — `status --live` asks the RUNNING bridge over the control API.
+  it("status --live without a running bridge → actionable message, exit 1", async () => {
+    withRuntimeHome(); // no token/port files → daemon_unreachable
+    const r = await runCapture(["status", "--live"]);
+    expect(r.code).toBe(1);
+    expect(r.stdout).toContain("Bridge not running");
+  });
+
+  it("status --live prints realtime transport + queue from the control API", async () => {
+    withRuntimeHome();
+    writeToken("ab".repeat(32)); // control tokens are 64 hex chars
+    writePort(45999);
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      expect(url).toBe("http://127.0.0.1:45999/v1/agents");
+      return jsonResp({
+        agents: [{
+          name: "alpha",
+          transport: "connected",
+          state: {
+            phase: "queued",
+            queue: { game: "coup", mode: "ranked" },
+            activeMatches: {},
+          },
+        }],
+      });
+    };
+    const r = await runCapture(["status", "--live"], { fetchImpl });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("Connection: connected");
+    expect(r.stdout).toContain("Queue: coup (ranked)");
+    expect(r.stdout).toContain("Active matches: none");
+  });
+
   it("rejects removed commands instead of exposing old daemon/controlapi paths", async () => {
     for (const argv of [["serve"], ["agent", "list"], ["daily", "show"], ["join", "coup"], ["mcp"]]) {
       const r = await runCapture(argv);
@@ -607,8 +641,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-beta.30",
-          latest_version: "0.1.0-beta.30",
+          recommended_version: "0.1.0-beta.31",
+          latest_version: "0.1.0-beta.31",
           update_command: "npm install -g @aifight/aifight",
         });
       }
@@ -647,8 +681,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-beta.30",
-          latest_version: "0.1.0-beta.30",
+          recommended_version: "0.1.0-beta.31",
+          latest_version: "0.1.0-beta.31",
           update_command: "npm install -g @aifight/aifight",
         });
       }

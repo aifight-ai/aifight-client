@@ -27,9 +27,16 @@ export type StampedTrace = BridgeDecisionTrace & { readonly step?: number };
 export interface LiveStoreState {
   readonly match: LiveMatchState;
   readonly traces: readonly StampedTrace[];
+  /**
+   * Wall-clock (ms) of the last APPLIED server frame or trace for the current
+   * session — the live cockpit's liveness signal. A match killed server-side
+   * (deploy restart / cancel) never sends game_over; this stamp is what lets
+   * the Watch view declare it interrupted instead of showing LIVE forever.
+   */
+  readonly lastActivityAt: number | null;
 }
 
-let state: LiveStoreState = { match: emptyLiveMatch(), traces: [] };
+let state: LiveStoreState = { match: emptyLiveMatch(), traces: [], lastActivityAt: null };
 const listeners = new Set<() => void>();
 let started = false;
 /** Session whose finished-match tail fetch has been launched (once per match). */
@@ -59,7 +66,7 @@ function fetchFinalTail(bridge: AifightBridgeApi, sessionId: string, replayPath:
         }
         const merged = appendFinalEvents(state.match, frames);
         if (merged === state.match) return; // nothing new — no emit
-        state = { match: merged, traces: state.traces };
+        state = { ...state, match: merged };
         emit();
       })
       .catch(() => {
@@ -89,7 +96,10 @@ export function ensureLiveStoreStarted(api?: AifightBridgeApi): void {
     const wasFinished = state.match.finished;
     const match = reduceServerMessage(state.match, msg);
     const traces = match.sessionId !== prevSession ? [] : state.traces;
-    state = { match, traces };
+    // Same-reference return = the reducer ignored the frame (other session /
+    // malformed) — that is not liveness for THIS match, so don't stamp it.
+    const lastActivityAt = match !== state.match ? Date.now() : state.lastActivityAt;
+    state = { match, traces, lastActivityAt };
     emit();
     // Newly finished with a replay available → complete the board's tail.
     if (
@@ -106,7 +116,7 @@ export function ensureLiveStoreStarted(api?: AifightBridgeApi): void {
   bridge.onTrace((tr) => {
     // Stamp the board step this trace belongs to (see StampedTrace).
     const stamped: StampedTrace = { ...tr, step: state.match.events.length };
-    state = { match: state.match, traces: [...state.traces, stamped] };
+    state = { match: state.match, traces: [...state.traces, stamped], lastActivityAt: Date.now() };
     emit();
   });
 }
@@ -135,7 +145,7 @@ export function useLiveStore(): LiveStoreState {
 
 /** Test-only: reset module singleton between cases. */
 export function __resetLiveStoreForTest(): void {
-  state = { match: emptyLiveMatch(), traces: [] };
+  state = { match: emptyLiveMatch(), traces: [], lastActivityAt: null };
   listeners.clear();
   started = false;
   tailFetchedFor = null;

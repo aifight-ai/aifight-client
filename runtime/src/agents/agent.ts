@@ -15,7 +15,7 @@ import {
 } from "../wsclient/reconnect";
 import type { WSClientMessage } from "../wsclient/client";
 import type { ServerMessageEnvelope } from "../wsclient/frame-handler";
-import { WSDeviceMismatchError, type WSClientError } from "../wsclient/errors";
+import { WSDeviceMismatchError, WSProtocolVersionError, type WSClientError } from "../wsclient/errors";
 import {
   createInitialAgentFSM,
   transitionAgentFSM,
@@ -369,6 +369,17 @@ export class AgentInstance {
             cause: info.cause,
           });
         }
+        // 连接审计 #6: a protocol-version close needs its own code — hosts used
+        // to fold it into the generic "reconnect gave up, retry" banner, and
+        // retrying an incompatible client is the one thing that can't help.
+        if (isVersionMismatchCause(info.cause)) {
+          this.#notify({
+            level: "error",
+            code: "agent.version_mismatch",
+            message: "protocol version mismatch — this client is too old for the server; update it",
+            cause: info.cause,
+          });
+        }
         this.#apply({ type: "reconnect.close", info });
       }),
       client.onError((cause) => {
@@ -712,6 +723,24 @@ function isDeviceMismatchCause(cause: unknown): boolean {
       const body = (cur as { readonly responseBody?: unknown }).responseBody;
       if (typeof body === "string" && body.includes("device_mismatch")) return true;
     }
+    if (typeof cur === "object" && "cause" in cur) {
+      cur = (cur as { readonly cause?: unknown }).cause;
+      continue;
+    }
+    break;
+  }
+  return false;
+}
+
+/** Same chain walk as isDeviceMismatchCause, for the protocol-version close
+ *  (连接审计 #6). instanceof first; message fallback for cross-bundle copies. */
+function isVersionMismatchCause(cause: unknown): boolean {
+  let cur: unknown = cause;
+  const seen = new Set<unknown>();
+  while (cur !== null && cur !== undefined && !seen.has(cur)) {
+    seen.add(cur);
+    if (cur instanceof WSProtocolVersionError) return true;
+    if (cur instanceof Error && /protocol[ _-]version/i.test(cur.message)) return true;
     if (typeof cur === "object" && "cause" in cur) {
       cur = (cur as { readonly cause?: unknown }).cause;
       continue;

@@ -24,6 +24,7 @@ import { appendFinalEvents, emptyLiveMatch, type MatchOutcome } from "../liveMat
 import { useLiveStore } from "../liveStore";
 import { runCli, useBridgeStatus } from "../useBridge";
 import { buildReplayFromExport, replayPathOf, type SessionReplay } from "../sessionReplay";
+import { isSilentPastCutoff } from "../staleSession";
 import { consumeWatchReplayIntent, type WatchReplayIntent } from "../watchIntent";
 import { gameLabel } from "../../shared/games";
 import { CockpitPanel } from "./CockpitPanel";
@@ -143,6 +144,31 @@ export function WatchView() {
   // button. The key below remounts the panel so it re-parks at the final board.
   const finished = isLive && liveMatch.finished;
 
+  // A match killed server-side (deploy restart / cancel) never sends game_over,
+  // so without this the cockpit shows LIVE on a dead board forever (the owner's
+  // deploy-cancelled texas sat "live" all night, 2026-07-28). Silence past the
+  // staleSession cutoff flips it to an interrupted replay. Zero events arriving
+  // also means zero re-renders, so an interval re-evaluates the clock; if the
+  // match somehow resumes (reconnect replays history), fresh activity flips it
+  // straight back to LIVE.
+  const [, setStaleTick] = useState(0);
+  const watchingLive = isLive && !finished;
+  useEffect(() => {
+    if (!watchingLive) return;
+    const id = window.setInterval(() => setStaleTick((n) => n + 1), 30_000);
+    return () => window.clearInterval(id);
+  }, [watchingLive]);
+  const interrupted = watchingLive && isSilentPastCutoff(live.lastActivityAt, Date.now());
+  // Receive-gap visibility (owner ask 2026-07-28): a live match that stops
+  // producing frames looks identical to one that's merely thinking — surface
+  // the silence itself once it exceeds a couple of minutes, well before the
+  // 30-minute interrupted cutoff, so "the app stopped receiving" is a fact on
+  // screen instead of a guess.
+  const silentMin =
+    watchingLive && !interrupted && live.lastActivityAt !== null
+      ? Math.floor((Date.now() - live.lastActivityAt) / 60_000)
+      : 0;
+
   const demoFix = FIXTURES[demoGame];
   const match = isLive ? liveMatch.match! : demoFix.match;
   const events = isLive ? liveMatch.events : demoFix.events;
@@ -156,7 +182,7 @@ export function WatchView() {
     : isLive
       ? []
       : synthesizeTraces(match, events, ownerPlayerId);
-  const badge: "live" | "demo" | "replay" = finished ? "replay" : hasLiveTraces || isLive ? "live" : "demo";
+  const badge: "live" | "demo" | "replay" = finished || interrupted ? "replay" : hasLiveTraces || isLive ? "live" : "demo";
 
   const outcome = outcomeText(t, liveMatch.outcome);
   const replayHref =
@@ -168,12 +194,15 @@ export function WatchView() {
       <b>{gameLabel(boardGame)}</b>
       {liveMatch.finished ? (
         <span className="v3-cp-fin">{t("cockpit.finished")}</span>
+      ) : interrupted ? (
+        <span className="v3-cp-fin">{t("history.interrupted")}</span>
       ) : (
         <span className="v3-cp-live">
           <span className="v3-live-dot" />
           LIVE
         </span>
       )}
+      {silentMin >= 2 && <span className="v3-cp-fin">{t("cockpit.silentFor", { m: silentMin })}</span>}
       {outcome !== null && <span className="v3-cp-outcome">{outcome}</span>}
       {replayHref !== null && (
         <a href={replayHref} target="_blank" rel="noreferrer" className="v3-cp-link">
@@ -214,17 +243,25 @@ export function WatchView() {
       )}
       <div className="min-h-0 flex-1">
         <CockpitPanel
-          key={`${match.id}:${finished ? "fin" : isLive ? "live" : "demo"}`}
+          key={`${match.id}:${finished ? "fin" : interrupted ? "int" : isLive ? "live" : "demo"}`}
           game={boardGame}
           match={match}
           events={events}
           ownerPlayerId={ownerPlayerId}
           ownerPrivate={ownerPrivate}
           traces={traces.slice()}
-          isLive={isLive && !finished}
+          isLive={isLive && !finished && !interrupted}
           badge={badge}
-          note={finished ? t("cockpit.finishedNote") : isLive ? t("cockpit.liveNote") : t("cockpit.note")}
-          emptyTraceHint={isLive && !finished ? t("cockpit.waitingTrace") : undefined}
+          note={
+            finished
+              ? t("cockpit.finishedNote")
+              : interrupted
+                ? t("cockpit.interruptedNote")
+                : isLive
+                  ? t("cockpit.liveNote")
+                  : t("cockpit.note")
+          }
+          emptyTraceHint={isLive && !finished && !interrupted ? t("cockpit.waitingTrace") : undefined}
           headerLeft={headerLeft}
           headerRight={bridgeChip}
         />

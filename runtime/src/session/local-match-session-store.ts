@@ -38,6 +38,13 @@ export interface LocalMatchSessionSummary {
   /** Seats in the match (game_start roster; confirmed by game_over identities). */
   readonly player_count?: number;
   /**
+   * Opponent display names from game_over's disclosed roster (own seat
+   * excluded), in seat order. Names arrive pre-masked by the server (mystery
+   * agents stay masked). Absent on sessions recorded before this field existed
+   * and on matches that never reached game_over.
+   */
+  readonly opponents?: readonly string[];
+  /**
    * Distinct engine events observed (seq-deduped across action_requests, the
    * same fold the cockpit replay uses) — the whole-match interaction count,
    * every player's moves included, and the local replay's step count.
@@ -359,6 +366,7 @@ export class LocalMatchSessionStore {
       // (possibly missed, e.g. mid-match reconnect) game_start count.
       ...(roster > 0 ? { player_count: roster } : {}),
       result_label: resultLabel(config.agentId, gameOver),
+      ...(roster > 0 ? { opponents: opponentNames(config.agentId, gameOver) } : {}),
     };
   }
 
@@ -644,6 +652,14 @@ function readMode(data: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+/** Opponent display names (own seat excluded), seat order, server-masked. */
+function opponentNames(agentId: string, gameOver: MsgGameOver): readonly string[] {
+  return gameOver.data.players
+    .filter((p) => p.agent_id !== agentId)
+    .map((p) => p.agent_name)
+    .filter((name): name is string => typeof name === "string" && name !== "");
+}
+
 function resultLabel(agentId: string, gameOver: MsgGameOver): string {
   const player = gameOver.data.players.find((p) => p.agent_id === agentId);
   if (player === undefined) return "completed";
@@ -710,6 +726,9 @@ function readSummary(file: string): LocalMatchSessionSummary | null {
     ...(typeof summary.replay_url === "string" ? { replay_url: summary.replay_url } : {}),
     ...(typeof summary.result_label === "string" ? { result_label: summary.result_label } : {}),
     ...(typeof summary.player_count === "number" ? { player_count: summary.player_count } : {}),
+    ...(Array.isArray(summary.opponents) && summary.opponents.every((n) => typeof n === "string")
+      ? { opponents: summary.opponents }
+      : {}),
     ...(typeof summary.event_count === "number" ? { event_count: summary.event_count } : {}),
     ...(typeof summary.event_seq_max === "number" ? { event_seq_max: summary.event_seq_max } : {}),
     inbound_count: typeof summary.inbound_count === "number" ? summary.inbound_count : 0,

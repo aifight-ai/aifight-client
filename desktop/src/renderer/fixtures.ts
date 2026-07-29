@@ -64,19 +64,57 @@ const texasEvents: MatchEvent[] = [
   ev("player_action", { action: "call", amount: 100, total_bet: 200 }, "p0"),
   ev("community_cards", { cards: ["Ah", "7d", "2c"] }),
   ev("player_action", { action: "check" }, "p1"),
+  // Turn: community_cards REPLACES the board, so the event carries all four.
+  ev("community_cards", { cards: ["Ah", "7d", "2c", "Qs"] }),
+  ev("player_action", { action: "bet", amount: 400, total_bet: 400 }, "p0"),
+  ev("player_action", { action: "call", amount: 400 }, "p1"),
 ];
 
-// Dice faces are private and never revealed here (no challenge); only the public
-// bids + per-player dice counts show.
+// A challenge round IS public in liar's dice (all dice revealed at showdown),
+// so the fixture can carry all_dice there without leaking anything private.
+// p0's dice match liarsDiceOwn below.
 const liarsDiceEvents: MatchEvent[] = [
   ev("round_start", { round: 1 }),
   ev("bid", { quantity: 2, face: 5 }, "p0"),
   ev("bid", { quantity: 3, face: 5 }, "p1"),
-  ev("bid", { quantity: 4, face: 6 }, "p0"),
+  ev("bid", { quantity: 4, face: 5 }, "p0"),
+  ev("bid", { quantity: 5, face: 5 }, "p1"),
+  ev(
+    "challenge",
+    {
+      challenger: "p0",
+      bidder: "p1",
+      bid_quantity: 5,
+      bid_face: 5,
+      actual_count: 4,
+      bid_met: false,
+      all_dice: { p0: [2, 5, 5, 3, 6], p1: [5, 1, 5, 2, 4] },
+      loser: "p1",
+    },
+    "p0",
+  ),
+  ev("round_start", { round: 2 }),
+  ev("bid", { quantity: 1, face: 6 }, "p1"),
+  ev("bid", { quantity: 2, face: 6 }, "p0"),
 ];
 
-// Influence cards stay face-down for everyone (no reveal events).
-const coupEvents: MatchEvent[] = [ev("game_start", {})];
+// A representative stretch of turns: claims, a failed challenge, a stood block,
+// coins moving. Only PUBLIC facts (claims, reveals forced by the rules) — the
+// owner's own hidden influence lives in coupOwn, opponents' stay unknown.
+const coupEvents: MatchEvent[] = [
+  ev("game_start", {}),
+  ev("action", { action: "income" }, "p0"),
+  ev("action", { action: "tax", claimed_role: "Duke" }, "p1"),
+  ev("challenge", { challenger: "p0" }, "p0"),
+  ev("challenge_result", { actor: "p1", challenger: "p0", revealed_card: "Contessa", result: "success" }),
+  ev("influence_lost", { player: "p1", card: "Contessa" }),
+  ev("action", { action: "foreign_aid" }, "p0"),
+  ev("action_resolved", { action: "foreign_aid", coins_now: 5 }, "p0"),
+  ev("action", { action: "steal", target: "p0", claimed_role: "Captain" }, "p1"),
+  ev("block", { blocker: "p0", claimed_role: "Captain" }, "p0"),
+  ev("challenge_block_result", { blocker: "p0", revealed_card: "Captain", result: "fail" }),
+  ev("action", { action: "income" }, "p1"),
+];
 
 export interface GameFixture {
   readonly match: MatchDetail;

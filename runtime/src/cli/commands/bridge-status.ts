@@ -3,11 +3,12 @@ import { dropClaimCredentialsAfterClaim, readBridgeConfig, redactBridgeConfig } 
 import { checkBridgeUpdate } from "../../bridge/update-check";
 import { RUNTIME_VERSION } from "../../index";
 import { fetchNoFollow } from "../../net/guarded-fetch.js";
+import { ControlClientError } from "../control-client";
 import type { HandlerArgs, HandlerEnv } from "../shared";
-import { expectArity } from "../shared";
+import { expectArity, makeClient } from "../shared";
 import type { BridgeConfig } from "../../bridge/config";
 
-const USAGE = "usage: aifight status";
+const USAGE = "usage: aifight status [--live]";
 const STATUS_TIMEOUT_MS = 1500;
 
 type PlatformAgentStatus =
@@ -33,6 +34,9 @@ export async function runBridgeStatus(
   env: HandlerEnv,
 ): Promise<number> {
   expectArity(args, 0, 0, USAGE);
+  // 连接审计 #14: `--live` asks the RUNNING bridge (aifight run / the service)
+  // over its control API — realtime transport + queue, not config-file guesses.
+  if (args.flags.live === true) return runLiveStatus(args, env);
   const config = readOptionalBridgeConfig();
   if (config === undefined) {
     if (args.jsonMode) {
@@ -98,6 +102,60 @@ export async function runBridgeStatus(
   env.stdout(`Games: ${redacted.autoGames?.join(", ") ?? "texas_holdem, liars_dice, coup"}\n`);
   env.stdout(`AIFight WebSocket: ${redacted.wsUrl}\n`);
   env.stdout("No secrets are shown here.\n");
+  return 0;
+}
+
+// ── `aifight status --live` (连接审计 #14) ───────────────────────────────────
+// Reads GET /v1/agents from the local control API that `aifight run` starts.
+// Shape mirrors the server's SanitizedAgentSnapshot — parsed defensively so a
+// version-skewed bridge degrades to "-" fields, never a crash.
+interface LiveAgentRow {
+  readonly name?: string;
+  readonly transport?: string;
+  readonly state?: {
+    readonly phase?: string;
+    readonly queue?: { readonly game?: string; readonly mode?: string };
+    readonly activeMatches?: Readonly<Record<string, { readonly game?: string }>>;
+    readonly activeMatchCount?: number;
+  } | null;
+}
+
+async function runLiveStatus(args: HandlerArgs, env: HandlerEnv): Promise<number> {
+  const client = makeClient(env);
+  let agents: readonly LiveAgentRow[];
+  try {
+    const body = await client.get<{ agents?: readonly LiveAgentRow[] }>("/v1/agents");
+    agents = Array.isArray(body.agents) ? body.agents : [];
+  } catch (e) {
+    if (e instanceof ControlClientError && e.kind === "daemon_unreachable") {
+      if (args.jsonMode) {
+        env.stdout(JSON.stringify({ status: "bridge_not_running" }) + "\n");
+      } else {
+        env.stdout("Bridge not running on this machine — live status needs `aifight run` (or the background service).\n");
+        env.stdout("Plain `aifight status` shows the stored configuration instead.\n");
+      }
+      return 1;
+    }
+    throw e;
+  }
+  if (args.jsonMode) {
+    env.stdout(JSON.stringify({ status: "ok", agents }) + "\n");
+    return 0;
+  }
+  env.stdout("AIFight live status\n\n");
+  if (agents.length === 0) {
+    env.stdout("No agents running in the bridge.\n");
+    return 0;
+  }
+  for (const a of agents) {
+    const s = a.state ?? null;
+    env.stdout(`Agent: ${a.name ?? "-"}\n`);
+    env.stdout(`Connection: ${a.transport ?? "-"}\n`);
+    env.stdout(`Phase: ${s?.phase ?? "-"}\n`);
+    env.stdout(`Queue: ${s?.queue?.game !== undefined ? `${s.queue.game} (${s.queue.mode ?? "ranked"})` : "not queued"}\n`);
+    const matches = s?.activeMatches !== undefined ? Object.values(s.activeMatches) : [];
+    env.stdout(`Active matches: ${matches.length === 0 ? "none" : matches.map((m) => m.game ?? "?").join(", ")}\n`);
+  }
   return 0;
 }
 

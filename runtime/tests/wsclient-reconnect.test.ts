@@ -322,6 +322,41 @@ describe("createReconnectingWSClient — close-code dispatch (Roy 拍板 #5)", (
     expect(mockedCreate).toHaveBeenCalledTimes(3);
   });
 
+  // 连接审计 #5: the snapshot's authFailures streak is what lets the desktop
+  // escalate an endless「连接中…」into a credential warning. It must climb only
+  // while the server itself keeps rejecting (401/404), and any other outcome —
+  // a non-auth failure or a success — resets it to zero.
+  test("连接审计 #5: snapshot.authFailures climbs on consecutive 401s, resets on non-auth failure and success", async () => {
+    const h1 = makeFakeInner();
+    const h2 = makeFakeInner();
+    mockedCreate.mockResolvedValueOnce(h1.inner as any); // attempt 1: connect
+    mockedCreate.mockRejectedValueOnce(new WSHandshakeError(401, "Unauthorized", "revoked?")); // attempt 2
+    mockedCreate.mockRejectedValueOnce(new WSHandshakeError(401, "Unauthorized", "revoked?")); // attempt 3
+    mockedCreate.mockRejectedValueOnce(new WSHandshakeError(503, "Service Unavailable", "restarting")); // attempt 4
+    mockedCreate.mockResolvedValueOnce(h2.inner as any); // attempt 5: recovered
+
+    const facade = await createReconnectingWSClient({ ...baseOpts, jitter: "none" });
+    expect(facade.snapshot().authFailures).toBe(0);
+
+    h1.simulateServerClose(1006);
+    await vi.advanceTimersByTimeAsync(1000); // #failures=1 → 1s → attempt 2 (401)
+    await flushMicrotasks();
+    expect(facade.snapshot().authFailures).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(2000); // → attempt 3 (401)
+    await flushMicrotasks();
+    expect(facade.snapshot().authFailures).toBe(2);
+
+    await vi.advanceTimersByTimeAsync(4000); // → attempt 4 (503, non-auth)
+    await flushMicrotasks();
+    expect(facade.snapshot().authFailures).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(8000); // → attempt 5 (success)
+    await flushMicrotasks();
+    expect(facade.state).toBe("connected");
+    expect(facade.snapshot().authFailures).toBe(0);
+  });
+
   // A 403 stays terminal even on reconnect: it means the agent was re-paired to
   // another machine (device binding), so retrying would thrash with that device.
   test("case 5c: reconnect 403 stays terminal (re-pair, never thrash)", async () => {

@@ -34,6 +34,7 @@ import { webOrigin } from "../webOrigin";
 import { useLiveStore } from "../liveStore";
 import { useLiveGames } from "../liveGames";
 import { setWatchReplayIntent } from "../watchIntent";
+import { isStaleLiveSession } from "../staleSession";
 import { gameLabel } from "../../shared/games";
 import { RatingChart, PerGameCards, AchievementShelf } from "./AgentProfileViz";
 import { StyleRadarCard } from "./StyleRadarCard";
@@ -118,13 +119,14 @@ interface CreatedChallenge {
  *  (the claim/official-name gate, D4). Replaced on every action → self-clearing. */
 type Feedback = { tone: "ok" | "err"; text: string; action?: "claim" } | null;
 const POLICY_CACHE_KEY = "aifight.play.policy";
-// Whether the user paused automatic matchmaking. PERSISTED (not session-only):
-// pausing is a token-burn / spend decision, so it must survive a relaunch — main
-// auto-joins the pool on launch, and the dashboard re-applies this pause once the
-// bridge is online (see the re-apply effect) so spend doesn't silently resume.
+// LEGACY pause bit. The truth now lives in the main process
+// (BridgeStatus.matchingPaused, persisted in ui-flags — 连接审计 #13), because a
+// renderer-side bit could only re-apply the pause after mount + connect, leaving
+// a window where the agent was already enrolled and could burn tokens. This key
+// survives only long enough to migrate an existing paused install once.
 const PAUSE_KEY = "aifight.play.paused";
 
-function readPersistedPause(): boolean {
+function readLegacyPause(): boolean {
   try {
     return typeof localStorage !== "undefined" && localStorage.getItem(PAUSE_KEY) === "1";
   } catch {
@@ -800,7 +802,8 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   // Inline display-name rename (pencil next to the hero name). Draft + edit flag.
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
-  const [paused, setPaused] = useState(readPersistedPause); // persisted across launches (spend safety)
+  // Main-process truth (persisted across launches — spend safety, 连接审计 #13).
+  const paused = status.matchingPaused === true;
   // One game selector drives BOTH play-now and create-challenge (D5 — they used
   // to have two identical pickers).
   const [game, setGame] = useState<string>(() => games[0] ?? "texas_holdem");
@@ -880,18 +883,24 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   };
   useEffect(checkClaim, []);
 
-  // Re-apply a PERSISTED pause once the bridge is online. main auto-joins the
-  // matchmaking pool on every launch (token-burn safety lives in the cap), so a
-  // user who paused yesterday would otherwise have spend silently resume today.
-  // Fires once per session, after `connected` first turns true.
-  const pauseReapplied = useRef(false);
+  // One-shot migration of the legacy renderer-side pause bit into the main
+  // process (连接审计 #13). An install that was paused before this version must
+  // stay paused; after this the localStorage key is gone and main owns the flag.
+  // (The old "re-apply after connect" effect this replaces was the vacuum the
+  // audit flagged: the agent was already enrolled by the time it ran.)
+  const pauseMigrated = useRef(false);
   useEffect(() => {
-    if (connected && paused && !pauseReapplied.current) {
-      pauseReapplied.current = true;
-      void setMatchingPaused(true);
+    if (pauseMigrated.current) return;
+    pauseMigrated.current = true;
+    if (!readLegacyPause()) return;
+    try {
+      localStorage.removeItem(PAUSE_KEY);
+    } catch {
+      /* ignore quota errors */
     }
+    if (!paused) void setMatchingPaused(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected]);
+  }, []);
 
   // When a match ends, refresh today's count, record, usage and recent list so
   // the dashboard reflects the just-finished game without a manual reload.
@@ -1016,15 +1025,10 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   };
 
   const togglePause = async () => {
-    const next = !paused;
-    setPaused(next);
-    try {
-      localStorage.setItem(PAUSE_KEY, next ? "1" : "0");
-    } catch {
-      /* ignore quota errors */
-    }
+    // The main process owns and persists this bit (连接审计 #13) — it comes back
+    // through BridgeStatus.matchingPaused, so there is nothing to store here.
     setBusy("pause");
-    await setMatchingPaused(next);
+    await setMatchingPaused(!paused);
     setBusy(null);
   };
 
@@ -1208,7 +1212,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <ActivityPill activity={activity} connecting={connecting} />
+            <ActivityPill activity={activity} connecting={connecting} queuedGame={status?.queued?.game ?? null} />
             {!connected && !connecting && (
               <button
                 onClick={retry}
@@ -1360,6 +1364,15 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                       <ResultDot label={s.result_label} />
                       <span className="text-[13px] text-[var(--text)]">{gameLabel(s.game ?? "")}</span>
                       {s.result_label && <ResultChip label={s.result_label} t={t} />}
+                      {/* Zombie "active" rows (server died mid-match, no game_over
+                          ever arrived) used to render bare here — History says
+                          已中断, this mini-list said nothing. Same rule, same cutoff. */}
+                      {s.status === "active" &&
+                        (isStaleLiveSession(s.status, s.updated_at, Date.now()) ? (
+                          <Chip tone="neutral">{t("history.interrupted")}</Chip>
+                        ) : (
+                          <Chip tone="live">{t("history.active")}</Chip>
+                        ))}
                     </div>
                     <div className="flex shrink-0 items-center gap-3 font-mono text-[11px] text-[var(--text-muted)]">
                       {typeof s.player_count === "number" && s.player_count > 1 && (
@@ -1682,7 +1695,16 @@ function UsageMini({
   );
 }
 
-function ActivityPill({ activity, connecting }: { activity: Activity; connecting: boolean }) {
+function ActivityPill({
+  activity,
+  connecting,
+  queuedGame,
+}: {
+  activity: Activity;
+  connecting: boolean;
+  /** SERVER-confirmed queue membership from BridgeStatus.queued (审计 #3/#12). */
+  queuedGame?: string | null;
+}) {
   const { t } = useTranslation();
   if (connecting) {
     return (
@@ -1693,10 +1715,18 @@ function ActivityPill({ activity, connecting }: { activity: Activity; connecting
     );
   }
   const pulse = activity === "in_match" || activity === "matching";
+  // 候战 claims come from the server's queue_joined echo, not local heuristics:
+  // queued → name the game; deriving "matching" without the echo → 入队中…
+  const label =
+    activity === "matching"
+      ? queuedGame
+        ? t("play.activity.matchingGame", { game: gameLabel(queuedGame) })
+        : t("play.activity.enrolling")
+      : t(`play.activity.${activity}`);
   return (
     <span className="v3-dv-pill" data-tone={ACTIVITY_TONE[activity]}>
       <i className={"dot" + (pulse ? " pulse" : "")} />
-      {t(`play.activity.${activity}`)}
+      {label}
     </span>
   );
 }

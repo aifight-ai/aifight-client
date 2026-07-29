@@ -10,7 +10,9 @@ import type { MatchDetail, MatchEvent } from "@aifight/api-types";
 import type { TraceAction } from "../shared/ipc";
 import type { StampedTrace } from "./liveStore";
 
-const DECISION_TYPES = new Set(["player_action", "bid", "challenge"]);
+// Event types that mark "the acting player made a decision here" per game:
+// texas=player_action, dice=bid/challenge, coup=action/challenge/block.
+export const DECISION_TYPES = new Set(["player_action", "bid", "challenge", "action", "block"]);
 
 /** Legal-action counts are illustrative for the demo (real matches report the true count). */
 function legalCountFor(game: string): number {
@@ -21,12 +23,15 @@ function legalCountFor(game: string): number {
 
 function actionFromEvent(ev: MatchEvent): TraceAction {
   const d = ev.data ?? {};
-  if (ev.type === "player_action") {
+  if (ev.type === "player_action" || ev.type === "action") {
     const type = String(d.action ?? "action");
-    return d.amount !== undefined ? { type, data: { amount: d.amount } } : { type };
+    if (d.amount !== undefined) return { type, data: { amount: d.amount } };
+    if (d.target !== undefined) return { type, data: { target: d.target } };
+    return { type };
   }
   if (ev.type === "bid") return { type: "bid", data: { quantity: d.quantity, face: d.face } };
   if (ev.type === "challenge") return { type: "challenge" };
+  if (ev.type === "block") return { type: "block", data: { claimed_role: d.claimed_role } };
   return { type: ev.type };
 }
 
@@ -36,7 +41,33 @@ function previewFor(game: string, ev: MatchEvent): string {
     return `I'll raise to ${d.quantity}×${d.face}s. Across 10 dice the field very likely holds at least ${Math.max(0, Number(d.quantity) - 1)} of these, so the bid stays credible while pressuring the opponent.`;
   }
   if (ev.type === "challenge") {
-    return "Calling the bluff — the standing bid exceeds the count I can justify given my own dice. Expected value favors the challenge.";
+    return game === "coup"
+      ? "Challenging the claim — by my count of seen reveals, the odds they actually hold that role are too low to let the action stand."
+      : "Calling the bluff — the standing bid exceeds the count I can justify given my own dice. Expected value favors the challenge.";
+  }
+  if (ev.type === "block") {
+    return `Blocking with ${String(d.claimed_role ?? "the right role")} — I actually hold it, so a counter-challenge costs them an influence.`;
+  }
+  if (ev.type === "action") {
+    const verb = String(d.action ?? "");
+    switch (verb) {
+      case "income":
+        return "Low-profile turn: take the guaranteed coin. No claim, nothing to challenge, and I stay under the coup threshold radar.";
+      case "foreign_aid":
+        return "Foreign aid for +2 — nobody has claimed Duke yet, so a block is unlikely to be credible.";
+      case "tax":
+        return "Claiming Duke for +3. My table image supports it, and challenging me is -EV for them.";
+      case "steal":
+        return "Captain steal — pressure their economy before they reach coup range.";
+      case "coup":
+        return "Seven coins banked: coup is unblockable, unchallengeable. Remove the biggest threat now.";
+      case "assassinate":
+        return "Assassinate at 3 coins — cheapest removal; even a Contessa block costs them tempo.";
+      case "exchange":
+        return "Exchange with the deck — refresh my hidden roles and muddy every read they have.";
+      default:
+        return `Chose to ${verb || ev.type}.`;
+    }
   }
   const action = String(d.action ?? "");
   switch (action) {

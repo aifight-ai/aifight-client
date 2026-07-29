@@ -146,6 +146,9 @@ describe("LocalMatchSessionStore", () => {
       decision_count: 1,
       final_action_count: 1,
       strategy_hashes: ["hash-1"],
+      // game_over's disclosed roster minus the own seat, in seat order — the
+      // History list's "vs …" line reads this.
+      opponents: ["beta"],
     });
 
     const exported = store.exportSession("real-match-1");

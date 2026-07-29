@@ -126,9 +126,16 @@ function ConnectionSection() {
     health.lastActivityAt !== null
       ? t("diagnostics.conn.ago", { s: Math.max(0, Math.floor((now - health.lastActivityAt) / 1000)) })
       : "—";
+  // 连接审计 #9: lastActivityAt counts our own logs too (reconnect attempts keep
+  // it "seconds ago" through an outage) — the INBOUND stamp is the honest one.
+  const lastInbound =
+    typeof health.lastInboundAt === "number"
+      ? t("diagnostics.conn.ago", { s: Math.max(0, Math.floor((now - health.lastInboundAt) / 1000)) })
+      : "—";
   const rows: Array<[string, string]> = [
     [t("diagnostics.conn.state"), stateText],
     [t("diagnostics.conn.uptime"), uptime],
+    [t("diagnostics.conn.lastInbound"), lastInbound],
     [t("diagnostics.conn.lastBeat"), lastBeat],
     [t("diagnostics.conn.reconnects"), String(health.reconnects)],
   ];

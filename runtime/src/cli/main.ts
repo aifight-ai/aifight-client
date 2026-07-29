@@ -160,6 +160,9 @@ export async function run(
     // Same indirection habit as `config set-key --env`: the raw token never
     // appears in argv (and therefore never in shell history or `ps`).
     { name: "token-env", type: "string" },
+    // `aifight status --live` — realtime transport/queue via the control API
+    // of a running `aifight run` (连接审计 #14).
+    { name: "live", type: "boolean" },
   ];
   const parsed = parseArgs(tail, FLAG_SPEC);
   const jsonMode = parsed.flags.json === true;
@@ -328,7 +331,7 @@ function globalUsage(): string {
     "",
     "Play:",
     "  aifight start [game] [N]          Request manual ranked match(es)",
-    "  aifight status                    Show local config with secrets redacted",
+    "  aifight status                    Show local config with secrets redacted (--live: realtime state)",
     "  aifight record                    Show your public competitive record: ratings, rank, recent matches",
     "  aifight challenge <game>          Create a one-use friendly challenge URL",
     "  aifight accept <url_or_token>     Accept a received challenge URL",
@@ -456,8 +459,10 @@ function commandUsage(positional: readonly string[]): string | undefined {
       ].join("\n");
     case "status":
       return [
-        "Usage: aifight status",
+        "Usage: aifight status [--live]",
         "  Show local bridge config with API key and runtime token redacted.",
+        "  --live: ask the RUNNING bridge (aifight run / the service) for realtime",
+        "          connection state, queue membership, and active matches.",
       ].join("\n");
     case "record":
       return [

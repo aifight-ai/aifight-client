@@ -314,8 +314,10 @@ app.whenReady().then(async () => {
   // renderer's "pause matching" toggle is session-only and resets each launch.
   const summary = bridgeHost.readConfigSummary();
   if (summary.config !== undefined) {
-    const status = await bridgeHost.start();
-    if (status.phase === "running") await bridgeHost.joinAutoMatch();
+    // Enrollment is owned by the host's connected edge (works for launch,
+    // seat-retry, Retry and reconnect alike — 连接审计 #1); a second explicit
+    // join here would race it into two different random game queues.
+    await bridgeHost.start();
   }
   // 重连重设计 2026-07-25 P5/P2: be honest about sleep. On lid-close hand the
   // seat back gracefully (server shows offline in ~1s instead of a ~60s

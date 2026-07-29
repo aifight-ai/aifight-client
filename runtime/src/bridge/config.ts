@@ -8,7 +8,7 @@ import {
   encryptForStorage,
 } from "../account/credentials";
 import { CredentialsKeychainUnavailableError } from "../account/errors";
-import { ensureRuntimeHome, getRuntimeHome } from "../store/paths";
+import { ensureRuntimeHome, getRuntimeHome, safePathSegment } from "../store/paths";
 
 export type BridgeRuntimeType = "mock" | "direct";
 
@@ -293,9 +293,14 @@ export function removeBridgeConfig(): void {
 export function archiveReplacedBridgeConfig(config: BridgeConfig): string | null {
   try {
     ensureRuntimeHome();
+    // SECURITY (codex-security 2026-07-28): agentId comes from the pairing
+    // service's response and is only validated as a string, so a hostile or
+    // compromised endpoint could put traversal segments in it and steer this
+    // write outside the runtime home. Same guard the session/strategy paths
+    // already use — this one call site was the exception.
     const archivePath = path.join(
       getRuntimeHome(),
-      `bridge.replaced-${config.agentId}.json`,
+      `bridge.replaced-${safePathSegment(config.agentId)}.json`,
     );
     const snapshot = {
       ...redactBridgeConfig(config),

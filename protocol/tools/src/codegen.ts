@@ -145,7 +145,17 @@ async function main(): Promise<number> {
     declareExternallyReferenced: false,
     additionalProperties: false,
     $refOptions: {
-      resolve: { external: true },
+      // external: true keeps cross-FILE $refs working (every schema here uses
+      // relative paths like "../common/action.schema.json").
+      //
+      // SECURITY (codex-security 2026-07-28): the http/https resolvers are
+      // turned OFF. Protocol Gate compiles PULL-REQUEST-controlled schemas on a
+      // CI runner, so a contributor could have added `"$ref":
+      // "http://169.254.169.254/…"` and made the runner fetch an
+      // attacker-chosen URL (cloud metadata, internal services) — SSRF with the
+      // repo's network position. No schema in this tree references a URL, so
+      // disabling remote resolution costs nothing and removes the class.
+      resolve: { external: true, http: false },
     },
     unknownAny: false,
   };

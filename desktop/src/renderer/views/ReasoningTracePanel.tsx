@@ -21,12 +21,26 @@ function actionLabel(action: TraceAction, t: (k: string, o?: Record<string, unkn
   return verb;
 }
 
-function TraceRow({ trace, onJumpToStep }: { trace: StampedTrace; onJumpToStep?: (step: number) => void }) {
+function TraceRow({
+  trace,
+  current,
+  anchorRef,
+  onJumpToStep,
+}: {
+  trace: StampedTrace;
+  current?: boolean;
+  /** Set on the CURRENT group's opening decision row — the auto-scroll target. */
+  anchorRef?: React.Ref<HTMLDivElement>;
+  onJumpToStep?: (step: number) => void;
+}) {
   const { t } = useTranslation();
+  // "current" = this row belongs to the decision group the transport is ON —
+  // the panel's visual answer to "which reasoning does the board show now".
+  const cur = current === true ? " v3-tr-cur" : "";
   switch (trace.type) {
     case "decision_request":
       return (
-        <div className="v3-tr-row v3-tr-decision">
+        <div ref={anchorRef} className={"v3-tr-row v3-tr-decision" + cur}>
           <Brain size={13} className="shrink-0 text-[var(--v3-acc)]" />
           <span>
             <b>{t("cockpit.decision")}</b>
@@ -47,7 +61,7 @@ function TraceRow({ trace, onJumpToStep }: { trace: StampedTrace; onJumpToStep?:
       );
     case "runtime_success":
       return (
-        <div className="v3-tr-card">
+        <div className={"v3-tr-card" + cur}>
           {trace.reasoning !== undefined && (
             <div className="mb-2">
               <div className="v3-tr-label">{t("cockpit.modelThinking")}</div>
@@ -63,7 +77,7 @@ function TraceRow({ trace, onJumpToStep }: { trace: StampedTrace; onJumpToStep?:
       );
     case "final_action":
       return (
-        <div className="v3-tr-row v3-tr-final">
+        <div className={"v3-tr-row v3-tr-final" + cur}>
           <ArrowRight size={13} className="shrink-0 text-[var(--v3-t3)]" />
           <b>{actionLabel(trace.action, t)}</b>
           <span className="v3-tr-src" data-kind={trace.source === "runtime" ? "runtime" : "fallback"}>
@@ -73,7 +87,7 @@ function TraceRow({ trace, onJumpToStep }: { trace: StampedTrace; onJumpToStep?:
       );
     case "runtime_failure":
       return (
-        <div className="v3-tr-row v3-tr-err">
+        <div className={"v3-tr-row v3-tr-err" + cur}>
           <AlertTriangle size={13} className="mt-0.5 shrink-0" />
           <span>
             {t("cockpit.runtimeFailed")} #{trace.attempt}
@@ -83,7 +97,7 @@ function TraceRow({ trace, onJumpToStep }: { trace: StampedTrace; onJumpToStep?:
       );
     case "strategy_error":
       return (
-        <div className="v3-tr-row v3-tr-warn">
+        <div className={"v3-tr-row v3-tr-warn" + cur}>
           <AlertTriangle size={13} className="mt-0.5 shrink-0" />
           <span>
             {t("cockpit.strategyError")}: {trace.error}
@@ -110,9 +124,27 @@ export function ReasoningTracePanel({
 }) {
   const { t } = useTranslation();
   const endRef = useRef<HTMLDivElement>(null);
+  const anchorRef = useRef<HTMLDivElement>(null);
+  // The trailing decision group (last decision_request → end) is the one the
+  // board currently shows — its opening row is the scroll anchor.
+  const lastDecisionIdx = traces.reduce((acc, tr, i) => (tr.type === "decision_request" ? i : acc), -1);
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end" });
-  }, [traces.length]);
+    // Follow the transport: align the CURRENT decision group's opening row to
+    // the top of the panel, so the user reads their agent's thinking summary →
+    // final decision top-down for exactly the step on the board (owner ask
+    // 2026-07-28). No group visible → pin to the bottom (tail of whatever is
+    // there). Only the panel's OWN scroller moves — scrollIntoView walked every
+    // scrollable ancestor and yanked the whole History page.
+    const scroller = endRef.current?.parentElement;
+    if (!(scroller instanceof HTMLElement)) return;
+    const target = anchorRef.current;
+    if (target !== null) {
+      const delta = target.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      scroller.scrollTop = Math.max(0, scroller.scrollTop + delta - 8);
+    } else {
+      scroller.scrollTop = scroller.scrollHeight;
+    }
+  }, [lastDecisionIdx, traces.length]);
 
   const badgeLabel = badge === "live" ? t("cockpit.live") : badge === "replay" ? t("cockpit.replay") : t("cockpit.demo");
 
@@ -133,7 +165,15 @@ export function ReasoningTracePanel({
         {traces.length === 0 ? (
           <div className="v3-tr-empty">{emptyHint ?? t("cockpit.noTraces")}</div>
         ) : (
-          traces.map((tr, i) => <TraceRow key={i} trace={tr} onJumpToStep={onJumpToStep} />)
+          traces.map((tr, i) => (
+            <TraceRow
+              key={i}
+              trace={tr}
+              current={lastDecisionIdx !== -1 && i >= lastDecisionIdx}
+              anchorRef={i === lastDecisionIdx ? anchorRef : undefined}
+              onJumpToStep={onJumpToStep}
+            />
+          ))
         )}
         <div ref={endRef} />
       </div>

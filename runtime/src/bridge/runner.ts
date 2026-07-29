@@ -427,6 +427,33 @@ export class BridgeRunner {
           ? `Joined ${this.#opts.autoJoinGame} for one manual match`
           : `Joined ${this.#opts.autoJoinGame} for daily automatic matching`,
       );
+      if (!oneShot) {
+        // 连接审计 #2 (2026-07-28): the server drops this agent from every
+        // queue the moment its socket dies (hub.OnQueueLeave), and the FSM now
+        // clears its queue belief on reconnect — so every recovered connection
+        // must RE-join, or the agent sits "online" and never plays again until
+        // the process restarts. This is the CLI half of the desktop's F9 fix,
+        // placed in the shared runner so every host heals the same way.
+        // (The subscriber fires once immediately with the current snapshot —
+        // prev === null skips it; the launch join above already happened.)
+        let last: string | null = null;
+        agent.onConnectionStateChange((snap) => {
+          const prev = last;
+          last = snap.state;
+          if (snap.state !== "connected" || prev === null || prev === "connected") return;
+          try {
+            agent.joinQueue(this.#opts.autoJoinGame!, this.#opts.autoJoinMode, { oneShot: false });
+            this.#log(
+              "info",
+              "bridge.queue_rejoined",
+              `Reconnected — re-joined the ${this.#opts.autoJoinGame} queue`,
+            );
+          } catch {
+            // join_queue sends over the live socket; if it raced a re-drop the
+            // next connected edge retries.
+          }
+        });
+      }
     }
     return snapshot;
   }

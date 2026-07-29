@@ -77,22 +77,24 @@ export function OwnHandStrip({ game, owner }: { game: Game; owner: OwnerPrivate 
 
       {game === "coup" && (
         <span className="v3-own-roles">
+          {/* Full role names — the old 36px squares truncated to "Duk"/"Amb",
+              which read as codes, not roles (owner walkthrough 2026-07-28). */}
           {(owner.influence ?? []).map((r, i) => (
             <span
               key={`h-${i}`}
-              className={`inline-flex h-9 w-9 items-center justify-center rounded-md border text-[10px] font-bold ${
+              className={`inline-flex h-9 items-center justify-center rounded-md border px-2.5 text-[10px] font-bold ${
                 ROLE_CLASS[r] ?? "border-[var(--border)] bg-[var(--surface)] text-[var(--text)]"
               }`}
             >
-              {r.slice(0, 3)}
+              {r}
             </span>
           ))}
           {(owner.revealed ?? []).map((r, i) => (
             <span
               key={`r-${i}`}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[10px] font-bold text-[var(--text-faint)] line-through"
+              className="inline-flex h-9 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface)] px-2.5 text-[10px] font-bold text-[var(--text-faint)] line-through"
             >
-              {r.slice(0, 3)}
+              {r}
             </span>
           ))}
         </span>
