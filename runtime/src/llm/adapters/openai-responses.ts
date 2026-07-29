@@ -34,6 +34,7 @@ import { looksLikeTokenLimit, computeTruncated } from "./token-limit.js";
 import { parseRetryAfterMs, isContentFilterReason } from "./error-class.js";
 import { redactApiKey, boundedErrorBody } from "./redact.js";
 import { fetchNoFollow } from "../../net/guarded-fetch.js";
+import { readTextCapped, readErrorBodyCapped } from "./response-limit.js";
 
 const PROTOCOL = "openai_responses" as const;
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -293,7 +294,7 @@ async function generateDecision(
   const latencyMs = Math.max(0, performance.now() - start);
 
   if (!response.ok) {
-    const rawBody = await safeReadText(response);
+    const rawBody = await readErrorBodyCapped(response);
     const bodySnippet = boundedErrorBody(rawBody, profile.apiKey, 512);
     const kind = httpStatusToKind(response.status);
     throw new AdapterError(
@@ -304,7 +305,7 @@ async function generateDecision(
     );
   }
 
-  const rawText = await safeReadText(response);
+  const rawText = await readTextCapped(response, PROTOCOL);
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawText);
@@ -544,13 +545,6 @@ function describeError(cause: unknown): string {
   }
 }
 
-async function safeReadText(response: Response): Promise<string> {
-  try {
-    return await response.text();
-  } catch {
-    return "";
-  }
-}
 
 function numOrUndef(v: unknown): number | undefined {
   return typeof v === "number" ? v : undefined;

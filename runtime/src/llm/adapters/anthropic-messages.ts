@@ -26,6 +26,7 @@ import { looksLikeTokenLimit, computeTruncated } from "./token-limit.js";
 import { parseRetryAfterMs, isContentFilterReason } from "./error-class.js";
 import { boundedErrorBody } from "./redact.js";
 import { fetchNoFollow } from "../../net/guarded-fetch.js";
+import { readTextCapped, readErrorBodyCapped } from "./response-limit.js";
 
 const PROTOCOL = "anthropic_messages" as const;
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -298,7 +299,7 @@ async function callAPI(
   }
 
   if (!response.ok) {
-    const text = await response.text().catch(() => "(unreadable body)");
+    const text = (await readErrorBodyCapped(response)) || "(unreadable body)";
     const safeBody = boundedErrorBody(text, apiKey, 512);
     const kind = httpStatusToKind(response.status);
     const retryable = kind === "rate_limited" || kind === "server_error";
@@ -310,9 +311,11 @@ async function callAPI(
     );
   }
 
+  // Capped read then parse — response.json() would buffer the whole body first.
+  const rawText = await readTextCapped(response, PROTOCOL);
   let parsed: unknown;
   try {
-    parsed = await response.json();
+    parsed = JSON.parse(rawText);
   } catch (err) {
     throw new AdapterError("invalid_response", PROTOCOL, "Response is not valid JSON", {
       cause: err,

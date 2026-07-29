@@ -28,6 +28,7 @@ import { looksLikeTokenLimit, normalizeOpenAIFinish, computeTruncated } from "./
 import { parseRetryAfterMs, isContentFilterReason } from "./error-class.js";
 import { boundedErrorBody } from "./redact.js";
 import { fetchNoFollow } from "../../net/guarded-fetch.js";
+import { readTextCapped, readErrorBodyCapped, maxResponseBytes } from "./response-limit.js";
 
 const PROTOCOL = "deepseek_chat_completions" as const;
 
@@ -166,7 +167,7 @@ async function sendRequest(
   }
 
   if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
+    const text = await readErrorBodyCapped(resp);
     const kind =
       resp.status === 401 || resp.status === 403
         ? "auth_failed"
@@ -196,9 +197,11 @@ async function postChatCompletions(
   signal?: AbortSignal,
 ): Promise<DeepSeekResponse> {
   const resp = await sendRequest(baseURL, apiKey, body, signal);
+  // Capped read then parse — resp.json() would buffer the whole body first.
+  const rawText = await readTextCapped(resp, PROTOCOL);
   let data: unknown;
   try {
-    data = await resp.json();
+    data = JSON.parse(rawText);
   } catch (err) {
     throw new AdapterError("invalid_response", PROTOCOL, "Response body is not valid JSON", {
       cause: err,
@@ -265,10 +268,30 @@ async function streamChatCompletions(
     if (chunk.usage) usage = chunk.usage;
   };
 
+  // SECURITY (codex-security 2026-07-29 C13): the SSE loop below has no natural
+  // end — `content`/`reasoning` grow with every delta and `buffer` grows without
+  // limit if the far end never sends a newline. A stream that does not stop (a
+  // runaway generation, a wedged proxy, a hostile endpoint) used to grow the
+  // bridge until the OS killed it, taking every agent and every live match with
+  // it. Metering the raw bytes bounds all three at once.
+  const streamByteCap = maxResponseBytes();
+  let streamBytes = 0;
+
   try {
     while (!done) {
       const { done: readerDone, value } = await reader.read();
       if (readerDone) break;
+      streamBytes += value?.byteLength ?? 0;
+      if (streamBytes > streamByteCap) {
+        await reader.cancel().catch(() => undefined);
+        throw new AdapterError(
+          "invalid_response",
+          PROTOCOL,
+          `Streamed response exceeded the ${streamByteCap}-byte ceiling (over ${streamBytes} bytes read). ` +
+            `Set AIFIGHT_LLM_MAX_RESPONSE_BYTES higher if this model legitimately returns more.`,
+          { retryable: false },
+        );
+      }
       buffer += decoder.decode(value, { stream: true });
       let nl: number;
       while ((nl = buffer.indexOf("\n")) >= 0) {
@@ -279,6 +302,10 @@ async function streamChatCompletions(
     }
     if (!done && buffer.length > 0) handleLine(buffer); // trailing partial line
   } catch (err) {
+    // Our own byte-ceiling error already says exactly what happened; re-wrapping
+    // it as a retryable "network" failure would both lie and invite a retry that
+    // re-reads the same runaway stream.
+    if (err instanceof AdapterError) throw err;
     if (err instanceof Error && err.name === "AbortError") {
       throw new AdapterError("aborted", PROTOCOL, "Request aborted", { cause: err });
     }
