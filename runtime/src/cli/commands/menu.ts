@@ -25,6 +25,11 @@ export interface MenuDeps {
   readonly showHelp: () => void;
   /** Whether a local bridge identity already exists (first-run vs returning). */
   readonly configured: boolean;
+  /** Local view of the claim handshake. The claim URL is scrubbed from
+   *  bridge.json once the platform reports the agent claimed, so "still on
+   *  file" is a reliable offline signal for "not claimed yet" — no network
+   *  call just to draw the panel. */
+  readonly claim?: { readonly pending: boolean; readonly url?: string; readonly agentName?: string };
 }
 
 interface MenuItem {
@@ -102,8 +107,11 @@ const ITEMS: readonly MenuItem[] = [
   },
   {
     key: "7",
+    // `config llm`, not bare `config`: bare config opens its own hub, so this
+    // used to drop the user into a SECOND menu one level down — which is the
+    // "why are there two different menus" the owner ran into (2026-07-29).
     label: "LLM — set up / test your model (provider, key, routing)",
-    run: ({ dispatch }) => dispatch("config", []).then(() => undefined),
+    run: ({ dispatch }) => dispatch("config", ["llm"]).then(() => undefined),
   },
   {
     key: "8",
@@ -123,16 +131,39 @@ const ITEMS: readonly MenuItem[] = [
     label: "Telegram — phone notifications & remote control",
     run: ({ dispatch }) => dispatch("telegram", []).then(() => undefined),
   },
+  {
+    key: "11",
+    label: "Claim — link this agent to your account (required before it can play)",
+    run: async ({ env, claim }) => {
+      if (claim?.pending !== true || claim.url === undefined) {
+        env.stdout("\nThis agent is already claimed. Manage it in the Dashboard: https://aifight.ai/dashboard\n");
+        return;
+      }
+      env.stdout("\nOpen this link to claim your agent — until you do, it cannot play:\n");
+      env.stdout(`  ${claim.url}\n`);
+    },
+  },
+  {
+    key: "12",
+    label: "Strategy — where to edit how your agent plays",
+    run: ({ dispatch }) => dispatch("strategy", ["path"]).then(() => undefined),
+  },
 ];
 
-function menuText(): string {
-  const lines = [
-    "",
-    "AIFight — what would you like to do?",
-    "",
-  ];
-  for (const item of ITEMS) lines.push(`  ${item.key}) ${item.label}`);
-  lines.push("  q) Quit");
+function menuText(deps: MenuDeps): string {
+  const lines = [""];
+  // An unclaimed agent cannot play at all, and nothing in the panel used to say
+  // so — the owner finished a whole VPS setup and never saw a reminder
+  // (2026-07-29). Lead with it, every time round the loop, until it is done.
+  if (deps.claim?.pending === true) {
+    const who = deps.claim.agentName !== undefined ? ` (${deps.claim.agentName})` : "";
+    lines.push(`  ⚠ NOT CLAIMED${who} — this agent cannot play until you claim it.`);
+    if (deps.claim.url !== undefined) lines.push(`    ${deps.claim.url}`);
+    lines.push("");
+  }
+  lines.push("AIFight — what would you like to do?", "");
+  for (const item of ITEMS) lines.push(`  ${item.key.padStart(2)}) ${item.label}`);
+  lines.push("   q) Quit");
   lines.push("");
   return lines.join("\n");
 }
@@ -159,7 +190,7 @@ export async function runInteractiveMenu(deps: MenuDeps): Promise<number> {
 
   const byKey = new Map(ITEMS.map((i) => [i.key, i]));
   for (;;) {
-    env.stdout(menuText());
+    env.stdout(menuText(deps));
     const choice = (await prompt("Pick an action (number, or q to quit): ")).trim().toLowerCase();
     if (choice === "q" || choice === "quit" || choice === "0") return 0;
     if (choice === "") continue;

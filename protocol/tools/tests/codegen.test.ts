@@ -94,25 +94,44 @@ test("MsgGameStart is a typed per-game discriminated union (not {[k]: any})", ()
   assert.match(body, /config:\s*TexasHoldemConfig \| null/);
 });
 
-test("MsgMatchCancelled is a per-reason discriminated union with opponent_disconnected + game/mode", () => {
-  // Codex round-3 P1-B: the schema used to enum only
-  // [confirmation_timeout, opponent_not_ready] and reject game/mode, but
-  // hub.go:1611 sends opponent_disconnected + game + mode on mid-match
-  // peer disconnect. If a future edit to the schema loses the
-  // opponent_disconnected branch or the game/mode fields, runtime
-  // type-checking will silently reject real server messages.
+test("MsgMatchCancelled covers every reason/action pair the server emits", () => {
+  // Codex round-3 P1-B established this guard: the schema used to enum only
+  // [confirmation_timeout, opponent_not_ready] and reject game/mode, while
+  // hub.go sends opponent_disconnected + game + mode on mid-match peer
+  // disconnect. Losing a branch means runtime validation silently rejects real
+  // server messages — the client's inbound handler reports the frame error and
+  // carries on, so the cancellation just disappears.
+  //
+  // Widened 2026-07-29 after finding two more reasons and both actions in the
+  // server that the schema had never listed. The reason set below is the real
+  // server surface; grep it against:
+  //   internal/hub/confirmation.go        confirmation_timeout / opponent_not_ready / capacity_changed
+  //   internal/hub/hub.go                 opponent_disconnected
+  //   internal/matchmaking/matchmaking.go maintenance
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "codegen-"));
   const out = path.join(outDir, "types.ts");
   assert.equal(run(["--out", out]).code, 0);
   const body = fs.readFileSync(out, "utf8");
 
   assert.match(body, /export interface MsgMatchCancelled/);
-  assert.match(body, /reason:\s*"confirmation_timeout"/);
-  assert.match(body, /reason:\s*"opponent_not_ready"/);
-  assert.match(body, /reason:\s*"opponent_disconnected"/);
+  const block = body.slice(body.indexOf("export interface MsgMatchCancelled"));
+  const decl = block.slice(0, block.indexOf("\n}\n") + 3);
+  for (const reason of [
+    "confirmation_timeout",
+    "opponent_not_ready",
+    "capacity_changed",
+    "maintenance",
+    "opponent_disconnected",
+  ]) {
+    assert.match(decl, new RegExp(`"${reason}"`), `missing reason ${reason}`);
+  }
+  // Either action must be expressible: the re-queue runs the full join gate,
+  // so a banned/capped agent gets removed_from_queue on ANY of these reasons.
+  assert.match(decl, /"removed_from_queue"/);
+  assert.match(decl, /"re_queued"/);
   // opponent_disconnected branch MUST carry game + mode as required.
   assert.match(
-    body,
-    /reason:\s*"opponent_disconnected"[\s\S]{0,400}game:\s*string[\s\S]{0,400}mode:\s*string/,
+    decl,
+    /reason:\s*"opponent_disconnected"[\s\S]{0,600}game:\s*string[\s\S]{0,600}mode:\s*string/,
   );
 });

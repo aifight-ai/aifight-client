@@ -30,11 +30,13 @@ import { suggestClosest, CONFIG_EXAMPLES } from "./config-shared.js";
 import { runConfigAdd, runConfigUpdate } from "./config-edit.js";
 import { runConfigModels } from "./config-models.js";
 import { runConfigRemove, runConfigClearKey } from "./config-manage.js";
+import { applyPendingBridgeRestart, withDeferredApply } from "./apply-settings.js";
+import { runTelegram } from "./telegram.js";
 
 // Every config subcommand, for the did-you-mean suggester (D14). Keep in sync
 // with the dispatch switch in runConfig.
 const KNOWN_CONFIG_SUBS: readonly string[] = [
-  "init", "validate", "test", "probe", "show", "explain", "set-key",
+  "llm", "init", "validate", "test", "probe", "show", "explain", "set-key",
   "route", "use", "review", "add", "update", "models", "remove", "clear-key",
 ];
 import { runBridgeSet, SETUP_WIZARD_CAP_MAX } from "./bridge-set.js";
@@ -50,6 +52,7 @@ import {
 
 const USAGE = [
   "usage: aifight config                                  interactive setup (LLM key, daily, claim, style)",
+  "       aifight config llm [agent-slug]                just the LLM step (provider, key, model, test)",
   "       aifight config add <profile> --protocol <claude|gpt|compat|gemini> (--env N|--file P|--key-stdin) [options]",
   "       aifight config update <profile> [--model N] [--base-url URL] [--stream …] [--max-tokens N] [options]",
   "       aifight config models [profile] [agent-slug]   list the models a profile's provider exposes",
@@ -84,6 +87,18 @@ export async function runConfig(args: HandlerArgs, env: HandlerEnv): Promise<num
   }
   const rest: HandlerArgs = { ...args, positional: args.positional.slice(1) };
   switch (sub) {
+    // `config llm` is the LLM step alone (pick provider / paste key / test /
+    // manage profiles). The bare-`aifight` panel routes here so choosing "LLM"
+    // does not open a whole second menu under the first one.
+    case "llm": {
+      if (args.jsonMode || process.stdin.isTTY !== true) {
+        env.stdout(USAGE + "\n");
+        return 0;
+      }
+      const slug = rest.positional[0] ?? "default";
+      await configureLLMInteractive(slug, createOnboardIO(env), env);
+      return 0;
+    }
     case "init":
       return runConfigInit(rest, env);
     case "add":
@@ -132,9 +147,10 @@ export async function runConfig(args: HandlerArgs, env: HandlerEnv): Promise<num
 // where the competitive-style files live. Each item delegates to the same
 // handlers the explicit subcommands use, so there is no duplicated logic.
 
-async function runConfigInteractive(env: HandlerEnv): Promise<number> {
+/** The `aifight config` hub loop. `injectedIO` is a test seam (no TTY needed). */
+export async function runConfigInteractive(env: HandlerEnv, injectedIO?: OnboardIO): Promise<number> {
   const slug = "default";
-  const io = createOnboardIO(env);
+  const io = injectedIO ?? createOnboardIO(env);
   env.stdout("AIFight config — set up your agent.\n");
 
   for (;;) {
@@ -143,38 +159,56 @@ async function runConfigInteractive(env: HandlerEnv): Promise<number> {
         "",
         "  1) LLM API key & model     pick a provider, paste your key, test it",
         "  2) Daily ranked matches    how many automatic games per day",
-        "  3) Claim your agent        show the Dashboard link that names it",
-        "  4) Strategy                where to edit your agent's strategy files",
-        "  5) Show current config",
+        "  3) Games to auto-play      which of the three this agent queues for",
+        "  4) Telegram                phone notifications & remote control",
+        "  5) Claim your agent        show the Dashboard link that names it",
+        "  6) Strategy                where to edit your agent's strategy files",
+        "  7) Show current config",
         "  q) Done",
+        "",
+        "  (Status, record, manual matches and updates live in the main panel:",
+        "   run `aifight` with no arguments.)",
         "",
       ].join("\n"),
     );
-    const choice = (await io.promptLine("  Choose [1-5, q]: ")).trim().toLowerCase();
+    const choice = (await io.promptLine("  Choose [1-7, q]: ")).trim().toLowerCase();
     if (choice === "" || choice === "q" || choice === "quit" || choice === "done") {
+      // Several items write bridge.json, which a running bridge only re-reads on
+      // restart. Offer that once, here, instead of after every single edit.
+      await applyPendingBridgeRestart(env);
       env.stdout("Done. Run `aifight config` any time to change these.\n");
       return 0;
     }
     try {
-      switch (choice) {
-        case "1":
-          await configureLLMInteractive(slug, io, env);
-          break;
-        case "2":
-          await configureDailyInteractive(io, env);
-          break;
-        case "3":
-          showClaim(env);
-          break;
-        case "4":
-          showStyle(slug, env);
-          break;
-        case "5":
-          await runConfigShow({ positional: [slug], flags: {}, jsonMode: false }, env);
-          break;
-        default:
-          env.stdout("  Please enter 1, 2, 3, 4, 5, or q.\n");
-      }
+      // Deferred: the write handlers below each end in their own restart offer,
+      // and being asked after every edit is the nagging this replaces.
+      await withDeferredApply(async () => {
+        switch (choice) {
+          case "1":
+            await configureLLMInteractive(slug, io, env);
+            break;
+          case "2":
+            await configureDailyInteractive(io, env);
+            break;
+          case "3":
+            await configureGamesInteractive(io, env);
+            break;
+          case "4":
+            await runTelegram({ positional: [], flags: {}, jsonMode: false }, env);
+            break;
+          case "5":
+            showClaim(env);
+            break;
+          case "6":
+            showStyle(slug, env);
+            break;
+          case "7":
+            await runConfigShow({ positional: [slug], flags: {}, jsonMode: false }, env);
+            break;
+          default:
+            env.stdout("  Please enter 1-7 or q.\n");
+        }
+      });
     } catch (e) {
       env.stdout(`  Could not complete that step: ${e instanceof Error ? e.message : String(e)}\n`);
     }
@@ -451,6 +485,26 @@ async function configureDailyInteractive(io: OnboardIO, env: HandlerEnv): Promis
   }
   // Delegate to `set daily`: it owns the >10 confirmation and the platform sync.
   await runBridgeSet({ positional: ["daily", raw], flags: {}, jsonMode: false }, env);
+}
+
+async function configureGamesInteractive(io: OnboardIO, env: HandlerEnv): Promise<void> {
+  let current: readonly string[] | undefined;
+  try {
+    current = readBridgeConfig().autoGames;
+  } catch {
+    env.stdout("  No agent on this machine yet. Run `aifight setup` first, then pick games.\n");
+    return;
+  }
+  const shown = current === undefined || current.length === 0 ? "all games" : current.join(", ");
+  const raw = (await io.promptLine(
+    `  Games to auto-play, comma-separated [keep ${shown}; options: ${SUPPORTED_GAMES.join(", ")}]: `,
+  )).trim();
+  if (raw === "") {
+    env.stdout(`  Kept ${shown}.\n`);
+    return;
+  }
+  // Delegate to `set game`: it owns validation and the platform sync.
+  await runBridgeSet({ positional: ["game", raw], flags: {}, jsonMode: false }, env);
 }
 
 function showClaim(env: HandlerEnv): void {

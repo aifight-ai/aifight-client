@@ -8,6 +8,7 @@ import {
 } from "../../bridge/daily-policy";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, SUPPORTED_GAMES, UsageError, expectArity, isSupportedGame } from "../shared";
+import { applyPendingBridgeRestart } from "./apply-settings";
 import { createOnboardIO } from "./onboard-io";
 
 // Re-exported for the CLI surfaces that already import them from here.
@@ -89,6 +90,10 @@ async function setDaily(raw: string, args: HandlerArgs, env: HandlerEnv): Promis
     env.stdout(`Automatic ranked matches set to ${limit} per day.\n`);
   }
   env.stdout("AIFight platform policy synced.\n");
+  // The bridge read autoDailyLimit at startup and never looks again, so the new
+  // cap is inert until it restarts. Offer to do it here instead of leaving the
+  // user to discover that on their own.
+  await applyPendingBridgeRestart(env);
   return 0;
 }
 
@@ -153,7 +158,7 @@ export async function onboardDailyCap(env: HandlerEnv): Promise<void> {
   }
 }
 
-function setGames(raw: string, args: HandlerArgs, env: HandlerEnv): number {
+async function setGames(raw: string, args: HandlerArgs, env: HandlerEnv): Promise<number> {
   const games = raw.split(",").map((g) => g.trim()).filter((g) => g.length > 0);
   if (games.length === 0) {
     throw new UsageError("at least one game is required", USAGE);
@@ -179,5 +184,6 @@ function setGames(raw: string, args: HandlerArgs, env: HandlerEnv): number {
     return 0;
   }
   env.stdout(`Automatic match games set to: ${unique.join(", ")}\n`);
+  await applyPendingBridgeRestart(env);
   return 0;
 }

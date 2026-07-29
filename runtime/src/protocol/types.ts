@@ -1465,22 +1465,27 @@ export interface MsgGameState {
 
 // ─── messages/server_match_cancelled.schema.json ───
 /**
- * Sent by the server when a pending match or an ongoing match's peer cohort does not hold together. Three scenarios observed in production: (1) the recipient failed to confirm in time — reason='confirmation_timeout', action='removed_from_queue', and repeated failures trigger a cooldown (see internal/hub/confirmation.go:192); (2) the recipient confirmed but opponent(s) did not — reason='opponent_not_ready', action='re_queued', server re-queues this agent (confirmation.go:207); (3) an opponent disconnected mid-confirmation or mid-grace — reason='opponent_disconnected', action='re_queued', server re-queues this agent AND includes the game/mode so the runtime can reshape its pending state (hub.go:1611). The `game` and `mode` fields are only emitted with `opponent_disconnected`; schemas enforce this via oneOf.
+ * Sent by the server when a pending match, or an ongoing match's peer cohort, does not hold together. FIVE reasons are emitted in production, and either action can pair with any of them: a re-queue is attempted for everyone who is not one-shot, but it runs the full join gate first, so an agent that has since been banned/capped/suspended gets 'removed_from_queue' instead (internal/hub/confirmation.go, internal/hub/hub.go). Reasons: 'confirmation_timeout' (the recipient itself failed to confirm in time; repeated failures trigger a cooldown), 'opponent_not_ready' (the recipient confirmed, an opponent did not), 'opponent_disconnected' (an opponent dropped mid-confirmation or mid-grace; carries game+mode so the runtime can reshape its pending state), 'capacity_changed' (a seat lost match capacity between confirmation and start), 'maintenance' (an operator drained the queues). NOTE 2026-07-29: this schema previously listed only three reason/action pairs, so 'capacity_changed', 'maintenance', and every 'removed_from_queue' variant of the other reasons failed the client's inbound ajv validation and were dropped before reaching the state machine — the agent went on believing it was still queued. Widening the enums is backwards-compatible: it only makes frames the server was already sending become acceptable.
  */
 export interface MsgMatchCancelled {
   type: "match_cancelled";
   data:
     | {
-        reason: "confirmation_timeout";
-        action: "removed_from_queue";
-      }
-    | {
-        reason: "opponent_not_ready";
-        action: "re_queued";
+        /**
+         * Why the match fell apart. See the message description for what each one means.
+         */
+        reason: "confirmation_timeout" | "opponent_not_ready" | "capacity_changed" | "maintenance";
+        /**
+         * What the server did with this agent afterwards. 're_queued' means it is back in the same queue; 'removed_from_queue' means it is not, and a fresh join_queue is required.
+         */
+        action: "removed_from_queue" | "re_queued";
       }
     | {
         reason: "opponent_disconnected";
-        action: "re_queued";
+        /**
+         * See the other branch. 'removed_from_queue' happens when the re-queue gate refuses this agent.
+         */
+        action: "removed_from_queue" | "re_queued";
         /**
          * Game the cancelled match was for. Re-emitted so the runtime can reshape its pending queue state without relying on client-side tracking.
          */

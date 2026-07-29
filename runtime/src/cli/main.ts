@@ -51,6 +51,7 @@ import { runAcceptTerms } from "./commands/accept-terms";
 import { runPrices } from "./commands/prices";
 import { runRecord } from "./commands/record";
 import { runReview } from "./commands/review";
+import { resolveClaimState } from "./commands/claim-state";
 import { runInteractiveMenu } from "./commands/menu";
 import { createOnboardIO } from "./commands/onboard-io";
 import { readBridgeConfig } from "../bridge/config";
@@ -201,6 +202,10 @@ export async function run(
       } catch {
         configured = false;
       }
+      // Resolved once, before the panel opens: an unclaimed agent cannot play at
+      // all, so the banner is worth one short request (offline-safe — see
+      // claim-state.ts).
+      const claim = configured ? await resolveClaimState(env.fetchImpl) : undefined;
       try {
         return await runInteractiveMenu({
           env,
@@ -208,6 +213,7 @@ export async function run(
           dispatch: (c, positional) => dispatch(c, { positional, flags: {}, jsonMode: false }, env),
           showHelp: () => env.stdout(globalUsage() + "\n"),
           configured,
+          ...(claim !== undefined ? { claim } : {}),
         });
       } catch (e) {
         return mapErrorToExitCode(e, env, jsonMode);

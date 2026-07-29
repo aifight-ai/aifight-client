@@ -6,13 +6,11 @@
 // nothing about it.
 //
 // Everything here edits bridge.json. The bridge does not watch that file, so a
-// change made while it is running takes effect on the next restart — `status`
-// says so out loud rather than letting the user wonder.
-
-import fs from "node:fs";
+// change made while it is running is inert until it restarts. Every writing
+// path therefore ends in applyPendingBridgeRestart(), which offers to do that
+// restart on the spot; read-only `status` just says a restart is pending.
 
 import {
-  getBridgeConfigPath,
   readBridgeConfig,
   writeBridgeConfig,
   type BridgeConfig,
@@ -35,9 +33,10 @@ import {
   isTelegramSettingKey,
   parseMuteSpec,
 } from "../../notify/telegram/settings";
-import { portFilePath } from "../runtime-files";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError, expectArity } from "../shared";
+import { applyPendingBridgeRestart, bridgeRestartPending, withDeferredApply } from "./apply-settings";
+import type { OnboardIO } from "./onboard-llm";
 import { createOnboardIO } from "./onboard-io";
 
 const USAGE = [
@@ -60,9 +59,16 @@ export async function runTelegram(args: HandlerArgs, env: HandlerEnv): Promise<n
 
   switch (sub) {
     // Bare `aifight telegram` is the interactive menu's entry point: set it up
-    // if it isn't, otherwise show where things stand.
+    // if it isn't, otherwise open the panel.
+    //
+    // It used to print status and stop there, which meant a linked user had NO
+    // way to change anything from the menu — the owner went round the loop four
+    // times on a fresh VPS looking for the edit screen (2026-07-29). Scripts and
+    // --json keep the old status-only behaviour; only a terminal gets the panel.
     case "":
-      return isLinked() ? telegramStatus(rest, env) : telegramSetup(rest, env);
+      if (!isLinked()) return telegramSetup(rest, env);
+      if (args.jsonMode || process.stdin.isTTY !== true) return telegramStatus(rest, env);
+      return telegramPanel(rest, env);
     case "status":
       return telegramStatus(rest, env);
     case "setup":
@@ -79,6 +85,177 @@ export async function runTelegram(args: HandlerArgs, env: HandlerEnv): Promise<n
       return telegramUninstall(rest, env);
     default:
       throw new UsageError(`unknown telegram subcommand '${sub}'`, USAGE);
+  }
+}
+
+// ── interactive panel (bare `aifight telegram` on a TTY, already linked) ──
+//
+// Everything here routes through the same subcommand handlers the flags use, so
+// there is one implementation of each change and the panel adds no new rules.
+
+/** Only the two prompts the panel actually asks for — injected so its control
+ *  flow is unit-testable without a real terminal (same shape as menu.ts). */
+export type PanelIO = Pick<OnboardIO, "promptLine" | "promptYesNo">;
+
+interface PanelItem {
+  readonly key: string;
+  readonly label: (section: BridgeTelegramConfig) => string;
+  readonly run: (env: HandlerEnv, io: PanelIO) => Promise<void>;
+}
+
+/** Ask for one of a fixed set of values, re-asking until it is one of them. */
+async function pickValue(
+  io: PanelIO,
+  env: HandlerEnv,
+  prompt: string,
+  allowed: readonly string[],
+): Promise<string | undefined> {
+  for (;;) {
+    const raw = (await io.promptLine(`${prompt} [${allowed.join(" / ")}, b = back]: `)).trim().toLowerCase();
+    if (raw === "" || raw === "b" || raw === "back") return undefined;
+    if (allowed.includes(raw)) return raw;
+    env.stdout(`  Not one of: ${allowed.join(", ")}\n`);
+  }
+}
+
+async function setSetting(env: HandlerEnv, key: string, value: string): Promise<void> {
+  await telegramSet({ positional: [key, value], flags: {}, jsonMode: false }, env);
+}
+
+const PANEL_ITEMS: readonly PanelItem[] = [
+  {
+    key: "1",
+    label: (s) => `Match results          ${s.results}`,
+    run: async (env, io) => {
+      const v = await pickValue(io, env, "  Send match results", ["per_match", "daily", "both", "off"]);
+      if (v !== undefined) await setSetting(env, "results", v);
+    },
+  },
+  {
+    key: "2",
+    label: (s) => `Daily digest time      ${s.digestAt ?? TELEGRAM_DEFAULT_DIGEST_AT}`,
+    run: async (env, io) => {
+      const v = (await io.promptLine("  Digest time, 24-hour local (HH:MM, b = back): ")).trim();
+      if (v === "" || v.toLowerCase() === "b") return;
+      await setSetting(env, "digest_at", v);
+    },
+  },
+  {
+    key: "3",
+    label: (s) => `Alerts                 ${onOff(s.alerts)}`,
+    run: async (env, io) => {
+      const v = await pickValue(io, env, "  Alerts (broken key, disconnects, forfeits)", ["on", "off"]);
+      if (v !== undefined) await setSetting(env, "alerts", v);
+    },
+  },
+  {
+    key: "4",
+    label: (s) => `Challenge events       ${onOff(s.challengeEvents)}`,
+    run: async (env, io) => {
+      const v = await pickValue(io, env, "  Challenge events", ["on", "off"]);
+      if (v !== undefined) await setSetting(env, "challenge_events", v);
+    },
+  },
+  {
+    key: "5",
+    label: (s) => `Remote control         ${onOff(s.control)}`,
+    run: async (env, io) => {
+      const v = await pickValue(io, env, "  Let the chat control this agent", ["on", "off"]);
+      if (v !== undefined) await setSetting(env, "control", v);
+    },
+  },
+  {
+    key: "6",
+    label: (s) => {
+      const locale = s.locale ?? "auto";
+      return `Language               ${locale === "auto" ? `auto (${resolveNotifyLocale(undefined)})` : locale}`;
+    },
+    run: async (env, io) => {
+      const v = await pickValue(io, env, "  Message language", ["zh", "en", "auto"]);
+      if (v !== undefined) await setSetting(env, "locale", v);
+    },
+  },
+  {
+    key: "7",
+    label: (s) =>
+      s.mutedUntil !== undefined && s.mutedUntil > Date.now()
+        ? `Mute                   muted until ${new Date(s.mutedUntil).toLocaleString()}`
+        : "Mute                   off",
+    run: async (env, io) => {
+      const v = await pickValue(io, env, "  Mute notifications (alerts always go through)", ["1h", "today", "off"]);
+      if (v !== undefined) await telegramMute({ positional: [v], flags: {}, jsonMode: false }, env);
+    },
+  },
+  {
+    key: "8",
+    label: () => "Send a test message",
+    run: async (env) => {
+      await telegramTest({ positional: [], flags: {}, jsonMode: false }, env);
+    },
+  },
+  {
+    key: "9",
+    label: () => "Pair a different chat / phone",
+    run: async (env) => {
+      await telegramSetup({ positional: [], flags: {}, jsonMode: false }, env);
+    },
+  },
+  {
+    key: "10",
+    label: () => "Unlink this chat",
+    run: async (env, io) => {
+      if (!(await io.promptYesNo("  Stop sending to this chat?", false))) {
+        env.stdout("  Left as is.\n");
+        return;
+      }
+      await telegramUnlink({ positional: [], flags: {}, jsonMode: false }, env);
+    },
+  },
+];
+
+export async function telegramPanel(args: HandlerArgs, env: HandlerEnv, injectedIO?: PanelIO): Promise<number> {
+  expectArity(args, 0, 0, USAGE);
+  const io = injectedIO ?? createOnboardIO(env);
+
+  for (;;) {
+    const config = readOptionalBridgeConfig();
+    const section = config?.telegram;
+    if (section === undefined) {
+      // Unlinked from the panel (item 10) or from the chat itself.
+      env.stdout("\nTelegram is no longer linked on this machine.\n");
+      return 0;
+    }
+
+    env.stdout("\nAIFight Telegram companion\n\n");
+    env.stdout(`  Linked to chat ${section.chatId}`);
+    if (config?.telegramBotToken !== undefined) {
+      env.stdout(`  ·  bot …${tokenTailOf(config.telegramBotToken)}`);
+    }
+    env.stdout("\n\n");
+    for (const item of PANEL_ITEMS) {
+      env.stdout(`  ${item.key.padStart(2)}) ${item.label(section)}\n`);
+    }
+    env.stdout("   q) Done\n\n");
+
+    const choice = (await io.promptLine("  Choose [1-10, q]: ")).trim().toLowerCase();
+    if (choice === "" || choice === "q" || choice === "quit" || choice === "done") {
+      // One last chance to make pending edits real before dropping out.
+      await applyPendingBridgeRestart(env, {});
+      return 0;
+    }
+    const item = PANEL_ITEMS.find((i) => i.key === choice);
+    if (item === undefined) {
+      env.stdout("  Please enter 1-10 or q.\n");
+      continue;
+    }
+    try {
+      // Deferred: the handlers below each end in an apply offer, and asking
+      // after every single edit is the nagging this whole thing set out to fix.
+      // One offer, on the way out (see the `q` branch above).
+      await withDeferredApply(() => item.run(env, io));
+    } catch (cause) {
+      env.stdout(`  Could not complete that: ${describeTelegramError(cause)}\n`);
+    }
   }
 }
 
@@ -321,7 +498,7 @@ async function telegramSetup(args: HandlerArgs, env: HandlerEnv): Promise<number
   env.stdout(`\nLinked to chat ${outcome.chatId}. ${botLabel} will send match results and alerts there.\n`);
   for (const line of describeTelegramSettings(section)) env.stdout(`${line}\n`);
   env.stdout("Change any of it with `aifight telegram set <key> <value>`, or from the chat itself.\n");
-  printRestartHintIfRunning(env);
+  await applyPendingBridgeRestart(env, { jsonMode: args.jsonMode });
   return 0;
 }
 
@@ -404,7 +581,7 @@ async function telegramTest(args: HandlerArgs, env: HandlerEnv): Promise<number>
 
 // ── set ──────────────────────────────────────────────────────────────
 
-function telegramSet(args: HandlerArgs, env: HandlerEnv): number {
+async function telegramSet(args: HandlerArgs, env: HandlerEnv): Promise<number> {
   expectArity(args, 2, 2, USAGE);
   const key = args.positional[0]!;
   const rawValue = args.positional[1]!;
@@ -429,13 +606,13 @@ function telegramSet(args: HandlerArgs, env: HandlerEnv): number {
     return 0;
   }
   env.stdout(`Telegram ${outcome.summary}\n`);
-  printRestartHintIfRunning(env);
+  await applyPendingBridgeRestart(env, { jsonMode: args.jsonMode });
   return 0;
 }
 
 // ── mute ─────────────────────────────────────────────────────────────
 
-function telegramMute(args: HandlerArgs, env: HandlerEnv): number {
+async function telegramMute(args: HandlerArgs, env: HandlerEnv): Promise<number> {
   expectArity(args, 1, 1, USAGE);
   const outcome = parseMuteSpec(args.positional[0]!, Date.now());
   if (!outcome.ok) {
@@ -459,7 +636,7 @@ function telegramMute(args: HandlerArgs, env: HandlerEnv): number {
     env.stdout(`Telegram notifications muted until ${new Date(outcome.mutedUntil).toLocaleString()}.\n`);
     env.stdout("Alerts (broken model key, disconnects, forfeits) are never muted.\n");
   }
-  printRestartHintIfRunning(env);
+  await applyPendingBridgeRestart(env, { jsonMode: args.jsonMode });
   return 0;
 }
 
@@ -470,7 +647,7 @@ function dropMute(section: BridgeTelegramConfig): BridgeTelegramConfig {
 
 // ── unlink / uninstall ───────────────────────────────────────────────
 
-function telegramUnlink(args: HandlerArgs, env: HandlerEnv): number {
+async function telegramUnlink(args: HandlerArgs, env: HandlerEnv): Promise<number> {
   expectArity(args, 0, 0, USAGE);
   const { config } = requireLinked();
   const { telegram: _dropped, ...rest } = config;
@@ -481,7 +658,7 @@ function telegramUnlink(args: HandlerArgs, env: HandlerEnv): number {
     return 0;
   }
   env.stdout("Telegram chat unlinked. The bot token is kept, so `aifight telegram setup` can re-pair without BotFather.\n");
-  printRestartHintIfRunning(env);
+  await applyPendingBridgeRestart(env, { jsonMode: args.jsonMode });
   return 0;
 }
 
@@ -521,7 +698,7 @@ async function telegramUninstall(args: HandlerArgs, env: HandlerEnv): Promise<nu
     return 0;
   }
   env.stdout("Telegram companion removed: bot token and settings deleted from this machine.\n");
-  printRestartHintIfRunning(env);
+  await applyPendingBridgeRestart(env, { jsonMode: args.jsonMode });
   return 0;
 }
 
@@ -604,23 +781,4 @@ function tokenTailOf(token: string): string {
   return token.slice(-4);
 }
 
-/**
- * Has bridge.json changed since the running bridge read it? The port file is
- * written when the bridge comes up and removed when it stops, so its mtime is
- * a good-enough "started at". Best effort by design: a missing file just means
- * "no bridge running here", which is the safe answer.
- */
-function bridgeRestartPending(): boolean {
-  try {
-    const started = fs.statSync(portFilePath()).mtimeMs;
-    return fs.statSync(getBridgeConfigPath()).mtimeMs > started;
-  } catch {
-    return false;
-  }
-}
 
-function printRestartHintIfRunning(env: HandlerEnv): void {
-  if (bridgeRestartPending()) {
-    env.stdout("The bridge is running with the previous settings — run `aifight service restart` to apply this.\n");
-  }
-}

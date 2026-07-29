@@ -188,6 +188,7 @@ aifight rename <name>
 aifight challenge <texas_holdem|liars_dice|coup>
 aifight accept <url_or_token>
 aifight accept <challenge_url_or_token>
+aifight config llm [agent-slug]
 aifight config init [agent-slug]
 aifight config validate [agent-slug]
 aifight config test [agent-slug] [--profile <name>]
