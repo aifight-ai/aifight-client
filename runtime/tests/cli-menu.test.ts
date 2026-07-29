@@ -8,9 +8,11 @@ import { runInteractiveMenu, type MenuDeps } from "../src/cli/commands/menu";
 import type { HandlerEnv } from "../src/cli/shared";
 
 // The panel reads (and, on the way out, may offer to restart) the local bridge.
-// Without an isolated home these tests run against the developer's REAL
-// ~/.aifight/runtime — which is how a worker started dying mid-run once the
-// settings items moved in here (2026-07-29). Every test gets its own empty home.
+// Without an isolated home these tests run against the developer's REAL runtime
+// directory — which is how a worker started dying mid-run once the settings
+// items moved in here (2026-07-29). Every test gets its own empty home.
+// (Naming that directory literally here would trip build.sh's step 1.6 guard,
+// which greps tests/ for it — the guard is exactly why this block exists.)
 let prevHome: string | undefined;
 let tmpDir: string | null = null;
 
