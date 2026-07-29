@@ -190,31 +190,40 @@ export async function run(
     return printSubcommandHelp(parsed.positional, env, jsonMode);
   }
 
+  // The one interactive panel. Bare `aifight` opens it directly; bare
+  // `aifight config` reaches it through env.openMainPanel (there is no second
+  // menu anymore — see menu.ts). Defined here because it needs `dispatch`,
+  // which cannot be imported by a handler without a cycle.
+  const openMainPanel = async (): Promise<number> => {
+    let configured = true;
+    try {
+      readBridgeConfig();
+    } catch {
+      configured = false;
+    }
+    // Resolved once, before the panel opens: an unclaimed agent cannot play at
+    // all, so the banner is worth one short request (offline-safe — see
+    // claim-state.ts).
+    const claim = configured ? await resolveClaimState(env.fetchImpl) : undefined;
+    return runInteractiveMenu({
+      env: panelEnv,
+      prompt: createOnboardIO(env).promptLine,
+      dispatch: (c, positional) => dispatch(c, { positional, flags: {}, jsonMode: false }, panelEnv),
+      showHelp: () => env.stdout(globalUsage() + "\n"),
+      configured,
+      ...(claim !== undefined ? { claim } : {}),
+    });
+  };
+  const panelEnv: HandlerEnv = { ...env, openMainPanel };
+
   if (parsed.positional.length === 0) {
-    // Bare `aifight` in an interactive terminal → the "adjust later" control
-    // panel (§6). Anything non-interactive — scripts, the VPS service, CI, a
-    // piped/redirected stream, or --json — keeps the scriptable behavior and
-    // prints grouped help, so headless usage is unchanged.
+    // Bare `aifight` in an interactive terminal → the panel (§6). Anything
+    // non-interactive — scripts, the VPS service, CI, a piped/redirected
+    // stream, or --json — keeps the scriptable behavior and prints grouped
+    // help, so headless usage is unchanged.
     if (!jsonMode && process.stdin.isTTY === true && process.stdout.isTTY === true) {
-      let configured = true;
       try {
-        readBridgeConfig();
-      } catch {
-        configured = false;
-      }
-      // Resolved once, before the panel opens: an unclaimed agent cannot play at
-      // all, so the banner is worth one short request (offline-safe — see
-      // claim-state.ts).
-      const claim = configured ? await resolveClaimState(env.fetchImpl) : undefined;
-      try {
-        return await runInteractiveMenu({
-          env,
-          prompt: createOnboardIO(env).promptLine,
-          dispatch: (c, positional) => dispatch(c, { positional, flags: {}, jsonMode: false }, env),
-          showHelp: () => env.stdout(globalUsage() + "\n"),
-          configured,
-          ...(claim !== undefined ? { claim } : {}),
-        });
+        return await openMainPanel();
       } catch (e) {
         return mapErrorToExitCode(e, env, jsonMode);
       }
@@ -230,7 +239,9 @@ export async function run(
   };
 
   try {
-    return await dispatch(cmd, subArgs, env);
+    // panelEnv is env plus the panel opener, so `aifight config` can open the
+    // same menu. Every other handler sees an env that is otherwise identical.
+    return await dispatch(cmd, subArgs, panelEnv);
   } catch (e) {
     return mapErrorToExitCode(e, env, jsonMode);
   }

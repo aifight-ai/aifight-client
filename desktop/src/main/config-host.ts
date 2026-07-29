@@ -350,6 +350,24 @@ export function modelCapabilitiesForFamily(input: {
 }
 
 /**
+ * True when both URLs address the same origin (scheme + host + port). Origin is
+ * the right granularity: it is exactly who receives the key on the wire, while
+ * the path ("/v1" vs "/v1/") does not change that. An unparseable URL on either
+ * side is never a match.
+ */
+function sameEndpointOrigin(a: string, b: string): boolean {
+  const originOf = (u: string): string | null => {
+    try {
+      return new URL(u).origin.toLowerCase();
+    } catch {
+      return null;
+    }
+  };
+  const left = originOf(a);
+  return left !== null && left === originOf(b);
+}
+
+/**
  * Ask the provider which models exist, using the key pasted in the form (not yet
  * saved) or the profile's stored key. Best-effort — null means "no list, fall back
  * to seeds"; it never throws into the renderer.
@@ -368,8 +386,29 @@ export async function discoverModelsForFamily(
   let apiKey = typeof input.apiKey === "string" ? input.apiKey.trim() : "";
   if (apiKey === "" && typeof input.profileId === "string" && input.profileId !== "") {
     const config = await readConfigOptional(slug);
-    const ref = config?.profiles[input.profileId]?.apiKeyRef;
-    if (ref) {
+    const profile = config?.profiles[input.profileId];
+    const ref = profile?.apiKeyRef;
+    if (profile && ref) {
+      // SECURITY (codex-security 2026-07-29 C05): a STORED key only goes to the
+      // endpoint its own profile is configured for.
+      //
+      // Both baseURL and profileId arrive from the renderer, so anything that can
+      // send IPC could name a saved profile and any host it likes, and the main
+      // process would helpfully decrypt that profile's key and post it there.
+      // fetchNoFollow only blocks the redirects AFTER the first hop — the first
+      // hop is the leak. (Renderer isolation is hard: contextIsolation, sandbox,
+      // no nodeIntegration, loadFile, will-navigate + window-open interception.
+      // So this is depth, not a live hole. It also costs nothing.)
+      //
+      // A key typed into the FORM is untouched by this — the user is testing an
+      // endpoint they just named, and pointing their own key wherever they want
+      // is the whole feature. Only the reuse of a key they cannot see is pinned.
+      const storedBase = typeof profile.baseURL === "string" ? profile.baseURL.trim() : "";
+      const allowedBase =
+        storedBase !== ""
+          ? storedBase
+          : (resolveModelCapabilities(profile.protocol as Protocol, profile.model).defaultBaseURL ?? "");
+      if (!sameEndpointOrigin(baseURL, allowedBase)) return null;
       try {
         apiKey = await resolveSecret(ref);
       } catch {

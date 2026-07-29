@@ -28,6 +28,21 @@ export interface HandlerEnv {
   readonly baseTimeoutMs?: number;
   /** Optional bridge service manager overrides for tests and controlled installs. */
   readonly bridgeService?: BridgeServiceDeps;
+  /**
+   * Opens the one interactive panel (the same one bare `aifight` shows).
+   *
+   * There is exactly ONE menu in this CLI. `aifight config` used to have a
+   * second, narrower one, and choosing "LLM" in the main panel dropped you into
+   * it — the owner walked a fresh VPS install and asked why there were two
+   * different menus (2026-07-29). Now both entry points open this.
+   *
+   * It lives on the env rather than being imported because the panel needs the
+   * dispatcher, which lives in main.ts, which imports every handler — so a
+   * handler importing it back would be a cycle. main.ts wires it in; anything
+   * non-interactive (tests, --json, piped stdin) leaves it undefined and the
+   * handler falls back to printing usage.
+   */
+  readonly openMainPanel?: () => Promise<number>;
 }
 
 export interface HandlerArgs {

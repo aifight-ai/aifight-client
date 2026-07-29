@@ -51,7 +51,7 @@ import {
 } from "../../profile/secret-ref.js";
 
 const USAGE = [
-  "usage: aifight config                                  interactive setup (LLM key, daily, claim, style)",
+  "usage: aifight config                                  opens the same panel as bare `aifight`",
   "       aifight config llm [agent-slug]                just the LLM step (provider, key, model, test)",
   "       aifight config add <profile> --protocol <claude|gpt|compat|gemini> (--env N|--file P|--key-stdin) [options]",
   "       aifight config update <profile> [--model N] [--base-url URL] [--stream …] [--max-tokens N] [options]",
@@ -74,14 +74,21 @@ const USAGE = [
   ...CONFIG_EXAMPLES,
 ].join("\n");
 
+/** Just the one-line prompt. The panel injects its own reader, and these two
+ *  steps never need a hidden prompt, a probe, or key storage. */
+type PromptOnlyIO = Pick<OnboardIO, "promptLine">;
+
 export async function runConfig(args: HandlerArgs, env: HandlerEnv): Promise<number> {
   const sub = args.positional[0];
   if (sub === undefined) {
-    // Bare `aifight config` in a terminal → guided interactive setup hub.
-    if (!args.jsonMode && process.stdin.isTTY === true) {
-      return runConfigInteractive(env);
+    // Bare `aifight config` in a terminal opens THE panel — the same one bare
+    // `aifight` shows. It used to open a second, narrower menu of its own, which
+    // is what made the CLI feel like it had two different front doors
+    // (owner, walking a fresh VPS install, 2026-07-29).
+    if (!args.jsonMode && process.stdin.isTTY === true && env.openMainPanel !== undefined) {
+      return env.openMainPanel();
     }
-    // Non-interactive (piped input, CI, --json): print usage, don't prompt.
+    // Non-interactive (piped input, CI, --json), or no panel wired: print usage.
     env.stdout(USAGE + "\n");
     return 0;
   }
@@ -140,82 +147,8 @@ export async function runConfig(args: HandlerArgs, env: HandlerEnv): Promise<num
   }
 }
 
-// ─── interactive hub (bare `aifight config` on a TTY) ─────────────────
-//
-// One friendly entry point that walks through everything a player needs:
-// connecting & testing an LLM, the daily match cadence, the claim link, and
-// where the competitive-style files live. Each item delegates to the same
-// handlers the explicit subcommands use, so there is no duplicated logic.
-
-/** The `aifight config` hub loop. `injectedIO` is a test seam (no TTY needed). */
-export async function runConfigInteractive(env: HandlerEnv, injectedIO?: OnboardIO): Promise<number> {
-  const slug = "default";
-  const io = injectedIO ?? createOnboardIO(env);
-  env.stdout("AIFight config — set up your agent.\n");
-
-  for (;;) {
-    env.stdout(
-      [
-        "",
-        "  1) LLM API key & model     pick a provider, paste your key, test it",
-        "  2) Daily ranked matches    how many automatic games per day",
-        "  3) Games to auto-play      which of the three this agent queues for",
-        "  4) Telegram                phone notifications & remote control",
-        "  5) Claim your agent        show the Dashboard link that names it",
-        "  6) Strategy                where to edit your agent's strategy files",
-        "  7) Show current config",
-        "  q) Done",
-        "",
-        "  (Status, record, manual matches and updates live in the main panel:",
-        "   run `aifight` with no arguments.)",
-        "",
-      ].join("\n"),
-    );
-    const choice = (await io.promptLine("  Choose [1-7, q]: ")).trim().toLowerCase();
-    if (choice === "" || choice === "q" || choice === "quit" || choice === "done") {
-      // Several items write bridge.json, which a running bridge only re-reads on
-      // restart. Offer that once, here, instead of after every single edit.
-      await applyPendingBridgeRestart(env);
-      env.stdout("Done. Run `aifight config` any time to change these.\n");
-      return 0;
-    }
-    try {
-      // Deferred: the write handlers below each end in their own restart offer,
-      // and being asked after every edit is the nagging this replaces.
-      await withDeferredApply(async () => {
-        switch (choice) {
-          case "1":
-            await configureLLMInteractive(slug, io, env);
-            break;
-          case "2":
-            await configureDailyInteractive(io, env);
-            break;
-          case "3":
-            await configureGamesInteractive(io, env);
-            break;
-          case "4":
-            await runTelegram({ positional: [], flags: {}, jsonMode: false }, env);
-            break;
-          case "5":
-            showClaim(env);
-            break;
-          case "6":
-            showStyle(slug, env);
-            break;
-          case "7":
-            await runConfigShow({ positional: [slug], flags: {}, jsonMode: false }, env);
-            break;
-          default:
-            env.stdout("  Please enter 1-7 or q.\n");
-        }
-      });
-    } catch (e) {
-      env.stdout(`  Could not complete that step: ${e instanceof Error ? e.message : String(e)}\n`);
-    }
-  }
-}
-
-/** Interactive LLM step of the config hub. Exported for tests (scripted IO). */
+/** The LLM step, shared by `aifight config llm` and the panel's LLM item.
+ *  `io` is injected so tests drive it without a TTY. */
 export async function configureLLMInteractive(slug: string, io: OnboardIO, env: HandlerEnv): Promise<void> {
   // Ensure the agent files exist, quietly. This never reads the environment.
   await runConfigInit({ positional: [slug], flags: {}, jsonMode: false }, { ...env, stdout: () => {} });
@@ -465,7 +398,7 @@ function printActionError(e: unknown, env: HandlerEnv): void {
   }
 }
 
-async function configureDailyInteractive(io: OnboardIO, env: HandlerEnv): Promise<void> {
+export async function configureDailyInteractive(io: PromptOnlyIO, env: HandlerEnv): Promise<void> {
   let current: number | undefined;
   try {
     current = readBridgeConfig().autoDailyLimit;
@@ -487,7 +420,7 @@ async function configureDailyInteractive(io: OnboardIO, env: HandlerEnv): Promis
   await runBridgeSet({ positional: ["daily", raw], flags: {}, jsonMode: false }, env);
 }
 
-async function configureGamesInteractive(io: OnboardIO, env: HandlerEnv): Promise<void> {
+export async function configureGamesInteractive(io: PromptOnlyIO, env: HandlerEnv): Promise<void> {
   let current: readonly string[] | undefined;
   try {
     current = readBridgeConfig().autoGames;

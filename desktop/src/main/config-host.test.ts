@@ -587,3 +587,160 @@ describe("discoverModelsForFamily input hygiene", () => {
     expect(await discoverModelsForFamily("default", { family: "anthropic", model: "claude-opus-5" })).toBeNull();
   });
 });
+
+// codex-security 2026-07-29 C05 — a STORED key only travels to the endpoint its
+// own profile is configured for.
+//
+// Both `baseURL` and `profileId` come from the renderer. Anything able to send
+// that IPC could name a saved profile plus any host it liked, and the main
+// process would decrypt that profile's key and POST it there. fetchNoFollow only
+// blocks the redirects AFTER the first hop — the first hop IS the leak.
+//
+// Renderer isolation is hard (contextIsolation + sandbox + no nodeIntegration +
+// loadFile + will-navigate/window-open interception), so this is depth rather
+// than a live hole. It is also free, and it must not cost the user any freedom:
+// a key typed into the FORM still goes wherever they point it.
+describe("🔒 discoverModelsForFamily: stored keys stay on their own endpoint", () => {
+  const STORED_KEY = "sk-ant-stored-do-not-leak";
+
+  async function seedProfile(baseURL?: string): Promise<void> {
+    freshHome();
+    await saveProfile("default", {
+      profileId: "claude",
+      family: "anthropic",
+      model: "claude-opus-4-8",
+      thinkingEnabled: false,
+      ...(baseURL !== undefined ? { baseURL } : {}),
+    });
+    await setKey("default", "claude", STORED_KEY);
+  }
+
+  // Records every outbound request so the assertions can talk about where the
+  // key actually went, not just what the function returned.
+  function recordingFetch(): { calls: Array<{ url: string; body: string }>; restore: () => void } {
+    const calls: Array<{ url: string; body: string }> = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: unknown, init?: unknown) => {
+      calls.push({
+        url: String(url),
+        body: JSON.stringify({ url: String(url), init: init ?? null }),
+      });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ id: "claude-opus-4-8" }] }),
+      } as unknown as Response;
+    }) as typeof fetch;
+    return { calls, restore: () => { globalThis.fetch = original; } };
+  }
+
+  it("refuses to send a stored key to a host the profile was never configured for", async () => {
+    await seedProfile("https://api.anthropic.com");
+    const { calls, restore } = recordingFetch();
+    try {
+      const res = await discoverModelsForFamily("default", {
+        family: "anthropic",
+        model: "claude-opus-4-8",
+        baseURL: "https://attacker.example",
+        profileId: "claude",
+      });
+      expect(res).toBeNull();
+      if (calls.length > 0) {
+        throw new Error(
+          `C05: the stored key was sent to ${calls[0].url} — a renderer-supplied host that this ` +
+            `profile is not configured for. The request must never be made.`,
+        );
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it("still uses the stored key for the profile's own endpoint", async () => {
+    await seedProfile("https://api.anthropic.com");
+    const { calls, restore } = recordingFetch();
+    try {
+      const res = await discoverModelsForFamily("default", {
+        family: "anthropic",
+        model: "claude-opus-4-8",
+        baseURL: "https://api.anthropic.com",
+        profileId: "claude",
+      });
+      expect(res).toEqual({ models: ["claude-opus-4-8"] });
+      expect(calls.length).toBe(1);
+      expect(calls[0].url.startsWith("https://api.anthropic.com")).toBe(true);
+      expect(calls[0].body).toContain(STORED_KEY);
+    } finally {
+      restore();
+    }
+  });
+
+  it("a profile with no explicit baseURL is pinned to its protocol default", async () => {
+    await seedProfile(); // no baseURL → capabilities default (api.anthropic.com)
+    const { calls, restore } = recordingFetch();
+    try {
+      // The default endpoint works...
+      expect(
+        await discoverModelsForFamily("default", {
+          family: "anthropic",
+          model: "claude-opus-4-8",
+          profileId: "claude",
+        }),
+      ).toEqual({ models: ["claude-opus-4-8"] });
+      // ...and only that one.
+      expect(
+        await discoverModelsForFamily("default", {
+          family: "anthropic",
+          model: "claude-opus-4-8",
+          baseURL: "https://attacker.example",
+          profileId: "claude",
+        }),
+      ).toBeNull();
+      expect(calls.length).toBe(1);
+      expect(calls[0].url.startsWith("https://api.anthropic.com")).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it("a key typed into the form still goes wherever the user points it", async () => {
+    await seedProfile("https://api.anthropic.com");
+    const { calls, restore } = recordingFetch();
+    try {
+      // Testing a brand-new endpoint with a freshly pasted key is the whole
+      // point of the button — the guard must not touch this path.
+      const res = await discoverModelsForFamily("default", {
+        family: "openai",
+        model: "gpt-5",
+        baseURL: "https://my-own-gateway.example/v1",
+        apiKey: "sk-typed-just-now",
+        profileId: "claude",
+      });
+      expect(res).toEqual({ models: ["claude-opus-4-8"] });
+      expect(calls.length).toBe(1);
+      expect(calls[0].url.startsWith("https://my-own-gateway.example/v1")).toBe(true);
+      expect(calls[0].body).toContain("sk-typed-just-now");
+      expect(calls[0].body).not.toContain(STORED_KEY);
+    } finally {
+      restore();
+    }
+  });
+
+  it("matches on origin, not on trailing-slash cosmetics", async () => {
+    await seedProfile("https://api.anthropic.com/");
+    const { calls, restore } = recordingFetch();
+    try {
+      expect(
+        await discoverModelsForFamily("default", {
+          family: "anthropic",
+          model: "claude-opus-4-8",
+          baseURL: "https://api.anthropic.com",
+          profileId: "claude",
+        }),
+      ).toEqual({ models: ["claude-opus-4-8"] });
+      expect(calls.length).toBe(1);
+    } finally {
+      restore();
+    }
+  });
+});

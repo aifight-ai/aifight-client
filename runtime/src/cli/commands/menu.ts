@@ -1,8 +1,16 @@
-// Interactive "control panel" shown when `aifight` is run bare in a TTY
+// THE interactive control panel. Bare `aifight` opens it, and so does bare
+// `aifight config` — there is exactly one menu in this CLI.
+//
 // (design: RENAME_AND_RANKED_GATE_DESIGN.md §6 — owner ask #5). The necessary
 // first-run flow stays in `aifight setup`; this is the "adjust later" panel so a
 // returning user can run bare `aifight` and pick a common action instead of
 // recalling the flat command list.
+//
+// `aifight config` used to open a SECOND, narrower menu, and picking "LLM" here
+// dropped the user into it — one level down, different numbering, overlapping
+// items. The owner hit that walking a fresh VPS install and asked why there were
+// two different menus (2026-07-29). Both doors now open this one room; the
+// config-only items it was missing ("Show current config") moved in.
 //
 // It is gated in main.ts to ONLY the interactive case: a bare invocation with
 // both stdin and stdout attached to a TTY and not --json. Scripts, the VPS
@@ -14,6 +22,7 @@
 
 import type { HandlerEnv } from "../shared.js";
 import { SUPPORTED_GAMES } from "../shared.js";
+import { applyPendingBridgeRestart, withDeferredApply } from "./apply-settings.js";
 
 export interface MenuDeps {
   readonly env: HandlerEnv;
@@ -83,26 +92,23 @@ const ITEMS: readonly MenuItem[] = [
   },
   {
     key: "5",
+    // These two delegate to the prompts the old `aifight config` hub used, not
+    // to the barer ones this panel had: those show the CURRENT value, treat a
+    // blank answer as "keep it", and validate against the setup wizard's
+    // ceiling. Merging the menus meant picking one of each pair, and this is
+    // the better half.
     label: "Daily cap — automatic matches per day (0 = off)",
-    run: async ({ env, prompt, dispatch }) => {
-      const n = (await prompt("Daily automatic matches (0 = off): ")).trim();
-      if (!/^\d+$/.test(n)) {
-        env.stdout("Enter a non-negative whole number.\n");
-        return;
-      }
-      await dispatch("set", ["daily", n]);
+    run: async ({ env, prompt }) => {
+      const { configureDailyInteractive } = await import("./config.js");
+      await configureDailyInteractive({ promptLine: prompt }, env);
     },
   },
   {
     key: "6",
     label: "Games — which games to auto-play",
-    run: async ({ env, prompt, dispatch }) => {
-      const list = (await prompt(`Games to auto-play, comma-separated (options: ${SUPPORTED_GAMES.join(", ")}): `)).trim();
-      if (list === "") {
-        env.stdout("No games entered — nothing changed.\n");
-        return;
-      }
-      await dispatch("set", ["game", list]);
+    run: async ({ env, prompt }) => {
+      const { configureGamesInteractive } = await import("./config.js");
+      await configureGamesInteractive({ promptLine: prompt }, env);
     },
   },
   {
@@ -148,6 +154,12 @@ const ITEMS: readonly MenuItem[] = [
     label: "Strategy — where to edit how your agent plays",
     run: ({ dispatch }) => dispatch("strategy", ["path"]).then(() => undefined),
   },
+  {
+    // Carried over from the old `aifight config` hub, which is now this panel.
+    key: "13",
+    label: "Show current config — what this machine is set to",
+    run: ({ dispatch }) => dispatch("config", ["show"]).then(() => undefined),
+  },
 ];
 
 function menuText(deps: MenuDeps): string {
@@ -192,7 +204,14 @@ export async function runInteractiveMenu(deps: MenuDeps): Promise<number> {
   for (;;) {
     env.stdout(menuText(deps));
     const choice = (await prompt("Pick an action (number, or q to quit): ")).trim().toLowerCase();
-    if (choice === "q" || choice === "quit" || choice === "0") return 0;
+    if (choice === "q" || choice === "quit" || choice === "0") {
+      // Several items write bridge.json, which a running bridge only re-reads on
+      // restart. Offer that ONCE, here. The owner's words for being asked after
+      // every edit were "连着被告知三次" — so the panel defers each item's own
+      // offer and settles up on the way out.
+      await applyPendingBridgeRestart(env);
+      return 0;
+    }
     if (choice === "") continue;
     const item = byKey.get(choice);
     if (item === undefined) {
@@ -200,7 +219,7 @@ export async function runInteractiveMenu(deps: MenuDeps): Promise<number> {
       continue;
     }
     try {
-      await item.run(deps);
+      await withDeferredApply(() => item.run(deps));
     } catch (cause) {
       // A handler error (UsageError / CommandError / unexpected) must not drop
       // the panel — surface the message the same way the CLI funnel would.
