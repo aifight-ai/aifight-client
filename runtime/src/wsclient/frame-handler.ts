@@ -72,6 +72,7 @@ const SERVER_MESSAGE_TYPES = new Set<string>([
   "action_request",
   "action_stale",
   "event",
+  "match_feed",
   "game_state",
   "game_over",
   "error",

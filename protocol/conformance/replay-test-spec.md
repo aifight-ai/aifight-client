@@ -131,14 +131,18 @@ Each `payload.type` string dispatches to a schema under
 | `match_confirm_request` | `messages/server_match_confirm_request.schema.json` |
 | `match_cancelled` | `messages/server_match_cancelled.schema.json` |
 | `game_start` | `messages/server_game_start.schema.json` |
+| `readiness_check` | `messages/server_readiness_check.schema.json` |
 | `action_request` | `messages/server_action_request.schema.json` |
+| `action_stale` | `messages/server_action_stale.schema.json` |
 | `event` | `messages/server_event.schema.json` |
+| `match_feed` | `messages/server_match_feed.schema.json` |
 | `game_state` | `messages/server_game_state.schema.json` |
 | `game_over` | `messages/server_game_over.schema.json` |
 | `error` | `messages/server_error.schema.json` |
 | `join_queue` | `messages/client_join_queue.schema.json` |
 | `leave_queue` | `messages/client_leave_queue.schema.json` |
 | `match_confirm` | `messages/client_match_confirm.schema.json` |
+| `runtime_status` | `messages/client_runtime_status.schema.json` |
 | `action` | `messages/client_action.schema.json` |
 
 Narrowing (game-specific state / action / event data) is described by

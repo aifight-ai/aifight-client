@@ -47,6 +47,10 @@
   --v3-warm: #f4f3ee;
   --v3-acc-glow: rgba(255, 112, 10, 0.1);
 
+  /* 细线令牌(走带轨道/步号胶囊描边):此前被引用却从未定义,var() 失效导致
+     轨道透明不可见(2026-07-30 F5 根因)。取比 hairline 更深一阶的 border-3。 */
+  --v3-line: var(--color-border-3);
+
   /* v3-dv(P4b)语义 tint/line:引用 @theme 语义色的透明阶,dark 单独 remap */
   --v3-warn-line: rgba(184, 134, 11, 0.45);
   --v3-warn-tint: rgba(184, 134, 11, 0.09);
@@ -190,27 +194,36 @@
   color: var(--v3-t3);
   font-variant-numeric: tabular-nums;
 }
-/* 走带进度滑杆:窄轨 + 品牌色圆点,live 拖动即脱离跟随(逻辑在 CockpitPanel) */
+/* 走带进度滑杆(F5 2026-07-30):5px 显式轨道 + 已播放填充(线性渐变,--v3-fill
+   由 React 按 step/events.length 内联),品牌橘圆点加对比描边环。轨道色画在
+   runnable-track 上,元素自身背景留透明,避免双层叠加。 */
 .v3-cp-slider {
   -webkit-appearance: none;
   appearance: none;
   width: 120px;
-  height: 3px;
+  height: 5px;
   margin-left: 6px;
-  border-radius: 2px;
-  background: var(--v3-line);
+  border-radius: 3px;
+  background: transparent;
   outline: none;
   cursor: pointer;
+}
+.v3-cp-slider::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 3px;
+  background: linear-gradient(to right, var(--v3-acc) 0 var(--v3-fill, 0%), var(--v3-line) var(--v3-fill, 0%) 100%);
 }
 .v3-cp-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 11px;
-  height: 11px;
+  width: 12px;
+  height: 12px;
+  /* (track 5px − thumb 12px) / 2 — webkit 需手动垂直居中 */
+  margin-top: -3.5px;
   border-radius: 50%;
   background: var(--v3-acc);
-  border: 2px solid var(--v3-bg, #fff);
-  box-shadow: 0 0 0 1px var(--v3-line);
+  border: 2px solid var(--v3-panel, #fff);
+  box-shadow: 0 0 0 1.5px var(--v3-acc-deep);
 }
 .v3-cp-slider:hover::-webkit-slider-thumb { background: var(--v3-acc-deep); }
 /* 播放速度档(回放模式) */
@@ -612,6 +625,9 @@
 .v3-tr-card.v3-tr-cur { border-left-color: transparent; }
 .v3-tr-decision { color: var(--v3-t2); }
 .v3-tr-decision b { color: var(--v3-ink); font-weight: 600; }
+/* F4「思考中」占位:与决策条目同一行式,弱化文字 + 品牌色 spinner(F4)。 */
+.v3-tr-pending { color: var(--v3-t3); }
+.v3-tr-pending b { color: var(--v3-t2); font-weight: 600; }
 /* 决策条目的步号锚点:点了让棋盘跳到那一步 */
 .v3-tr-step {
   margin-left: auto;

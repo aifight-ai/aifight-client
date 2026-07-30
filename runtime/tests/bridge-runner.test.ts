@@ -15,6 +15,7 @@ import { resetMachineIdCacheForTests } from "../src/account/machine-id";
 import { createMockRuntimeProvider } from "../src/bridge/provider";
 import { LocalMatchSessionStore } from "../src/session/local-match-session-store";
 import { WSClientMismatchError, WSHandshakeError } from "../src/wsclient/errors";
+import { serializeClientMessage } from "../src/wsclient/frame-handler";
 import type { BridgeConfig } from "../src/bridge/config";
 import type { MsgActionRequest, MsgGameOver, MsgGameStart } from "../src/protocol/types";
 import type { ServerMessageEnvelope } from "../src/wsclient/frame-handler";
@@ -472,11 +473,19 @@ describe("BridgeRunner", () => {
       ready: true,
       runtime_type: "mock",
       runtime_name: "mock",
-      detail: "ready",
-      // Phase 1B: idle bridge (no in-flight matches) reports capacity.
-      active_matches: 0,
-      max_concurrent: 8,
+      detail: "ready (0/8 matches in flight)",
     });
+    // The schema is closed (additionalProperties:false) — capacity info rides
+    // inside `detail`, never as extra top-level keys (2026-07-30: such keys made
+    // serializeClientMessage reject every readiness reply).
+    expect(Object.keys(status!.data as Record<string, unknown>).sort()).toEqual(
+      ["checked_at", "detail", "ready", "request_id", "runtime_name", "runtime_type"].sort(),
+    );
+    // And the payload must survive the REAL outbound validation path, not just
+    // the fake client (which captures frames before serialization).
+    expect(() =>
+      serializeClientMessage({ type: "runtime_status", data: status!.data }),
+    ).not.toThrow();
   });
 
   it("writes local match session records when enabled", async () => {

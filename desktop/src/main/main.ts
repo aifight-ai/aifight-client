@@ -140,6 +140,7 @@ const bridgeHost = new BridgeHost({
   onLog: (event) => broadcast(IPC.log, event),
   onTrace: (trace) => broadcast(IPC.trace, trace),
   onServerMessage: (message) => broadcast(IPC.serverMessage, message),
+  onMatchEvents: (payload) => broadcast(IPC.matchEvents, payload),
 });
 
 registerBridgeIpc(bridgeHost);

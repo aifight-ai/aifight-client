@@ -65,11 +65,13 @@ import type {
   HexagonData,
   LeaderboardData,
   LeaderboardScope,
+  MatchEventsPayload,
 } from "../shared/ipc";
 import { normalizeLeaderboard } from "./leaderboard";
 import { queueTransitionOf } from "./queueTruth";
 import { getFlag, setFlag } from "./ui-flags";
 import { fetchReplayTail } from "./replay-tail";
+import { fetchParticipantEvents } from "./match-events";
 import { normalizeEvents } from "./events";
 import { normalizeAgentProfile } from "./agentProfile";
 import {
@@ -91,6 +93,7 @@ export interface BridgeHostCallbacks {
   readonly onLog?: (event: BridgeLogEvent) => void;
   readonly onTrace?: (trace: BridgeDecisionTrace) => void;
   readonly onServerMessage?: (message: ServerMessageEnvelope) => void;
+  readonly onMatchEvents?: (payload: MatchEventsPayload) => void;
 }
 
 /** Shown when the runtime's reconnect loop permanently stops (a terminal
@@ -100,6 +103,27 @@ export interface BridgeHostCallbacks {
 /** How often the app re-checks a seat held by another bridge. Slow enough to be
  *  free (two syscalls), fast enough that `aifight service stop` feels instant. */
 const SEAT_RETRY_INTERVAL_MS = 5_000;
+
+/** LIVE_MATCH_FEED F1: participant event-feed cadence while a match is live. */
+const MATCH_POLL_INTERVAL_MS = 2_500;
+/** Backoff ceiling after consecutive poll failures (2.5s → 5s → 10s, capped). */
+const MATCH_POLL_MAX_DELAY_MS = 10_000;
+/** LIVE_MATCH_FEED Phase 2: a session whose server-pushed match_feed produced a
+ *  frame within this window is feed-healthy, so the REST poll skips its network
+ *  tick (the 2.5s heartbeat itself keeps running). Once the feed goes quiet —
+ *  the kill switch flipped off, or an old server never sent any — the last
+ *  frame ages out and polling takes over within one window. */
+const MATCH_FEED_FRESH_MS = 15_000;
+
+/** One armed participant-feed poller (at most one live match per bridge). */
+interface MatchPollState {
+  readonly sessionId: string;
+  /** http(s) API origin + agent key, captured from the config this runner uses. */
+  readonly origin: string;
+  readonly apiKey: string;
+  delayMs: number;
+  timer: ReturnType<typeof setTimeout> | null;
+}
 
 /** Shown while parked: another connection holds the seat, we probe gently. */
 const SEAT_TAKEN_MESSAGE =
@@ -190,6 +214,16 @@ export class BridgeHost {
   // Set while we are refusing because another bridge holds the seat: re-checks
   // until it is free, so stopping the other one is enough to recover.
   #seatRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  // LIVE_MATCH_FEED F1: the participant event-feed poller, armed by game_start
+  // and disarmed by game_over / match_cancelled / stop. Null while no match is
+  // live. Render-only: the feed NEVER triggers an LLM call (the bridge calls
+  // the model only on action_request).
+  #matchPoll: MatchPollState | null = null;
+  // LIVE_MATCH_FEED Phase 2: the last server-pushed match_feed frame, keyed by
+  // session. While it is fresh the poller above is redundant and skips its
+  // network tick; the renderer folds the push frames through the same
+  // seq-dedupe merge either way, so nothing is lost when the poll goes quiet.
+  #lastMatchFeed: { readonly sessionId: string; readonly at: number } | null = null;
 
   constructor(callbacks: BridgeHostCallbacks = {}) {
     this.#callbacks = callbacks;
@@ -643,6 +677,76 @@ export class BridgeHost {
     this.#seatRetryTimer = null;
   }
 
+  // ── LIVE_MATCH_FEED F1: participant event-feed polling ─────────────────────
+  // Without the Phase 2 push the server sends events to a PLAYER only inside
+  // action_request (turn-driven by design, to save LLM tokens) — between our
+  // turns the cockpit board would freeze until our next decision. While a match
+  // is live this poller mirrors the participant REST feed (no spectator delay,
+  // per-player filtered, full history each page) so opponents' moves reach the
+  // board within ~2.5s. The renderer dedupes by seq against the turn-driven
+  // stream (and against Phase 2's match_feed push). Read-only: nothing here
+  // ever feeds a prompt or triggers an LLM call.
+  //
+  // Phase 2 fallback semantics: once the server pushes match_feed for a session,
+  // the tick skips its network call while the feed stays fresh
+  // (MATCH_FEED_FRESH_MS); the loop keeps heartbeating so a quiet feed hands
+  // back to polling within one window.
+
+  #startMatchEventsPoll(sessionId: string, origin: string, apiKey: string): void {
+    this.#cancelMatchEventsPoll();
+    if (sessionId === "" || origin === "" || apiKey === "") return;
+    this.#matchPoll = { sessionId, origin, apiKey, delayMs: MATCH_POLL_INTERVAL_MS, timer: null };
+    // First page immediately — the opening new_hand/blinds may precede our first
+    // action_request by seconds when we are not the first to act.
+    this.#scheduleMatchPollTick(0);
+  }
+
+  #cancelMatchEventsPoll(): void {
+    const poll = this.#matchPoll;
+    if (poll === null) return;
+    this.#matchPoll = null;
+    if (poll.timer !== null) clearTimeout(poll.timer);
+  }
+
+  #scheduleMatchPollTick(delayMs: number): void {
+    const poll = this.#matchPoll;
+    if (poll === null) return;
+    poll.timer = setTimeout(() => {
+      poll.timer = null;
+      void this.#matchPollTick(poll);
+    }, delayMs);
+    // Never hold the app open just to poll a match feed.
+    poll.timer.unref?.();
+  }
+
+  async #matchPollTick(poll: MatchPollState): Promise<void> {
+    // A stopped bridge or a superseded poll generation ends the loop quietly.
+    if (this.#matchPoll !== poll || this.#runner === null) return;
+    // Phase 2: a feed-healthy session makes the REST poll redundant — skip the
+    // network call but keep the 2.5s heartbeat (and heal any earlier backoff),
+    // so a feed that stops — kill switch off / old server — hands back to
+    // polling within one freshness window.
+    const feed = this.#lastMatchFeed;
+    if (feed !== null && feed.sessionId === poll.sessionId && Date.now() - feed.at < MATCH_FEED_FRESH_MS) {
+      poll.delayMs = MATCH_POLL_INTERVAL_MS;
+      this.#scheduleMatchPollTick(poll.delayMs);
+      return;
+    }
+    const events = await fetchParticipantEvents(poll.origin, poll.sessionId, poll.apiKey);
+    if (this.#matchPoll !== poll) return; // match ended / session changed mid-flight
+    if (events === null) {
+      // Silent exponential backoff; the turn-driven stream is unaffected either
+      // way, so a failing feed degrades to the pre-F1 experience, never to noise.
+      poll.delayMs = Math.min(poll.delayMs * 2, MATCH_POLL_MAX_DELAY_MS);
+    } else {
+      poll.delayMs = MATCH_POLL_INTERVAL_MS;
+      if (events.length > 0) {
+        this.#callbacks.onMatchEvents?.({ sessionId: poll.sessionId, events });
+      }
+    }
+    this.#scheduleMatchPollTick(poll.delayMs);
+  }
+
   /**
    * Release the local agent seat so a standby CLI service (or the next start)
    * can take it. Safe to call when we hold nothing.
@@ -735,6 +839,9 @@ export class BridgeHost {
     }
 
     const summary = toSummary(config);
+    // The participant event feed (F1) lives on the http(s) API origin; the
+    // bridge's baseUrl may be a ws(s) endpoint. Resolved once per start.
+    const restOrigin = httpOriginOf(config.baseUrl);
     // Fresh session: reset connection-health counters + truth projections.
     this.#connectedAt = null;
     this.#reconnects = 0;
@@ -743,6 +850,7 @@ export class BridgeHost {
     this.#queued = null;
     this.#connInfo = null;
     this.#closeCauseVersion = false;
+    this.#lastMatchFeed = null;
     // 审查 #4: a LOUD start (launch / Retry button) announces "starting" right
     // away; the quiet seat-retry must not — it fires every 5s while the seat
     // is held, and broadcasting "starting" here is exactly what made the pill
@@ -845,6 +953,23 @@ export class BridgeHost {
           if (q !== undefined && JSON.stringify(q) !== JSON.stringify(this.#queued)) {
             this.#queued = q;
             this.#reemitStatus();
+          }
+          // LIVE_MATCH_FEED F1: the poller follows the match lifecycle — armed by
+          // game_start (its match_id IS the per-player session id), disarmed by
+          // the terminal frames. The bridge plays at most one match at a time.
+          if (message.type === "game_start") {
+            const sid = (message.data as { match_id?: unknown } | undefined)?.match_id;
+            if (typeof sid === "string" && restOrigin !== null) {
+              this.#startMatchEventsPoll(sid, restOrigin, config.apiKey ?? "");
+            }
+          } else if (message.type === "game_over" || message.type === "match_cancelled") {
+            this.#cancelMatchEventsPoll();
+          } else if (message.type === "match_feed") {
+            // Phase 2: bookkeep the server-pushed feed so the poller can tell a
+            // feed-healthy session (skip its tick) from a silent one (resume
+            // polling). The frame itself is forwarded to the renderer below.
+            const sid = (message.data as { match_id?: unknown } | undefined)?.match_id;
+            this.#lastMatchFeed = { sessionId: typeof sid === "string" ? sid : "", at: Date.now() };
           }
           // NOTE: no welcome handling here — the handshake consumes the welcome
           // frame before this handler exists (redesign audit F1), so a branch on
@@ -953,6 +1078,8 @@ export class BridgeHost {
   async stop(): Promise<BridgeStatus> {
     // Stop means stop: a pending seat retry would quietly bring us back.
     this.#cancelSeatRetry();
+    // And a live match-feed poller must not outlive the bridge it mirrors.
+    this.#cancelMatchEventsPoll();
     // Let an in-flight start finish first. Without this, a stop landing while
     // start() is awaiting the engine import sees #runner === null, takes the
     // branch below, and hands back a seat the resuming start is about to put a
@@ -1607,6 +1734,19 @@ export function pickAutoGame(
 
 function toInt(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : 0;
+}
+
+/** The http(s) origin the REST API lives on; the bridge baseUrl may be ws(s). Null when unusable. */
+function httpOriginOf(baseUrl: string | undefined): string | null {
+  if (baseUrl === undefined) return null;
+  try {
+    const u = new URL(baseUrl);
+    const proto = u.protocol === "ws:" ? "http:" : u.protocol === "wss:" ? "https:" : u.protocol;
+    if (proto !== "http:" && proto !== "https:") return null;
+    return `${proto}//${u.host}`;
+  } catch {
+    return null;
+  }
 }
 
 /** F41/AIF-11: allowlist for the claim URL handed to shell.openExternal.

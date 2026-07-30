@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { __resetLiveStoreForTest, ensureLiveStoreStarted, getLiveStoreState } from "./liveStore";
-import type { AifightBridgeApi, BridgeDecisionTrace, ServerMessage } from "../shared/ipc";
+import type { AifightBridgeApi, BridgeDecisionTrace, MatchEventsPayload, ServerMessage } from "../shared/ipc";
 
 function makeFakeApi() {
   let sm: ((m: ServerMessage) => void) | null = null;
   let tr: ((t: BridgeDecisionTrace) => void) | null = null;
+  let me: ((p: MatchEventsPayload) => void) | null = null;
   let subscribeCount = 0;
   const api = {
     onServerMessage: (cb: (m: ServerMessage) => void) => {
@@ -17,11 +18,16 @@ function makeFakeApi() {
       tr = cb;
       return () => {};
     },
+    onMatchEvents: (cb: (p: MatchEventsPayload) => void) => {
+      me = cb;
+      return () => {};
+    },
   } as unknown as AifightBridgeApi;
   return {
     api,
     emitMsg: (m: ServerMessage) => sm?.(m),
     emitTrace: (t: BridgeDecisionTrace) => tr?.(t),
+    emitMatchEvents: (p: MatchEventsPayload) => me?.(p),
     get subscribeCount() {
       return subscribeCount;
     },
@@ -84,5 +90,51 @@ describe("liveStore", () => {
   it("no-ops when no bridge api is present (plain-browser QA)", () => {
     ensureLiveStoreStarted(undefined);
     expect(getLiveStoreState().match.sessionId).toBeNull();
+  });
+
+  it("F1: folds polled participant-feed pages into the match, deduped by seq", () => {
+    const fake = makeFakeApi();
+    ensureLiveStoreStarted(fake.api);
+    fake.emitMsg(gameStart("m1"));
+    fake.emitMatchEvents({
+      sessionId: "m1",
+      events: [
+        { type: "game_setup", seq: 0, ts: "t0" },
+        { type: "action", player: "p1", data: { action: "income" }, seq: 1, ts: "t1" },
+      ],
+    });
+    expect(getLiveStoreState().match.events.map((e) => e.seq)).toEqual([0, 1]);
+    // Same page again (full-history feed) → nothing new, state untouched.
+    const before = getLiveStoreState().match;
+    fake.emitMatchEvents({
+      sessionId: "m1",
+      events: [
+        { type: "game_setup", seq: 0, ts: "t0" },
+        { type: "action", player: "p1", data: { action: "income" }, seq: 1, ts: "t1" },
+      ],
+    });
+    expect(getLiveStoreState().match).toBe(before);
+    // A page for another session is dropped.
+    fake.emitMatchEvents({ sessionId: "elsewhere", events: [{ type: "action", seq: 9 }] });
+    expect(getLiveStoreState().match.events).toHaveLength(2);
+  });
+
+  it("F2: a final_action trace injects the synthetic own-action onto the board", () => {
+    const fake = makeFakeApi();
+    ensureLiveStoreStarted(fake.api);
+    fake.emitMsg(gameStart("m1"));
+    fake.emitTrace({
+      type: "final_action",
+      matchId: "m1",
+      source: "runtime",
+      action: { type: "income" },
+    });
+    const { match, traces } = getLiveStoreState();
+    expect(traces).toHaveLength(1);
+    expect(traces[0]!.at).toBeTypeOf("number"); // arrival stamp for the F4 elapsed counter
+    expect(match.events).toHaveLength(1);
+    expect(match.events[0]).toMatchObject({ type: "action", player_id: "p0", data: { action: "income" } });
+    expect(match.pendingAction).not.toBeNull();
+    expect(match.maxSeq).toBe(-1); // synthetic never advances the dedupe watermark
   });
 });

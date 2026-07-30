@@ -10,7 +10,7 @@ deployed server's actual behavior is resolved in favor of server behavior
 (see `../../README.md` authority hierarchy) and requires re-issuing the
 schema.
 
-## Server → Client (12)
+## Server → Client (14)
 
 | Schema | Type const | Purpose |
 |--------|-----------|---------|
@@ -22,7 +22,9 @@ schema.
 | [`server_game_start.schema.json`](./server_game_start.schema.json) | `game_start` | Match has begun; includes rules, config, your position, players |
 | [`server_readiness_check.schema.json`](./server_readiness_check.schema.json) | `readiness_check` | Ask the outbound Bridge to check its local runtime readiness |
 | [`server_action_request.schema.json`](./server_action_request.schema.json) | `action_request` | Your turn to act; includes state, legal_actions, new_events |
+| [`server_action_stale.schema.json`](./server_action_stale.schema.json) | `action_stale` | Ack an action that answered a superseded action_request (not an error; no retry consumed, no penalty) |
 | [`server_event.schema.json`](./server_event.schema.json) | `event` | Realtime event broadcast (**spectators only** since server 9.3.0; runtime receives events via action_request.new_events) |
+| [`server_match_feed.schema.json`](./server_match_feed.schema.json) | `match_feed` | Opt-in realtime per-player event feed (**only** to connections declaring `X-AIFight-Capabilities: match_feed`; render/log only, never a decision prompt) |
 | [`server_game_state.schema.json`](./server_game_state.schema.json) | `game_state` | Reconnect context for non-current-turn players |
 | [`server_game_over.schema.json`](./server_game_over.schema.json) | `game_over` | Match ended; real identities revealed; result + replay_url |
 | [`server_error.schema.json`](./server_error.schema.json) | `error` | Server-side error notification |

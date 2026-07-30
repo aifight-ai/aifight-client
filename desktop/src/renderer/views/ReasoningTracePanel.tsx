@@ -4,9 +4,9 @@
 // offline — same shape, same rendering. This view is the desktop's unique value:
 // the website never exposes the model's per-step reasoning.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Brain, ArrowRight, AlertTriangle } from "lucide-react";
+import { Brain, ArrowRight, AlertTriangle, Loader2 } from "lucide-react";
 
 import type { TraceAction } from "../../shared/ipc";
 import type { StampedTrace } from "../liveStore";
@@ -114,6 +114,7 @@ export function ReasoningTracePanel({
   badge,
   emptyHint,
   onJumpToStep,
+  transportStep,
 }: {
   traces: readonly StampedTrace[];
   badge: TraceBadge;
@@ -121,13 +122,64 @@ export function ReasoningTracePanel({
   emptyHint?: string;
   /** Scrub the board to a trace's step (wired to the cockpit transport). */
   onJumpToStep?: (step: number) => void;
+  /**
+   * F3: the cockpit transport's current step. The "current" anchor is the LAST
+   * decision group taken at or before this step, so the panel follows the board
+   * while scrubbing back and forth. Live-follow passes the tip (events.length),
+   * which lands on the latest group — exactly the pre-F3 behavior. Undefined =
+   * anchor the trailing group regardless of step (standalone use).
+   */
+  transportStep?: number;
 }) {
   const { t } = useTranslation();
   const endRef = useRef<HTMLDivElement>(null);
   const anchorRef = useRef<HTMLDivElement>(null);
-  // The trailing decision group (last decision_request → end) is the one the
-  // board currently shows — its opening row is the scroll anchor.
+  // F3: anchor = the last decision_request group at or before the transport
+  // step (unstamped traces — older stored sessions — are always eligible).
+  const anchorIdx = traces.reduce(
+    (acc, tr, i) =>
+      tr.type === "decision_request" &&
+      (transportStep === undefined || tr.step === undefined || tr.step <= transportStep)
+        ? i
+        : acc,
+    -1,
+  );
+  // The anchored group spans up to the NEXT decision_request: the "current"
+  // highlight must not bleed into a later group the transport hasn't reached
+  // (possible in live, where the trace stream is never filtered).
+  const nextDecisionIdx = traces.findIndex((tr, i) => i > anchorIdx && tr.type === "decision_request");
+
+  // F4: a trailing decision group with no outcome row yet IS the agent still
+  // thinking (decision_request is emitted before the LLM call). Render a
+  // spinner + elapsed seconds in the group's own card style; the result trace
+  // replaces it naturally. Live/demo streams only — a stored replay is
+  // complete, so a spinner there would spin forever over a settled decision.
   const lastDecisionIdx = traces.reduce((acc, tr, i) => (tr.type === "decision_request" ? i : acc), -1);
+  const thinkingIdx =
+    badge !== "replay" &&
+    lastDecisionIdx !== -1 &&
+    !traces
+      .slice(lastDecisionIdx + 1)
+      .some(
+        (tr) =>
+          tr.type === "runtime_success" ||
+          tr.type === "runtime_failure" ||
+          tr.type === "final_action" ||
+          tr.type === "strategy_error",
+      )
+      ? lastDecisionIdx
+      : -1;
+  const thinkingAt = thinkingIdx !== -1 ? traces[thinkingIdx]?.at : undefined;
+  // 1s ticker for the elapsed counter; mounted only while the placeholder shows.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (thinkingIdx === -1) return;
+    const id = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [thinkingIdx]);
+  const thinkingElapsedSec =
+    thinkingAt === undefined ? null : Math.max(0, Math.floor((nowTick - thinkingAt) / 1000));
+
   useEffect(() => {
     // Follow the transport: align the CURRENT decision group's opening row to
     // the top of the panel, so the user reads their agent's thinking summary →
@@ -144,7 +196,7 @@ export function ReasoningTracePanel({
     } else {
       scroller.scrollTop = scroller.scrollHeight;
     }
-  }, [lastDecisionIdx, traces.length]);
+  }, [anchorIdx, traces.length]);
 
   const badgeLabel = badge === "live" ? t("cockpit.live") : badge === "replay" ? t("cockpit.replay") : t("cockpit.demo");
 
@@ -169,11 +221,23 @@ export function ReasoningTracePanel({
             <TraceRow
               key={i}
               trace={tr}
-              current={lastDecisionIdx !== -1 && i >= lastDecisionIdx}
-              anchorRef={i === lastDecisionIdx ? anchorRef : undefined}
+              current={anchorIdx !== -1 && i >= anchorIdx && (nextDecisionIdx === -1 || i < nextDecisionIdx)}
+              anchorRef={i === anchorIdx ? anchorRef : undefined}
               onJumpToStep={onJumpToStep}
             />
           ))
+        )}
+        {thinkingIdx !== -1 && (
+          <div className={"v3-tr-row v3-tr-decision v3-tr-pending" + (thinkingIdx === anchorIdx ? " v3-tr-cur" : "")}>
+            <Loader2 size={13} className="shrink-0 animate-spin text-[var(--v3-acc)]" />
+            <span>
+              <b>
+                {thinkingElapsedSec === null
+                  ? t("cockpit.thinking")
+                  : t("cockpit.thinkingFor", { s: thinkingElapsedSec })}
+              </b>
+            </span>
+          </div>
         )}
         <div ref={endRef} />
       </div>

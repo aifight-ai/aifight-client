@@ -12,7 +12,7 @@
 // it never derives opponent secrets. The caller (liveMatch / sessionReplay) is
 // responsible for never putting an opponent's hidden info into these props.
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Play, Pause, SkipBack, SkipForward, ChevronLeft, ChevronRight, Radio } from "lucide-react";
 
@@ -65,6 +65,24 @@ export interface CockpitPanelProps {
 /** Replay auto-advance speeds — the same dial the website's replay page offers. */
 const SPEEDS = [0.5, 1, 1.5, 3];
 
+/**
+ * F1 catch-up policy (pure, exported for tests): when the live log grows while
+ * following, how should the transport reach the new tip?
+ *  - 1 new step: jump straight to it — a single move should feel instant.
+ *  - a batch: walk one step per CATCHUP_STEP_MS so a burst of opponent moves
+ *    plays out like a broadcast instead of a hard jump (the 111→120 jump the
+ *    owner hit).
+ *  - a huge backlog (reconnect replay / long offline stretch): converge
+ *    immediately, or the board would lag further and further behind live.
+ */
+export const CATCHUP_STEP_MS = 600;
+export const CATCHUP_MAX_QUEUE = 12;
+export function liveCatchUpPlan(backlog: number): { readonly kind: "jump" } | { readonly kind: "wait" } | { readonly kind: "none" } {
+  if (backlog <= 0) return { kind: "none" };
+  if (backlog === 1 || backlog > CATCHUP_MAX_QUEUE) return { kind: "jump" };
+  return { kind: "wait" };
+}
+
 export function CockpitPanel(props: CockpitPanelProps) {
   const { t } = useTranslation();
   const { game, match, events, ownerPlayerId, ownerPrivate, traces, isLive, badge, note, emptyTraceHint, headerLeft, headerRight } = props;
@@ -75,10 +93,23 @@ export function CockpitPanel(props: CockpitPanelProps) {
   const [following, setFollowing] = useState(true);
   const [speed, setSpeed] = useState(1);
 
-  // Live: stick to the newest event while following.
+  // Live: stick to the newest event while following — but NEVER hard-jump a
+  // batch (F1). A multi-step arrival (an action_request's new_events bundle or
+  // a polled participant-feed merge) walks to the tip at the catch-up cadence
+  // so the board plays out like a broadcast; a parked user (following=false,
+  // they scrubbed by hand) is never disturbed. The catch-up only ever advances
+  // +1 per tick, so a burst arriving mid-walk simply extends the queue.
   useEffect(() => {
-    if (isLive && following) setStep(events.length);
-  }, [isLive, following, events.length]);
+    if (!isLive || !following) return;
+    const plan = liveCatchUpPlan(events.length - step);
+    if (plan.kind === "none") return;
+    if (plan.kind === "jump") {
+      setStep(events.length);
+      return;
+    }
+    const id = window.setTimeout(() => setStep((s) => Math.min(s + 1, events.length)), CATCHUP_STEP_MS);
+    return () => window.clearTimeout(id);
+  }, [isLive, following, step, events.length]);
 
   // Replay: when the event log EXTENDS (the finished match's public-replay tail
   // merging in after mount — it always lands late, the replay row is written at
@@ -117,7 +148,9 @@ export function CockpitPanel(props: CockpitPanelProps) {
   // already showed EVERY later decision on the right while the board sat
   // earlier (board/panel desync; also spoils the run-out when stepping
   // through). Unstamped traces (older stored sessions) stay always-visible.
-  // Live keeps the full stream — arrival order IS the live experience.
+  // Live keeps the full stream visible — arrival order IS the live experience —
+  // but the panel's "current" anchor still follows the transport (transportStep,
+  // F3), so scrubbing back mid-live re-anchors to the decision of THAT step.
   const shownTraces = isLive ? traces : traces.filter((tr) => tr.step === undefined || tr.step <= step);
 
   // v3: which seat is "your agent" — derived from the same props the board
@@ -225,6 +258,8 @@ export function CockpitPanel(props: CockpitPanelProps) {
               min={0}
               max={events.length}
               value={Math.min(step, events.length)}
+              // F5: played-fill percentage for the track's linear-gradient.
+              style={{ "--v3-fill": `${events.length === 0 ? 0 : (Math.min(step, events.length) / events.length) * 100}%` } as CSSProperties}
               onChange={(e) => stepTo(Number(e.target.value))}
             />
             <span className="v3-cp-count">
@@ -278,7 +313,13 @@ export function CockpitPanel(props: CockpitPanelProps) {
               : "h-[420px] xl:sticky xl:top-4 xl:h-[calc(100vh-8rem)] xl:w-[340px] xl:shrink-0"
           }
         >
-          <ReasoningTracePanel traces={shownTraces} badge={badge} emptyHint={emptyTraceHint} onJumpToStep={stepTo} />
+          <ReasoningTracePanel
+            traces={shownTraces}
+            badge={badge}
+            emptyHint={emptyTraceHint}
+            onJumpToStep={stepTo}
+            transportStep={step}
+          />
         </div>
       </div>
     </div>

@@ -82,6 +82,18 @@ leading integer of `../VERSION`).
 
 ## Version history
 
+- **Exception policy (2026-07-30, no version bump)** —
+  [`match_feed`](../schema/messages/server_match_feed.schema.json) is a
+  NEW server message that ships WITHOUT bumping `../VERSION` (stays
+  v1.2.0): it is opt-in and capability-gated — the server sends it only
+  to connections that declared `match_feed` in the
+  `X-AIFight-Capabilities` handshake header, so a connection that never
+  declared it can never receive the message and its validation surface
+  is byte-identical to before. Going forward the same rule applies to
+  any new opt-in capability-gated message: no bump while undeclared
+  connections cannot observe it. If such a message is ever promoted to
+  default push for ALL connections, that is an additive change and
+  bumps the minor version per the policy above.
 - **v1.2.0 revision (2026-07-16, in-place)** — the `request_id` echo
   on the client `action` message is now REQUIRED, and connections
   declaring `X-AIFight-Protocol-Version` < v1.2.0 (or no header, or an

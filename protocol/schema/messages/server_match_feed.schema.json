@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aifight.ai/protocol/v1/messages/server_match_feed.schema.json",
+  "title": "match_feed",
+  "description": "Opt-in realtime event feed for a match the recipient is PLAYING in (design: docs/design/LIVE_MATCH_FEED_DESIGN_2026-07-30.md). Sent ONLY to connections that declared the feed capability at the WebSocket handshake (X-AIFight-Capabilities containing `match_feed`) — the server gates per-connection, so clients that did not opt in (older runtimes, third-party bots, house LLM bots) never receive this message and their behavior is unchanged. Events carry the same per-player visibility as `action_request.new_events` (the game's EventFilter output: public actions are visible, hidden info like opponents' hole cards is stripped). `match_id` is the recipient's per-player session_id — players never learn the real match_id until game_over. Consumption is render/log ONLY: a feed message is never a decision prompt — decisions are requested exclusively via `action_request`, and runtimes MUST NOT invoke an LLM (or any decision logic) in response to `match_feed`. Events share the same seq space as `action_request.new_events`, so consumers dedupe by event seq.",
+  "type": "object",
+  "required": ["type", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "type": { "const": "match_feed" },
+    "data": {
+      "type": "object",
+      "required": ["match_id", "events"],
+      "additionalProperties": false,
+      "properties": {
+        "match_id": {
+          "type": "string",
+          "format": "uuid",
+          "maxLength": 128,
+          "description": "Per-player session_id matching game_start.data.match_id (NOT the real match_id)."
+        },
+        "events": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": { "$ref": "../common/event.schema.json" },
+          "description": "Events since the recipient's last feed / action_request, filtered by the game's per-player EventFilter. Same visibility and seq space as action_request.new_events. maxItems is a generous resource bound (R13-F03) — a single broadcast batch is normally a handful of events."
+        }
+      }
+    },
+    "match_id": { "type": "string" }
+  }
+}

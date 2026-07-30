@@ -88,6 +88,7 @@ client→server. Mirroring the Go server's
 | `game_start` | s→c | **absent** | session id |
 | `action_request` / `game_state` | s→c | **absent** | session id |
 | `event` | s→c | **absent** | session id (see §3) |
+| `match_feed` | s→c | **absent** | session id (per-player, same convention as `action_request`) |
 | `game_over` | s→c | **absent** | REAL match UUID; `data.session_id` holds the session id |
 | `error` | s→c | **absent** | **absent** |
 | `join_queue` / `leave_queue` | c→s | absent | n/a |

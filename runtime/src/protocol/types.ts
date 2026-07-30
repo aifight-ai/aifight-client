@@ -1522,6 +1522,27 @@ export interface MsgMatchConfirmRequest {
   match_id?: string;
 }
 
+// ─── messages/server_match_feed.schema.json ───
+/**
+ * Opt-in realtime event feed for a match the recipient is PLAYING in (design: docs/design/LIVE_MATCH_FEED_DESIGN_2026-07-30.md). Sent ONLY to connections that declared the feed capability at the WebSocket handshake (X-AIFight-Capabilities containing `match_feed`) — the server gates per-connection, so clients that did not opt in (older runtimes, third-party bots, house LLM bots) never receive this message and their behavior is unchanged. Events carry the same per-player visibility as `action_request.new_events` (the game's EventFilter output: public actions are visible, hidden info like opponents' hole cards is stripped). `match_id` is the recipient's per-player session_id — players never learn the real match_id until game_over. Consumption is render/log ONLY: a feed message is never a decision prompt — decisions are requested exclusively via `action_request`, and runtimes MUST NOT invoke an LLM (or any decision logic) in response to `match_feed`. Events share the same seq space as `action_request.new_events`, so consumers dedupe by event seq.
+ */
+export interface MsgMatchFeed {
+  type: "match_feed";
+  data: {
+    /**
+     * Per-player session_id matching game_start.data.match_id (NOT the real match_id).
+     */
+    match_id: string;
+    /**
+     * Events since the recipient's last feed / action_request, filtered by the game's per-player EventFilter. Same visibility and seq space as action_request.new_events. maxItems is a generous resource bound (R13-F03) — a single broadcast batch is normally a handful of events.
+     *
+     * @maxItems 1024
+     */
+    events: Event[];
+  };
+  match_id?: string;
+}
+
 // ─── messages/server_queue_joined.schema.json ───
 /**
  * Sent by the server in response to a successful `join_queue` from the client. Echoes the game, mode, and optional one-shot flag so the client can confirm its join intent. After this, the client waits for either `match_confirm_request` (if agent.auto_confirm=false) or `game_start` (if auto_confirm=true).
@@ -1790,4 +1811,4 @@ export interface RegisterResponse {
 }
 
 // ─── Discriminated union of every WebSocket message envelope ───
-export type WSMessage = MsgAction | MsgJoinQueue | MsgLeaveQueue | MsgMatchConfirm | MsgRuntimeStatus | MsgActionRequest | MsgActionStale | MsgError | MsgEvent | MsgGameOver | MsgGameStart | MsgGameState | MsgMatchCancelled | MsgMatchConfirmRequest | MsgQueueJoined | MsgQueueLeft | MsgReadinessCheck | MsgWelcome;
+export type WSMessage = MsgAction | MsgJoinQueue | MsgLeaveQueue | MsgMatchConfirm | MsgRuntimeStatus | MsgActionRequest | MsgActionStale | MsgError | MsgEvent | MsgGameOver | MsgGameStart | MsgGameState | MsgMatchCancelled | MsgMatchConfirmRequest | MsgMatchFeed | MsgQueueJoined | MsgQueueLeft | MsgReadinessCheck | MsgWelcome;

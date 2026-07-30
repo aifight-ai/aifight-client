@@ -423,6 +423,7 @@ export function installDemoBridge(): void {
     onLog: noopOff,
     onTrace: noopOff,
     onServerMessage: noopOff,
+    onMatchEvents: noopOff,
     onNavigate: noopOff,
     getUsageOverview: () => Promise.resolve(USAGE),
     checkForUpdates: () => Promise.resolve(),

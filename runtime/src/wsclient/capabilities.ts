@@ -24,3 +24,17 @@ export const CLOSE_CODE_REPLACED = 4409;
  * old hard close for anyone who says nothing.
  */
 export const BRIDGE_CAPABILITIES: readonly string[] = ["replaced-close-code"];
+
+/**
+ * Capability token for the X-AIFight-Capabilities handshake header: the client
+ * understands `match_feed` frames (design: docs/design/LIVE_MATCH_FEED_DESIGN_2026-07-30.md
+ * v2). The server sends match_feed ONLY to connections that declare it, so an
+ * undeclaring client (older runtime, third-party bot, house LLM bot) never
+ * receives the feed and its behavior is unchanged.
+ *
+ * Kept separate from BRIDGE_CAPABILITIES on purpose: that header negotiates how
+ * the server should HANG UP (close codes); this one negotiates which extra
+ * message TYPES it may push. Consuming the feed is render/log only — it must
+ * never reach the decision path (see state-machine.ts's match_feed arm).
+ */
+export const CLIENT_CAPABILITY_MATCH_FEED = "match_feed";

@@ -10,6 +10,7 @@ import type {
   MsgGameOver,
   MsgGameStart,
   MsgGameState,
+  MsgMatchFeed,
 } from "../protocol/types";
 import { ensureRuntimeHome, getRuntimeHome, safePathSegment } from "../store/paths";
 import type { ServerMessageEnvelope } from "../wsclient/frame-handler";
@@ -129,7 +130,19 @@ export class LocalMatchSessionStore {
     }
 
     if (!sessionId) return;
-    const summary = this.#ensureSession(config, sessionId, { now });
+    let summary: LocalMatchSessionSummary | null;
+    if (message.type === "match_feed") {
+      // Feed frames are render/log-only telemetry: they persist only onto a
+      // session that already exists. A feed naming an unknown session (e.g.
+      // arriving before game_start landed, or after the store was pruned)
+      // must not mint a garbage session that never completes — drop it
+      // silently (the store has no logger; a dropped feed is routine, not a
+      // ledger-cap-style anomaly worth a console.warn).
+      summary = this.#readExistingSession(config, sessionId);
+      if (summary === null) return;
+    } else {
+      summary = this.#ensureSession(config, sessionId, { now });
+    }
     this.#appendJSONLine(summary, "inbound.jsonl", {
       at: now,
       direction: "inbound",
@@ -139,7 +152,11 @@ export class LocalMatchSessionStore {
     let next = {
       ...summary,
       inbound_count: summary.inbound_count + 1,
-      updated_at: now,
+      // A late feed frame on a COMPLETED session still lands in inbound.jsonl
+      // (the end-of-match tail is worth keeping) but must NOT bump updated_at
+      // — listSessions sorts by it, and a bump would float a finished match
+      // back to the top. Every other message type keeps the bump.
+      ...(message.type === "match_feed" && summary.status === "completed" ? {} : { updated_at: now }),
     };
     if (message.type === "action_request") {
       next = applyEventProgress(next, (message as MsgActionRequest).data);
@@ -295,6 +312,13 @@ export class LocalMatchSessionStore {
     writeJSONFile(path.join(item.path, "self_review.json"), review);
     this.#writeSummary({ ...stripPath(item), self_review_at: this.#now().toISOString() });
     return true;
+  }
+
+  /** Read a session summary if — and only if — the session already exists on
+   *  disk. Unlike #ensureSession this never creates the directory, so a stray
+   *  frame cannot mint a session of its own. */
+  #readExistingSession(config: BridgeConfig, sessionId: string): LocalMatchSessionSummary | null {
+    return readSummary(path.join(this.#sessionDir(config.agentId, sessionId), "session.json"));
   }
 
   #ensureSession(
@@ -485,6 +509,11 @@ function sessionIdFromServerMessage(message: ServerMessageEnvelope): string | nu
   if (message.type === "game_start") return (message as MsgGameStart).data.match_id;
   if (message.type === "game_state") return (message as MsgGameState).data.match_id;
   if (message.type === "action_request") return (message as MsgActionRequest).data.match_id;
+  // match_feed.data.match_id is the per-player session_id (same namespace as
+  // action_request.data.match_id) — feed frames land in the owning match's
+  // inbound.jsonl, correct under concurrent matches. Render/log only: no
+  // counter folding here; event progress stays action_request-driven.
+  if (message.type === "match_feed") return (message as MsgMatchFeed).data.match_id;
   if (message.type === "game_over") return (message as MsgGameOver).data.session_id;
   return null;
 }

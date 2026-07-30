@@ -73,6 +73,7 @@ const MESSAGE_TYPE_TO_FILE: Record<string, string> = {
   action_request: "messages/server_action_request.schema.json",
   action_stale: "messages/server_action_stale.schema.json",
   event: "messages/server_event.schema.json",
+  match_feed: "messages/server_match_feed.schema.json",
   game_state: "messages/server_game_state.schema.json",
   game_over: "messages/server_game_over.schema.json",
   error: "messages/server_error.schema.json",

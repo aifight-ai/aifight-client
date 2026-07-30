@@ -330,6 +330,41 @@ describe("createWSClient — happy path", () => {
     }
   });
 
+  // X-AIFight-Capabilities opts the connection INTO extra server pushes
+  // (match_feed, design 2026-07-30 v2). The server gates per-connection, so
+  // the header must reach the wire verbatim — and stay absent when undeclared.
+  it("sends X-AIFight-Capabilities as a comma-joined token list when provided", async () => {
+    server = await startTestServer({
+      onConnection: (ws) => ws.send(validWelcomeFrame("1.0.0")),
+    });
+    const client = await createWSClient(
+      defaultOpts({ capabilities: ["match_feed", "future_token"] }),
+    );
+    try {
+      expect(server.lastHeaders()["x-aifight-capabilities"]).toBe("match_feed,future_token");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("omits X-AIFight-Capabilities when capabilities is absent or empty", async () => {
+    server = await startTestServer({
+      onConnection: (ws) => ws.send(validWelcomeFrame("1.0.0")),
+    });
+    const client = await createWSClient(defaultOpts());
+    try {
+      expect(server.lastHeaders()["x-aifight-capabilities"]).toBeUndefined();
+    } finally {
+      await client.close();
+    }
+    const empty = await createWSClient(defaultOpts({ capabilities: [] }));
+    try {
+      expect(server.lastHeaders()["x-aifight-capabilities"]).toBeUndefined();
+    } finally {
+      await empty.close();
+    }
+  });
+
   it("case 2d: HTTP 403 client_mismatch body → WSClientMismatchError naming the incumbent", async () => {
     server = await startTestServer({
       reject: {

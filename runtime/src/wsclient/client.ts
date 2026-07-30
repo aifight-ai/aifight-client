@@ -141,6 +141,12 @@ export interface WSClientOptions {
    *  other kind. Omitted when unknown, which the server treats as "binds
    *  nothing" so an older client keeps working. */
   clientKind?: string;
+  /** Capability tokens sent as the X-AIFight-Capabilities header (comma
+   *  separated). Each token opts this connection INTO a server push behaviour
+   *  the server otherwise withholds — e.g. CLIENT_CAPABILITY_MATCH_FEED gates
+   *  the match_feed event stream. Omitted/empty means the header is not sent
+   *  at all, so a client that says nothing keeps the old wire behaviour. */
+  capabilities?: readonly string[];
   /** Process connection-instance id sent as X-AIFight-Instance. Defaults to
    *  the module-wide PROCESS_INSTANCE_ID — override only in tests that need
    *  to simulate two distinct processes from one test runner. */
@@ -809,6 +815,12 @@ export async function createWSClient(
       // back in. Every bridge before this one treats any 4xxx as "never
       // reconnect", which is why the server has to ask rather than assume.
       headers["X-AIFight-Bridge-Capabilities"] = BRIDGE_CAPABILITIES.join(",");
+      // Message-type push capabilities (distinct from the close-code
+      // negotiation above): each token opts this connection into an extra
+      // server push, currently `match_feed`. Absent header = old behaviour.
+      if (opts.capabilities !== undefined && opts.capabilities.length > 0) {
+        headers["X-AIFight-Capabilities"] = opts.capabilities.join(",");
+      }
       // R13-F03: bound the inbound frame size. An oversize frame makes `ws`
       // close with 1009 ("message too big"), which flows through the normal
       // close → reconnect path rather than pinning ~100 MiB (the ws default).

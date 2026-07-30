@@ -21,15 +21,16 @@ describe("schemas loader", () => {
     expect(normalized).toMatch(/protocol\/schema$|dist\/schemas$/);
   });
 
-  it("exposes exactly 18 message types", () => {
+  it("exposes exactly 19 message types", () => {
     const types = messageTypes();
-    expect(types).toHaveLength(18);
+    expect(types).toHaveLength(19);
     expect(types).toContain("welcome");
     expect(types).toContain("game_over");
     expect(types).toContain("action");
     expect(types).toContain("action_stale");
     expect(types).toContain("readiness_check");
     expect(types).toContain("runtime_status");
+    expect(types).toContain("match_feed");
   });
 
   it("loadSchema returns a parseable schema for every message type", () => {

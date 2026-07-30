@@ -757,18 +757,28 @@ function readRequestId(data: unknown): string {
 }
 
 function normalizeReadinessStatus(status: unknown, fallbackRequestId: string): Record<string, unknown> {
-  const base = status && typeof status === "object"
-    ? { ...(status as Record<string, unknown>) }
+  // Whitelist EXACTLY the fields client_runtime_status.schema.json allows
+  // (additionalProperties:false): anything else the handler returns would make
+  // serializeClientMessage reject the whole envelope — which is how the 1B
+  // capacity fields (active_matches/max_concurrent) silently killed every
+  // readiness reply until 2026-07-30. Handler-returned extras belong in
+  // `detail`, not in top-level keys.
+  const src = status && typeof status === "object"
+    ? (status as Record<string, unknown>)
     : {};
+  const base: Record<string, unknown> = {};
+  if (typeof src.request_id === "string") base.request_id = src.request_id;
+  if (typeof src.ready === "boolean") base.ready = src.ready;
+  if (src.runtime_type === "direct" || src.runtime_type === "mock") {
+    base.runtime_type = src.runtime_type;
+  }
+  if (typeof src.runtime_name === "string") base.runtime_name = src.runtime_name;
+  if (typeof src.checked_at === "string") base.checked_at = src.checked_at;
+  if (typeof src.detail === "string") base.detail = truncateDetail(src.detail);
   if (typeof base.request_id !== "string") base.request_id = fallbackRequestId;
   if (typeof base.ready !== "boolean") base.ready = false;
-  if (base.runtime_type !== "direct" && base.runtime_type !== "mock") {
-    base.runtime_type = "direct";
-  }
+  if (base.runtime_type === undefined) base.runtime_type = "direct";
   if (typeof base.checked_at !== "string") base.checked_at = new Date().toISOString();
-  if (typeof base.detail === "string") {
-    base.detail = truncateDetail(base.detail);
-  }
   return base;
 }
 

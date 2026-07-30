@@ -241,6 +241,13 @@ export function WatchView() {
           {t("watch.demoBanner")}
         </div>
       )}
+      {/* F2: the synthetic own-action was rolled back unconfirmed — the board
+          stepped back to the last server-confirmed state. */}
+      {isLive && liveMatch.syncNotice === "action_unconfirmed" && (
+        <div className="v3-dv-banner shrink-0" data-tone="warn">
+          {t("cockpit.actionUnconfirmed")}
+        </div>
+      )}
       <div className="min-h-0 flex-1">
         <CockpitPanel
           key={`${match.id}:${finished ? "fin" : interrupted ? "int" : isLive ? "live" : "demo"}`}

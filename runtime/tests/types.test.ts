@@ -125,7 +125,9 @@ describe("runtime self-test", () => {
     const r = hello();
     expect(r.ok).toBe(true);
     expect(r.runtimeVersion).toBe(RUNTIME_VERSION);
-    expect(r.messageTypeCount).toBe(18);
+    // 19 = 14 server_* + 5 client_* message types; match_feed joined the
+    // server set with the 2026-07-30 live-feed groundwork.
+    expect(r.messageTypeCount).toBe(19);
     expect(r.schemaCount).toBeGreaterThanOrEqual(43);
   });
 

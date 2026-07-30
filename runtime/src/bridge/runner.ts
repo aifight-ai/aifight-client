@@ -9,6 +9,7 @@ import type {
   SeatProbeResult,
 } from "../wsclient/reconnect";
 import { PROCESS_INSTANCE_ID } from "../wsclient/instance";
+import { CLIENT_CAPABILITY_MATCH_FEED } from "../wsclient/capabilities";
 import type { ServerMessageEnvelope } from "../wsclient/frame-handler";
 import { displayGameName } from "./match-narrator";
 import { PROTOCOL_VERSION } from "../index";
@@ -48,6 +49,25 @@ export interface BridgeRunnerOptions {
    * Making it required means a new embedder has to answer the question.
    */
   readonly clientKind: "desktop" | "cli";
+  /**
+   * Declare the `match_feed` capability at the WS handshake
+   * (X-AIFight-Capabilities), opting this connection into the server's
+   * realtime per-player event feed (design: docs/design/LIVE_MATCH_FEED_DESIGN_2026-07-30.md
+   * v2). Consumption is render/log only — the runtime routes feed frames to
+   * onServerMessage + the session log and the FSM ignores them, so declaring
+   * this never triggers LLM calls or changes decision behavior.
+   *
+   * DEFAULT true: the official clients (this CLI, and the desktop app through
+   * its bridge-host) are exactly the clients the feed is built for, so they
+   * declare by default — today BOTH simply rely on this default, neither
+   * passes the option explicitly (the CLI's feed frames only land in its
+   * session logs — narrator consumption is a later phase). The wsclient layer
+   * omits the header unless handed capability tokens, so only a client wired
+   * through BridgeRunner (or one that opts in deliberately) ever declares;
+   * third-party runtimes that never upgrade never send the header, and the
+   * server gates per-connection, so their behavior is unchanged either way.
+   */
+  readonly matchFeed?: boolean;
   readonly runtimeProvider?: BridgeRuntimeProvider;
   readonly autoJoinGame?: "texas_holdem" | "liars_dice" | "coup";
   readonly autoJoinMode?: string;
@@ -312,6 +332,10 @@ export class BridgeRunner {
       apiKey: this.#opts.config.apiKey,
       deviceId: getDeviceId(),
       clientKind: this.#opts.clientKind,
+      // Opt into the match_feed push unless the host explicitly declines —
+      // see BridgeRunnerOptions.matchFeed for the default-true rationale.
+      capabilities:
+        this.#opts.matchFeed === false ? undefined : [CLIENT_CAPABILITY_MATCH_FEED],
       expectedProtocolVersion: PROTOCOL_VERSION,
       // R13-F08: after a 401 on reconnect, re-read the bridge config so a
       // credential rotated by re-pairing is picked up without a restart.
@@ -872,21 +896,20 @@ export class BridgeRunner {
     // ONE source of truth with the FSM's game_start admission gate (R13-F02).
     const maxConcurrent = MAX_CONCURRENT_MATCHES;
     const activeMatches = this.#agent?.activeMatchCount ?? 0;
+    // Capacity travels inside `detail` — the runtime_status schema is closed
+    // (additionalProperties:false), so extra top-level keys would fail the
+    // client's own outbound validation and the reply would never be sent.
     if (activeMatches >= maxConcurrent) {
       return {
         ...base,
         ready: false,
-        active_matches: activeMatches,
-        max_concurrent: maxConcurrent,
         detail: `busy: ${activeMatches}/${maxConcurrent} matches in flight`,
       };
     }
     return {
       ...base,
       ready: true,
-      active_matches: activeMatches,
-      max_concurrent: maxConcurrent,
-      detail: "ready",
+      detail: `ready (${activeMatches}/${maxConcurrent} matches in flight)`,
     };
   }
 }

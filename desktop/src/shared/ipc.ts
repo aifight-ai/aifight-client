@@ -573,6 +573,21 @@ export interface GameStateData {
   readonly players?: ReadonlyArray<ProtocolPlayerInfo>;
 }
 
+/**
+ * match_feed.data — the server-PUSHED realtime feed for a match you are PLAYING
+ * in (LIVE_MATCH_FEED v2 / Phase 2). Sent only to connections that declared the
+ * capability at the WS handshake and only while the server's match_feed_enabled
+ * switch is on, so an old server simply never sends it. Events share the seq
+ * space and per-player filtering of action_request.new_events — liveMatch.ts
+ * folds them through the very same seq-dedupe merge as the polled REST feed.
+ * Render/log only: never a decision prompt, never an LLM call.
+ */
+export interface MatchFeedData {
+  /** Per-player session id (matches game_start.data.match_id, NOT the real match id). */
+  readonly match_id: string;
+  readonly events?: ReadonlyArray<ProtocolEvent> | null;
+}
+
 /** game_over.data — match end. Real identities + canonical result disclosed here. */
 export interface GameOverData {
   readonly match_id: string;
@@ -617,6 +632,18 @@ export interface ServerMessage {
   readonly type: string;
   readonly data?: unknown;
   readonly match_id?: string;
+}
+
+/**
+ * One page of the PARTICIPANT event feed (GET /api/agents/me/matches/{sessionID}/events),
+ * polled by main while a match is live (LIVE_MATCH_FEED F1). The endpoint returns
+ * the full per-player-filtered history each time (is_full_history, no `since`
+ * param), so the renderer dedupes by seq against what action_request.new_events
+ * already delivered. Same engine-event wire shape as ProtocolEvent.
+ */
+export interface MatchEventsPayload {
+  readonly sessionId: string;
+  readonly events: readonly ProtocolEvent[];
 }
 
 // ── Local token usage (§7A) ──────────────────────────────────────────────────
@@ -737,6 +764,7 @@ export const IPC = {
   log: "bridge:log",
   trace: "bridge:trace",
   serverMessage: "bridge:server-message",
+  matchEvents: "bridge:match-events",
   navigate: "app:navigate",
   updateStatus: "update:status",
 } as const;
@@ -857,6 +885,12 @@ export interface AifightBridgeApi {
   // game_over / …). liveMatch.ts (D6.5) folds these into the renderer's match
   // model, surfacing ONLY the owner's own private info.
   onServerMessage(listener: (message: ServerMessage) => void): () => void;
+  /**
+   * Participant event-feed pages polled by main while a match is live
+   * (LIVE_MATCH_FEED F1): full per-player-filtered history every ~2.5s, merged
+   * by seq in liveStore. Render-only — this feed NEVER triggers an LLM call.
+   */
+  onMatchEvents(listener: (payload: MatchEventsPayload) => void): () => void;
   /** Main asks the renderer to switch to a view (from the app menu — e.g. Preferences ⌘,). */
   onNavigate(listener: (view: string) => void): () => void;
   /** Aggregated LOCAL token usage (month + today) from the §7A ledger. Costs come

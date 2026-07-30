@@ -14,6 +14,7 @@ import type {
   MsgGameState,
   MsgMatchCancelled,
   MsgMatchConfirmRequest,
+  MsgMatchFeed,
   MsgQueueJoined,
 } from "../protocol/types";
 import type { ServerMessageEnvelope } from "../wsclient/frame-handler";
@@ -299,6 +300,8 @@ function applyServerMessage(
       return serverError(state, message as MsgError);
     case "event":
       return serverEvent(state, message as MsgEvent);
+    case "match_feed":
+      return matchFeed(state, message as MsgMatchFeed);
     default:
       return warn(state, "fsm.unknown_server_message", `Ignoring unknown server message '${message.type}'`);
   }
@@ -736,6 +739,23 @@ function serverEvent(state: AgentFSMState, msg: MsgEvent): AgentFSMTransition {
   return ok(state, [
     notify("info", "server.event", `Received server event batch (${msg.data.events.length} events)`),
   ]);
+}
+
+// match_feed (design: docs/design/LIVE_MATCH_FEED_DESIGN_2026-07-30.md v2) is a
+// RENDER/LOG-ONLY stream — the hard constraint, restated so this arm is never
+// "optimized" into something else:
+//   - it is NOT a decision prompt (only action_request may trigger one), so it
+//     produces NO effects — no request_decision, no notify;
+//   - it touches NO match state — queue/activeMatch/pendingActions and the
+//     derived phase all stay exactly as they were;
+//   - it keeps NO seq bookkeeping — feed events share the seq space of
+//     action_request.new_events, and the consumers that dedupe by seq
+//     (desktop liveStore, session counters) do their own; the FSM recording a
+//     feed maxSeq would risk swallowing a genuine new_events delivery.
+// Host forwarding and session persistence happen in AgentInstance/the runner
+// BEFORE the FSM ever sees the frame, so ignoring it here loses nothing.
+function matchFeed(state: AgentFSMState, _msg: MsgMatchFeed): AgentFSMTransition {
+  return ok(state);
 }
 
 function reconnectEvent(state: AgentFSMState, event: ReconnectEvent): AgentFSMTransition {

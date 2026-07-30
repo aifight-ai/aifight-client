@@ -12,7 +12,14 @@
 
 import { useEffect, useState } from "react";
 
-import { appendFinalEvents, emptyLiveMatch, reduceServerMessage, type LiveMatchState } from "./liveMatch";
+import {
+  appendFinalEvents,
+  emptyLiveMatch,
+  injectFinalAction,
+  mergePolledEvents,
+  reduceServerMessage,
+  type LiveMatchState,
+} from "./liveMatch";
 import type { AifightBridgeApi, BridgeDecisionTrace } from "../shared/ipc";
 
 /**
@@ -20,9 +27,10 @@ import type { AifightBridgeApi, BridgeDecisionTrace } from "../shared/ipc";
  * step it belongs to. `step` is the event count at arrival — the bridge's
  * stdout is a FIFO, so the action_request (whose new_events advance the board)
  * always lands before the decision traces it provoked, making "events so far"
- * exactly the board position the decision was taken at.
+ * exactly the board position the decision was taken at. `at` is the arrival
+ * wall-clock (ms), used by the F4 "thinking" placeholder's elapsed counter.
  */
-export type StampedTrace = BridgeDecisionTrace & { readonly step?: number };
+export type StampedTrace = BridgeDecisionTrace & { readonly step?: number; readonly at?: number };
 
 export interface LiveStoreState {
   readonly match: LiveMatchState;
@@ -114,11 +122,27 @@ export function ensureLiveStoreStarted(api?: AifightBridgeApi): void {
     }
   });
   bridge.onTrace((tr) => {
+    // F2: the final_action trace carries the complete action BEFORE it is
+    // submitted — inject it as a synthetic board event so the owner's own move
+    // shows immediately (the reconciler swaps in the server's real event).
+    const match = tr.type === "final_action" ? injectFinalAction(state.match, tr) : state.match;
     // Stamp the board step this trace belongs to (see StampedTrace).
-    const stamped: StampedTrace = { ...tr, step: state.match.events.length };
-    state = { match: state.match, traces: [...state.traces, stamped], lastActivityAt: Date.now() };
+    const stamped: StampedTrace = { ...tr, step: match.events.length, at: Date.now() };
+    state = { match, traces: [...state.traces, stamped], lastActivityAt: Date.now() };
     emit();
   });
+  // F1: the participant event feed polled by main — opponents' moves between
+  // our turns. Merged by seq; render-only, never feeds a prompt. Absent on an
+  // older preload → degrade quietly to the turn-driven stream alone.
+  if (typeof bridge.onMatchEvents === "function") {
+    bridge.onMatchEvents((payload) => {
+      if (state.match.sessionId === null || payload.sessionId !== state.match.sessionId) return;
+      const match = mergePolledEvents(state.match, payload.sessionId, payload.events);
+      if (match === state.match) return; // nothing new — not liveness for the board
+      state = { ...state, match, lastActivityAt: Date.now() };
+      emit();
+    });
+  }
 }
 
 export function getLiveStoreState(): LiveStoreState {
