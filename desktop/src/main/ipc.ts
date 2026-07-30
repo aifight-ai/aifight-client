@@ -177,7 +177,9 @@ export function registerBridgeIpc(host: BridgeHost): void {
   });
 
   // Pause/resume automatic matchmaking (leave/re-enter the pool) without going
-  // offline. Session-only: the renderer always starts un-paused each launch.
+  // offline. PERSISTED across launches (owner ruling, 连接审计 #13): the host
+  // keeps the flag in main-process ui-flags, so the first connected edge after
+  // a relaunch already honours yesterday's pause.
   handle(IPC.setMatchingPaused, async (_e, paused: unknown) => {
     try {
       await host.setMatchingPaused(paused === true);

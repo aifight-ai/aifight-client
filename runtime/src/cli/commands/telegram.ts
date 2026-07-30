@@ -65,9 +65,13 @@ export async function runTelegram(args: HandlerArgs, env: HandlerEnv): Promise<n
     // way to change anything from the menu — the owner went round the loop four
     // times on a fresh VPS looking for the edit screen (2026-07-29). Scripts and
     // --json keep the old status-only behaviour; only a terminal gets the panel.
+    //
+    // The script branch is checked FIRST: --json on an unlinked machine must
+    // answer with a status document ({status:"not_configured"}), not fall into
+    // the interactive setup wizard and die as a usage error.
     case "":
-      if (!isLinked()) return telegramSetup(rest, env);
       if (args.jsonMode || process.stdin.isTTY !== true) return telegramStatus(rest, env);
+      if (!isLinked()) return telegramSetup(rest, env);
       return telegramPanel(rest, env);
     case "status":
       return telegramStatus(rest, env);
@@ -255,6 +259,11 @@ export async function telegramPanel(args: HandlerArgs, env: HandlerEnv, injected
       await withDeferredApply(() => item.run(env, io));
     } catch (cause) {
       env.stdout(`  Could not complete that: ${describeTelegramError(cause)}\n`);
+      // CommandError/UsageError carry the fix in their hint (the allowed
+      // values, the "HH:MM" format) — without it the user is told THAT it
+      // failed but not what would succeed.
+      const hint = cause instanceof CommandError || cause instanceof UsageError ? cause.hint : undefined;
+      if (hint !== undefined) env.stdout(`  ${hint}\n`);
     }
   }
 }
@@ -602,7 +611,10 @@ async function telegramSet(args: HandlerArgs, env: HandlerEnv): Promise<number> 
   writeBridgeConfig({ ...config, telegram: outcome.section, updatedAt: new Date().toISOString() });
 
   if (args.jsonMode) {
-    env.stdout(JSON.stringify({ status: "ok", key, applied: outcome.summary }) + "\n");
+    // restartPending lets a script know the running bridge has not picked this
+    // up yet — applyPendingBridgeRestart prints nothing in jsonMode, so the
+    // boolean is the only channel that carries it.
+    env.stdout(JSON.stringify({ status: "ok", key, applied: outcome.summary, restartPending: bridgeRestartPending() }) + "\n");
     return 0;
   }
   env.stdout(`Telegram ${outcome.summary}\n`);
@@ -627,7 +639,7 @@ async function telegramMute(args: HandlerArgs, env: HandlerEnv): Promise<number>
   writeBridgeConfig({ ...config, telegram: next, updatedAt: new Date().toISOString() });
 
   if (args.jsonMode) {
-    env.stdout(JSON.stringify({ status: "ok", mutedUntil: outcome.mutedUntil ?? null }) + "\n");
+    env.stdout(JSON.stringify({ status: "ok", mutedUntil: outcome.mutedUntil ?? null, restartPending: bridgeRestartPending() }) + "\n");
     return 0;
   }
   if (outcome.mutedUntil === undefined) {
@@ -654,7 +666,7 @@ async function telegramUnlink(args: HandlerArgs, env: HandlerEnv): Promise<numbe
   writeBridgeConfig({ ...rest, updatedAt: new Date().toISOString() });
 
   if (args.jsonMode) {
-    env.stdout(JSON.stringify({ status: "ok", unlinked: true }) + "\n");
+    env.stdout(JSON.stringify({ status: "ok", unlinked: true, restartPending: bridgeRestartPending() }) + "\n");
     return 0;
   }
   env.stdout("Telegram chat unlinked. The bot token is kept, so `aifight telegram setup` can re-pair without BotFather.\n");

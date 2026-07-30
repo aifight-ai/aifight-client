@@ -475,8 +475,32 @@ export async function getConfig(slug: string = DEFAULT_SLUG): Promise<ConfigView
   };
 }
 
+// All config MUTATIONS run strictly one-at-a-time, in call order — the same
+// FIFO discipline cli-host.ts applies to desktop CLI ops. Every mutator below
+// is a read-modify-write on config.json; writeConfig's unique tmp + rename
+// only prevents TORN files, not LOST UPDATES (two in-flight IPC mutations
+// could interleave reads and let the older write land last). The renderer
+// currently awaits each invoke in order, so this is defensive depth (审查 #10),
+// not a live-bug fix.
+let configMutationChain: Promise<unknown> = Promise.resolve();
+
+/** Enqueue a config mutation on the strict FIFO chain. A failed task never
+ *  breaks the chain for the next one. Exported for tests. */
+export function enqueueConfigMutation<T>(task: () => Promise<T>): Promise<T> {
+  const run = configMutationChain.then(task, task);
+  configMutationChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 /** Create or update a profile (everything except the API key). Initializes config if absent. */
-export async function saveProfile(slug: string, input: ProfileInput): Promise<ConfigMutResult> {
+export function saveProfile(slug: string, input: ProfileInput): Promise<ConfigMutResult> {
+  return enqueueConfigMutation(() => saveProfileInner(slug, input));
+}
+
+async function saveProfileInner(slug: string, input: ProfileInput): Promise<ConfigMutResult> {
   if (!input || typeof input.profileId !== "string" || input.profileId.trim() === "") {
     return { ok: false, error: "profile id is required" };
   }
@@ -578,7 +602,11 @@ export async function saveProfile(slug: string, input: ProfileInput): Promise<Co
 }
 
 /** Store a pasted API key to a 0600 file and point the profile's apiKeyRef at it. */
-export async function setKey(slug: string, profileId: unknown, rawKey: unknown): Promise<ConfigMutResult> {
+export function setKey(slug: string, profileId: unknown, rawKey: unknown): Promise<ConfigMutResult> {
+  return enqueueConfigMutation(() => setKeyInner(slug, profileId, rawKey));
+}
+
+async function setKeyInner(slug: string, profileId: unknown, rawKey: unknown): Promise<ConfigMutResult> {
   if (typeof profileId !== "string" || profileId.trim() === "") return { ok: false, error: "profile id is required" };
   if (typeof rawKey !== "string" || rawKey.trim() === "") return { ok: false, error: "API key is empty" };
   try {
@@ -607,7 +635,11 @@ export async function setKey(slug: string, profileId: unknown, rawKey: unknown):
  *  a failed deletion returns an error naming the retained path instead of fake
  *  success. External file refs (not created by the GUI) are unreferenced but
  *  never deleted. */
-export async function clearKey(slug: string, profileId: unknown): Promise<ConfigMutResult> {
+export function clearKey(slug: string, profileId: unknown): Promise<ConfigMutResult> {
+  return enqueueConfigMutation(() => clearKeyInner(slug, profileId));
+}
+
+async function clearKeyInner(slug: string, profileId: unknown): Promise<ConfigMutResult> {
   if (typeof profileId !== "string" || profileId.trim() === "") return { ok: false, error: "profile id is required" };
   try {
     const config = await readConfigOptional(slug);
@@ -629,7 +661,11 @@ export async function clearKey(slug: string, profileId: unknown): Promise<Config
   }
 }
 
-export async function setActive(slug: string, profileId: unknown): Promise<ConfigMutResult> {
+export function setActive(slug: string, profileId: unknown): Promise<ConfigMutResult> {
+  return enqueueConfigMutation(() => setActiveInner(slug, profileId));
+}
+
+async function setActiveInner(slug: string, profileId: unknown): Promise<ConfigMutResult> {
   if (typeof profileId !== "string") return { ok: false, error: "profile id is required" };
   try {
     const config = await readConfigOptional(slug);
@@ -644,7 +680,11 @@ export async function setActive(slug: string, profileId: unknown): Promise<Confi
   }
 }
 
-export async function setRoute(slug: string, game: unknown, profileId: unknown): Promise<ConfigMutResult> {
+export function setRoute(slug: string, game: unknown, profileId: unknown): Promise<ConfigMutResult> {
+  return enqueueConfigMutation(() => setRouteInner(slug, game, profileId));
+}
+
+async function setRouteInner(slug: string, game: unknown, profileId: unknown): Promise<ConfigMutResult> {
   if (typeof profileId !== "string") return { ok: false, error: "profile id is required" };
   try {
     const config = await readConfigOptional(slug);
@@ -663,7 +703,11 @@ export async function setRoute(slug: string, game: unknown, profileId: unknown):
   }
 }
 
-export async function deleteProfile(slug: string, profileId: unknown): Promise<ConfigMutResult> {
+export function deleteProfile(slug: string, profileId: unknown): Promise<ConfigMutResult> {
+  return enqueueConfigMutation(() => deleteProfileInner(slug, profileId));
+}
+
+async function deleteProfileInner(slug: string, profileId: unknown): Promise<ConfigMutResult> {
   if (typeof profileId !== "string") return { ok: false, error: "profile id is required" };
   try {
     const config = await readConfigOptional(slug);

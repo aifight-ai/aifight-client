@@ -251,4 +251,58 @@ describe("telegram poller", () => {
 
     expect(seen).toEqual([2]);
   });
+
+  // Two processes polling one bot is a standoff, not an outage: Telegram hands
+  // each update to whichever asks first, so the loser looks dead to its user.
+  // The loop must say so plainly (error level, its own code) and wait at a slow
+  // fixed cadence rather than spinning the ordinary failure backoff.
+  it("treats a 409 as a poller conflict: error log, slow fixed retry", async () => {
+    const conflict = (): Error =>
+      new TelegramApiError("request", "getUpdates: Conflict: terminated by other getUpdates request", { status: 409 });
+    const script = scriptedApi([conflict(), conflict(), []]);
+    const logs: Array<{ code: string; level: string; message: string }> = [];
+    const slept: number[] = [];
+    const poller = startTelegramPoller({
+      api: script.api,
+      dropBacklog: false,
+      onUpdate: () => undefined,
+      onLog: (e) => logs.push(e),
+      sleepFn: async (ms) => {
+        slept.push(ms);
+      },
+    });
+
+    await script.exhausted;
+    await poller.stop();
+
+    const conflicts = logs.filter((l) => l.code === "telegram.poll_conflict");
+    expect(conflicts).toHaveLength(2);
+    expect(conflicts[0]!.level).toBe("error");
+    expect(conflicts[0]!.message).toContain("Another process is already polling this bot");
+    // Fixed five-minute cadence, not the 1s→2s→4s failure backoff...
+    expect(slept).toEqual([5 * 60_000, 5 * 60_000, MIN_EMPTY_POLL_GAP_MS]);
+    // ...and none of it shows up as an ordinary poll failure.
+    expect(logs.some((l) => l.code === "telegram.poll_failed")).toBe(false);
+  });
+
+  it("recovers on its own when the other poller goes away", async () => {
+    const script = scriptedApi([
+      new TelegramApiError("request", "getUpdates: Conflict", { status: 409 }),
+      [message(5, "mine")],
+    ]);
+    const seen: number[] = [];
+    const poller = startTelegramPoller({
+      api: script.api,
+      dropBacklog: false,
+      onUpdate: (u) => {
+        seen.push(u.update_id);
+      },
+      sleepFn: async () => undefined,
+    });
+
+    await script.exhausted;
+    await poller.stop();
+
+    expect(seen).toEqual([5]);
+  });
 });

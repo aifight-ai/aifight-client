@@ -143,11 +143,14 @@ export interface PanelRunner {
 export interface PanelDeps {
   readonly api: TelegramApi;
   readonly settings: () => BridgeTelegramConfig;
-  /** Persist + apply a settings change (in-memory for this process, on disk for the next). */
-  readonly updateSettings: (next: BridgeTelegramConfig) => void;
+  /** Persist + apply a settings change (in-memory for this process, on disk for the next).
+   *  False = live for this session but NOT saved; the panel then says so,
+   *  because showing the new value alone would read as "saved". */
+  readonly updateSettings: (next: BridgeTelegramConfig) => boolean;
   readonly config: () => BridgeConfig;
-  /** Persist a bridge-config change (currently only autoDailyLimit). */
-  readonly updateConfig: (next: BridgeConfig) => void;
+  /** Persist a bridge-config change (currently only autoDailyLimit). Same
+   *  return contract as updateSettings. */
+  readonly updateConfig: (next: BridgeConfig) => boolean;
   readonly runner: PanelRunner | null;
   readonly fetchImpl?: typeof fetch;
   readonly onLog?: (event: BridgeLogEvent) => void;
@@ -196,16 +199,9 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     // Rule 1: exactly one chat, and no reply to anyone else.
     if (chatId === undefined || chatId !== deps.settings().chatId) return;
 
-    if (!deps.settings().control) {
-      // "Notifications only" still deserves one sentence back, or the user is
-      // left tapping a bot that looks broken.
-      if (update.callback_query !== undefined) {
-        await deps.api.answerCallbackQuery({ id: update.callback_query.id, text: t(locale(), "control_off_toast") });
-      } else if (update.message?.text?.startsWith("/") === true) {
-        await send(chatId, t(locale(), "control_off"));
-      }
-      return;
-    }
+    // settings.control === false never reaches here: the companion does not
+    // even start the poller then (notifications-only mode), so there is no
+    // "reply that control is off" branch — the bot is simply silent.
 
     if (update.callback_query !== undefined) {
       await handleCallback(chatId, update.callback_query);
@@ -397,18 +393,19 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
       // ── notifications ──
       case "notify:results": {
         const outcome = applyTelegramSetting(deps.settings(), "results", data.arg ?? "");
-        if (outcome.ok) deps.updateSettings(outcome.section);
+        if (outcome.ok && !deps.updateSettings(outcome.section)) return show(notifyPanel(t(l, "settings_unsaved")));
         return show(notifyPanel());
       }
       case "notify:mute": {
         const parsed = parseMuteSpec(data.arg ?? "", now());
         if (parsed.ok) {
           const section = deps.settings();
-          deps.updateSettings(
+          const saved = deps.updateSettings(
             parsed.mutedUntil === undefined
               ? dropMute(section)
               : { ...section, mutedUntil: parsed.mutedUntil },
           );
+          if (!saved) return show(notifyPanel(t(l, "settings_unsaved")));
         }
         return show(notifyPanel());
       }
@@ -416,7 +413,7 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
       case "notify:challenges": {
         const key = data.action === "alerts" ? "alerts" : "challenge_events";
         const outcome = applyTelegramSetting(deps.settings(), key, data.arg ?? "");
-        if (outcome.ok) deps.updateSettings(outcome.section);
+        if (outcome.ok && !deps.updateSettings(outcome.section)) return show(notifyPanel(t(l, "settings_unsaved")));
         return show(notifyPanel());
       }
 
@@ -524,9 +521,10 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
         await answer();
         try {
           const renamed = await renameAgent(deps.config(), proposed.name, deps.fetchImpl ?? globalThis.fetch);
-          deps.updateConfig({ ...deps.config(), agentName: renamed.name, updatedAt: new Date().toISOString() });
+          const saved = deps.updateConfig({ ...deps.config(), agentName: renamed.name, updatedAt: new Date().toISOString() });
           deps.onRenamed?.(renamed.name);
-          return show(settingsPanel(t(l, "settings_renamed", { name: escapeHtml(renamed.name) })));
+          const notice = t(l, "settings_renamed", { name: escapeHtml(renamed.name) });
+          return show(settingsPanel(saved ? notice : `${notice} ${t(l, "settings_unsaved")}`));
         } catch (cause) {
           return show(settingsPanel(actionFailure(l, cause)));
         }
@@ -534,7 +532,7 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
 
       case "settings:locale": {
         const outcome = applyTelegramSetting(deps.settings(), "locale", data.arg ?? "");
-        if (outcome.ok) deps.updateSettings(outcome.section);
+        if (outcome.ok && !deps.updateSettings(outcome.section)) return show(settingsPanel(t(l, "settings_unsaved")));
         return show(settingsPanel());
       }
 
@@ -585,7 +583,7 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     // the account ceiling and says so in the response.
     const limit = outcome.effectiveLimit;
     const previous = config.autoDailyLimit ?? 0;
-    deps.updateConfig({ ...config, autoDailyLimit: limit, updatedAt: new Date().toISOString() });
+    const saved = deps.updateConfig({ ...config, autoDailyLimit: limit, updatedAt: new Date().toISOString() });
 
     // Crossing 0 ↔ positive changes whether the bridge queues on its own, and
     // that is decided once, when the process starts. Say so plainly instead of
@@ -597,7 +595,7 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     const headline = limit === asked
       ? t(l, "settings_daily_set", { limit })
       : t(l, "settings_daily_clamped", { limit, asked });
-    return headline + note;
+    return headline + note + (saved ? "" : ` ${t(l, "settings_unsaved")}`);
   }
 
   // ── panels ─────────────────────────────────────────────────────────
@@ -682,7 +680,7 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     return { text: lines.join("\n"), keyboard: rows };
   }
 
-  function notifyPanel(): Panel {
+  function notifyPanel(notice?: string): Panel {
     const l = locale();
     const s = deps.settings();
     const muted = isMuted(s, now());
@@ -697,6 +695,7 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
         ? mutedLine(l, s.mutedUntil!)
         : t(l, "notify_not_muted"),
     ];
+    if (notice !== undefined) lines.push("", notice);
     return {
       text: lines.join("\n"),
       keyboard: [
@@ -943,7 +942,12 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     } catch (cause) {
       // "message is not modified" is Telegram telling us the user tapped the
       // panel they are already looking at — not a failure worth reporting.
-      if (!/not modified/i.test(describe(cause))) logSendFailure(cause);
+      if (/not modified/i.test(describe(cause))) return;
+      logSendFailure(cause);
+      // Anything else — typically "message to edit not found" after the user
+      // cleared the chat history — leaves a button tap visibly dead, so fall
+      // back to a fresh panel message instead of leaving nothing at all.
+      await sendPanel(chatId, panel);
     }
   }
 

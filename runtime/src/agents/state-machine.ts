@@ -41,6 +41,19 @@ export interface AgentFSMState {
   readonly availableGames: readonly string[];
   readonly autoConfirmMatches: boolean;
   readonly queue?: { readonly game: string; readonly mode: string; readonly one_shot?: boolean };
+  /**
+   * Bookkeeping for an OPTIMISTIC join_queue: set when command.join_queue
+   * applies the queue locally before the server's verdict arrives, cleared by
+   * queue_joined (accept), an error frame (reject → rolled back), leave_queue,
+   * game_start, or a reconnect. `previous` is the last CONFIRMED queue
+   * membership, so a rejected join restores what the server actually still
+   * holds instead of leaving the runtime believing in a queue that was
+   * refused (the 2026-07-29 desktop state fork: app showed the new game,
+   * the server still had the old one).
+   */
+  readonly pendingQueueJoin?: {
+    readonly previous?: { readonly game: string; readonly mode: string; readonly one_shot?: boolean };
+  };
   readonly pendingConfirm?: MsgMatchConfirmRequest["data"];
   /**
    * D1: set once we have SENT match_confirm and are waiting for game_start —
@@ -202,6 +215,11 @@ function joinQueue(state: AgentFSMState, game: string, mode?: string, oneShot?: 
     withDerivedPhase({
       ...state,
       queue,
+      // Mark the join as awaiting its server verdict. A rapid second join
+      // before the first verdict keeps the ORIGINAL previous membership —
+      // the optimistic queue of the first join was never confirmed, so it
+      // must not become the rollback target.
+      pendingQueueJoin: { previous: state.pendingQueueJoin ? state.pendingQueueJoin.previous : state.queue },
       pendingConfirm: undefined,
       confirmed: undefined,
       lastGameOver: undefined,
@@ -222,6 +240,10 @@ function leaveQueue(state: AgentFSMState): AgentFSMTransition {
     withDerivedPhase({
       ...state,
       queue: undefined,
+      // An explicit leave makes any unconfirmed join moot — without clearing
+      // the marker, a late error frame would resurrect the queue the user
+      // just asked to exit.
+      pendingQueueJoin: undefined,
       pendingConfirm: undefined,
       confirmed: undefined,
     }),
@@ -287,6 +309,9 @@ function queueJoined(state: AgentFSMState, msg: MsgQueueJoined): AgentFSMTransit
     withDerivedPhase({
       ...state,
       confirmed: undefined,
+      // The server's accept verdict: the join is confirmed, so there is no
+      // optimistic membership left to roll back.
+      pendingQueueJoin: undefined,
       queue: {
         game: msg.data.game,
         mode: normalizeMode(msg.data.mode),
@@ -394,6 +419,8 @@ function gameStart(state: AgentFSMState, msg: MsgGameStart, now?: number): Agent
     withDerivedPhase({
       ...state,
       queue: undefined,
+      // A started match settles any optimistic join still awaiting a verdict.
+      pendingQueueJoin: undefined,
       pendingConfirm: undefined,
       confirmed: undefined,
       activeMatch,
@@ -673,7 +700,36 @@ function gameOver(state: AgentFSMState, msg: MsgGameOver): AgentFSMTransition {
 
 function serverError(state: AgentFSMState, msg: MsgError): AgentFSMTransition {
   const message = typeof msg.data.message === "string" ? msg.data.message : "Server error";
-  return ok({ ...state, lastError: message }, [notify("error", "server.error", message)]);
+  const effects: AgentFSMEffect[] = [notify("error", "server.error", message)];
+  // Error frames carry no request id, so an exact join_queue correlation is
+  // impossible — but the connection is ordered and the server answers a
+  // join_queue synchronously, so the join's verdict (queue_joined or error)
+  // always lands BEFORE the error of any message sent after it. "An error
+  // arrived while a join is unconfirmed" is therefore conservatively treated
+  // as that join's rejection: roll the optimistic queue back to the last
+  // confirmed membership (undefined when there was none). If the error in
+  // fact belonged to something earlier on the wire, the join's real
+  // queue_joined arrives right after and re-establishes the queue — the
+  // rollback is then a transient, never a fork.
+  if (state.pendingQueueJoin) {
+    effects.push(
+      notify(
+        "warning",
+        "fsm.join_queue_rejected",
+        "Queue join rejected by the server; restored the previous queue state",
+      ),
+    );
+    return ok(
+      withDerivedPhase({
+        ...state,
+        queue: state.pendingQueueJoin.previous,
+        pendingQueueJoin: undefined,
+        lastError: message,
+      }),
+      effects,
+    );
+  }
+  return ok({ ...state, lastError: message }, effects);
 }
 
 function serverEvent(state: AgentFSMState, msg: MsgEvent): AgentFSMTransition {
@@ -699,6 +755,7 @@ function reconnectEvent(state: AgentFSMState, event: ReconnectEvent): AgentFSMTr
         ...state,
         transport: "connected",
         queue: undefined,
+        pendingQueueJoin: undefined,
         pendingConfirm: undefined,
         confirmed: undefined,
       }),

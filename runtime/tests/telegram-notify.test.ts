@@ -253,7 +253,42 @@ describe("bridge notifier — alerts", () => {
 
     notifier.observeLog({ level: "info", code: "reconnect.attempt_success", message: "back" });
     notifier.observeLog(failed("error"));
-    expect(rec.events).toHaveLength(2);
+    // disconnected → recovered → disconnected again.
+    expect(rec.events).toHaveLength(3);
+    expect(rec.events[2]).toMatchObject({ kind: "alert.disconnected" });
+  });
+
+  // The phone that was told "the bridge is down" is waiting for exactly one
+  // message; leaving it on the bad news was the whole bug.
+  it("closes an alerted outage with a back-online note", () => {
+    const rec = recorder();
+    let clock = 1_000_000;
+    const notifier = createBridgeNotifier({ agentId: SELF, baseUrl: BASE_URL, channel: rec.channel, now: () => clock });
+
+    notifier.observeLog({ level: "error", code: "reconnect.attempt_failure", message: "Reconnect attempt 9 failed" });
+    clock += 16 * 60_000;
+    notifier.observeLog({ level: "info", code: "reconnect.attempt_success", message: "back" });
+
+    expect(rec.events.map((e) => e.kind)).toEqual(["alert.disconnected", "alert.recovered"]);
+    expect(rec.events[1]).toMatchObject({ offlineMs: 16 * 60_000 });
+
+    const zh = renderNotifyEvent("zh", rec.events[1]!, { agentName: "PokerMind" }).text;
+    expect(zh).toContain("已恢复在线");
+    expect(zh).toContain("16 分钟");
+    const en = renderNotifyEvent("en", rec.events[1]!, { agentName: "PokerMind" }).text;
+    expect(en).toContain("back online");
+    expect(en).toContain("16 minutes");
+  });
+
+  it("says nothing on a reconnect when the outage never reached the alert bar", () => {
+    const rec = recorder();
+    const notifier = createBridgeNotifier({ agentId: SELF, baseUrl: BASE_URL, channel: rec.channel });
+
+    notifier.observeLog({ level: "warning", code: "reconnect.attempt_failure", message: "Reconnect attempt 1 failed" });
+    notifier.observeLog({ level: "info", code: "reconnect.attempt_success", message: "back" });
+    notifier.observeLog({ level: "info", code: "bridge.connected", message: "connected" });
+
+    expect(rec.events).toHaveLength(0);
   });
 
   it("passes the three fatal refusals through with their code", () => {
@@ -584,6 +619,63 @@ describe("telegram channel", () => {
 
     expect(logs.filter((c) => c === "telegram.queue_full").length).toBeGreaterThan(0);
     await channel.stop();
+  });
+
+  // A full queue of match reports must not be able to swallow "the bridge is
+  // down" — the alert takes the oldest unsent report's slot instead.
+  it("sacrifices the oldest queued non-alert when an alert needs the slot", async () => {
+    const logs: string[] = [];
+    const stub = apiStub();
+    const channel = createTelegramChannel({
+      api: stub.api,
+      settings: () => defaultTelegramConfig(1),
+      agentName: () => "PokerMind",
+      onLog: (e) => logs.push(e.message),
+    });
+
+    // MAX_PENDING is 50: fill it, then deliver the alert. All delivered
+    // synchronously, so nothing has started sending yet — Rival0 is oldest.
+    for (let i = 0; i < 50; i += 1) channel.deliver({ ...RESULT_EVENT, opponents: [`Rival${i}`] });
+    channel.deliver(ALERT_EVENT);
+    await channel.stop();
+
+    expect(stub.sent).toHaveLength(50);
+    expect(stub.sent.some((s) => s.text.startsWith("🚨"))).toBe(true); // the alert got through
+    expect(stub.sent.some((s) => s.text.includes("Rival0"))).toBe(false); // ...at the oldest report's cost
+    expect(stub.sent.some((s) => s.text.includes("Rival49"))).toBe(true);
+    expect(logs.some((m) => m.includes("to make room for an alert"))).toBe(true);
+  });
+
+  // ...but a queue that is nothing BUT alerts keeps the old policy: the
+  // newcomer is the one that goes.
+  it("still drops the newcomer when the whole queue is alerts", async () => {
+    const logs: string[] = [];
+    const stub = apiStub();
+    const channel = createTelegramChannel({
+      api: stub.api,
+      settings: () => defaultTelegramConfig(1),
+      agentName: () => "PokerMind",
+      onLog: (e) => logs.push(e.message),
+    });
+
+    for (let i = 0; i < 51; i += 1) channel.deliver(ALERT_EVENT);
+    await channel.stop();
+
+    expect(stub.sent).toHaveLength(50);
+    expect(logs.some((m) => m.includes("dropped a alert.disconnected"))).toBe(true);
+    expect(logs.some((m) => m.includes("to make room"))).toBe(false);
+  });
+
+  // 、 is the Chinese list comma; an English report takes ", ".
+  it("joins the opponent list with the reader's own list comma", () => {
+    const event: NotifyEvent = { ...RESULT_EVENT, opponents: ["Alice", "Bob"] };
+
+    const en = renderNotifyEvent("en", event, { agentName: "PokerMind" }).text;
+    expect(en).toContain("Alice, Bob");
+    expect(en).not.toContain("、");
+
+    const zh = renderNotifyEvent("zh", event, { agentName: "PokerMind" }).text;
+    expect(zh).toContain("Alice、Bob");
   });
 });
 

@@ -12,8 +12,8 @@
 // or network. The raw-stdin / fetch implementations live in onboard-io.ts.
 //
 // Security: the API key is read via hidden input (never argv, never echoed,
-// never logged), persisted only through storeSecretFile (0600) or the OS
-// keychain, and the config stores a SecretRef, not the raw value.
+// never logged), persisted only as a 0600 file (staged at a pending path until
+// the profile write lands), and the config stores a SecretRef, not the raw value.
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -199,27 +199,39 @@ async function writeProfile(slug: string, profileId: string, profile: LLMProfile
 }
 
 /**
- * After a successful interactive setup, drop NON-active profiles whose key
- * cannot resolve — e.g. config init's DEFAULT_CONFIG "claude-default" placeholder
- * pointing at an unset ANTHROPIC_API_KEY — so the user and the desktop app only
- * see the profile that actually works. Only ever runs after the active profile
- * has probed healthy, and never removes the active profile, so it cannot drop a
- * working config. Best-effort: a failure here never fails onboarding.
+ * After a successful interactive setup, drop leftover SCAFFOLD placeholder
+ * profiles — the kind `config init`'s DEFAULT_CONFIG writes ("claude-default"
+ * pointing at an unset ANTHROPIC_API_KEY) — so the user and the desktop app
+ * only see the profile that actually works.
+ *
+ * Conservative by design (2026-07-29 audit): a profile is pruned ONLY when it
+ * has the exact placeholder shape — id ending in "-default", key referenced
+ * via an env var, and that env var not set in this process. A real profile
+ * whose key simply does not resolve HERE (e.g. an --env VAR exported only in
+ * the service's environment) must survive, so "unresolvable in this shell"
+ * alone is never enough. Only ever runs after the active profile has probed
+ * healthy, and never removes the active profile. Best-effort: a failure here
+ * never fails onboarding.
  */
-async function pruneUnresolvableProfiles(slug: string): Promise<void> {
+async function pruneUnresolvableProfiles(slug: string, env: HandlerEnv): Promise<void> {
   const config = await readConfig(slug);
   if (!config) return;
   const active = config.activeProfile;
-  let changed = false;
+  const placeholders: string[] = [];
   for (const [id, prof] of Object.entries(config.profiles)) {
     if (id === active) continue;
+    if (!id.endsWith("-default")) continue;
+    if (prof.apiKeyRef.type !== "env") continue;
     const status = await checkSecretStatus(prof.apiKeyRef);
-    if (!status.available) {
-      delete config.profiles[id];
-      changed = true;
-    }
+    if (!status.available) placeholders.push(id);
   }
-  if (!changed) return;
+  if (placeholders.length === 0) return;
+  // Say exactly what is being dropped BEFORE dropping it — a silent prune is
+  // how a real profile disappears without anyone noticing.
+  for (const id of placeholders) {
+    env.stdout(`  Removing leftover placeholder profile "${id}" (its env key is not set on this machine).\n`);
+    delete config.profiles[id];
+  }
   if (config.profiles[config.routing.default] === undefined) config.routing.default = active;
   if (config.routing.byGame) {
     const kept: Record<string, string> = {};
@@ -555,6 +567,16 @@ export async function onboardDirectLLM(opts: {
     let keyFilePath = "";
     let model = "";
     let settings: ModelSettings | undefined;
+    // The staged key for this attempt (see the key phase): renamed into place
+    // only once the profile that references it is safely on disk, and deleted
+    // on every other way out, so a cancel can neither clobber the previous key
+    // file nor leave a stray secret behind.
+    let pendingKeyPath: string | undefined;
+    const discardPendingKey = async (): Promise<void> => {
+      const staged = pendingKeyPath;
+      pendingKeyPath = undefined;
+      if (staged !== undefined) await fs.rm(staged, { force: true }).catch(() => {});
+    };
 
     let cancelled = false;
     while (phase !== "write" && !cancelled) {
@@ -562,6 +584,8 @@ export async function onboardDirectLLM(opts: {
         case "provider": {
           provider = await chooseProvider(io, env);
           if (!provider) {
+            // Back-navigation can reach this phase with a key already staged.
+            await discardPendingKey();
             env.stdout("No provider selected.\n");
             return "failed";
           }
@@ -575,6 +599,7 @@ export async function onboardDirectLLM(opts: {
               false,
             );
             if (!replace) {
+              await discardPendingKey();
               env.stdout(
                 `  Kept your existing "${provider.id}". Run \`aifight config add <name>\` to add another provider alongside it.\n`,
               );
@@ -611,15 +636,28 @@ export async function onboardDirectLLM(opts: {
           if (entered === "") {
             env.stdout("  No key entered.\n");
             const again = await io.promptYesNo("  Try again?", true);
-            if (!again) return "failed";
+            if (!again) {
+              await discardPendingKey();
+              return "failed";
+            }
             break; // re-ask
           }
           apiKey = entered;
           // Same on-disk layout the desktop app uses (resolveAgentDir/keys/<id>.key),
           // so a profile configured here and one configured in the app share one file.
           keyFilePath = path.join(resolveAgentDir(slug), "keys", `${provider!.id}.key`);
-          await io.storeKey(keyFilePath, apiKey);
-          env.stdout("  ✓ Key saved to local config (0600 file, never uploaded).\n");
+          // Stage at a pending path, NOT the final one: the key lands at
+          // keyFilePath only after the profile write succeeds (below), so
+          // cancelling a Replace flow leaves the previous key file untouched.
+          // Back-navigation can stage a second key in one attempt (different
+          // provider) — drop the earlier staging file first.
+          const staged = `${keyFilePath}.pending-${process.pid}`;
+          if (pendingKeyPath !== undefined && pendingKeyPath !== staged) {
+            await fs.rm(pendingKeyPath, { force: true }).catch(() => {});
+          }
+          pendingKeyPath = staged;
+          await io.storeKey(pendingKeyPath, apiKey);
+          env.stdout("  ✓ Key received — stored locally (0600 file) once you confirm, never uploaded.\n");
           phase = "model";
           break;
         }
@@ -657,7 +695,7 @@ export async function onboardDirectLLM(opts: {
               `    3) Reasoning  ${st.thinkingEnabled ? `on${st.effort ? ` · effort ${st.effort}` : ""}` : "off"}` +
                 ` · max tokens ${st.maxTokens} · streaming ${st.stream}` +
                 `${st.temperature !== null ? ` · temperature ${st.temperature}` : ""}`,
-              `       Key        (saved to a 0600 file)`,
+              `       Key        (staged — written to a 0600 file on save)`,
               "",
             ].join("\n"),
           );
@@ -685,11 +723,25 @@ export async function onboardDirectLLM(opts: {
       }
     }
     if (cancelled) {
-      env.stdout("  Cancelled — nothing was saved (the pasted key file remains; overwrite it by re-running setup).\n");
+      await discardPendingKey();
+      env.stdout("  Cancelled — nothing was saved.\n");
       return "failed";
     }
 
-    await writeProfile(slug, provider!.id, profileFor(provider!, baseURL, model, keyFilePath, settings!));
+    try {
+      await writeProfile(slug, provider!.id, profileFor(provider!, baseURL, model, keyFilePath, settings!));
+      // The profile now references the final key path — move the staged key into
+      // place before the probe (and any later run) reads it.
+      if (pendingKeyPath !== undefined) {
+        await fs.rename(pendingKeyPath, keyFilePath);
+        pendingKeyPath = undefined;
+      }
+    } catch (cause) {
+      // The error surfaces to the user either way; what must not survive it is
+      // the staged plaintext key sitting at a .pending path forever.
+      await discardPendingKey();
+      throw cause;
+    }
 
     env.stdout(`\nTesting ${provider!.displayName} (${model})…\n`);
     const ok = await io.probe(slug);
@@ -697,7 +749,7 @@ export async function onboardDirectLLM(opts: {
       // Drop any leftover placeholder profiles (e.g. config init's
       // DEFAULT_CONFIG "claude-default" pointing at an unset env var) so the
       // user — and the desktop app — only see the profile that actually works.
-      await pruneUnresolvableProfiles(slug);
+      await pruneUnresolvableProfiles(slug, env);
       env.stdout("  ✓ model responded.\n");
       env.stdout(
         `  Tip: change any field later with one command — \`aifight config update ${provider!.id} --model …\` (see \`aifight config --help\`).\n\n`,

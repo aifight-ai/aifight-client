@@ -486,6 +486,113 @@ describe("onboard wizard navigation", () => {
     expect(out()).toContain("Cancelled");
   });
 
+  it("a confirmed setup moves the staged key into place, leaving no pending file", async () => {
+    const { io } = makeIO({
+      lines: ["1", "", ""],
+      hidden: ["sk-ant-xyz"],
+      models: null,
+      probe: [true],
+    });
+    const { env } = captureEnv();
+    expect(await onboardDirectLLM({ slug: SLUG, env, io })).toBe("configured");
+    // Exactly one key file, at the final path the profile references.
+    const keysDir = path.join(agentDir(), "keys");
+    expect(fs.readdirSync(keysDir)).toEqual(["claude.key"]);
+    expect(fs.readFileSync(path.join(keysDir, "claude.key"), "utf8")).toBe("sk-ant-xyz");
+  });
+
+  it("a cancelled Replace leaves the previous key file untouched", async () => {
+    // An existing claude profile with a key on disk. Before keys were staged at
+    // a pending path, cancelling here had ALREADY overwritten that file — the
+    // old profile was left pointing at the new (possibly wrong) key.
+    const keysDir = path.join(agentDir(), "keys");
+    fs.mkdirSync(keysDir, { recursive: true });
+    const keyPath = path.join(keysDir, "claude.key");
+    fs.writeFileSync(keyPath, "sk-old-key", { mode: 0o600 });
+    fs.writeFileSync(
+      path.join(agentDir(), "config.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        activeProfile: "claude",
+        profiles: {
+          claude: {
+            displayName: "Claude (Anthropic)",
+            protocol: "anthropic_messages",
+            apiKeyRef: { type: "file", path: keyPath },
+            model: "claude-sonnet-5",
+          },
+        },
+        routing: { default: "claude" },
+      }),
+    );
+    const { io } = makeIO({
+      lines: ["1", "", "", "", "q"], // provider, base URL, model, effort, summary=q
+      hidden: ["sk-new-key"],
+      yesno: [true], // confirm replacing the existing profile
+      models: null,
+      probe: [],
+    });
+    const { env, out } = captureEnv();
+    expect(await onboardDirectLLM({ slug: SLUG, env, io, reconfigure: true })).toBe("failed");
+    expect(out()).toContain("Cancelled");
+    // The old key is exactly as it was, and the staged new key is gone.
+    expect(fs.readFileSync(keyPath, "utf8")).toBe("sk-old-key");
+    expect(fs.readdirSync(keysDir).filter((f) => f.includes(".pending-"))).toEqual([]);
+    // …and the config still describes the old profile only.
+    expect(readConfig().profiles.claude.model).toBe("claude-sonnet-5");
+  });
+
+  it("prune keeps a real profile whose key merely does not resolve in this shell", async () => {
+    const prevAnthropic = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY; // make the scaffold placeholder unresolvable
+    delete process.env.AIFIGHT_TEST_UNSET_KEY; // certainly unset
+    try {
+      fs.writeFileSync(
+        path.join(agentDir(), "config.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          activeProfile: "claude-default",
+          profiles: {
+            "claude-default": {
+              displayName: "Claude Sonnet (default)",
+              protocol: "anthropic_messages",
+              apiKeyRef: { type: "env", name: "ANTHROPIC_API_KEY" },
+              model: "claude-sonnet-4-6",
+            },
+            // A REAL profile added for the service environment: its env var is
+            // not set in this interactive shell, but "unresolvable here" must
+            // not be enough to delete it.
+            deepseek: {
+              displayName: "DeepSeek (service env)",
+              protocol: "openai_chat_compat",
+              baseURL: "https://api.deepseek.com/v1",
+              apiKeyRef: { type: "env", name: "AIFIGHT_TEST_UNSET_KEY" },
+              model: "deepseek-chat",
+            },
+          },
+          routing: { default: "claude-default" },
+        }),
+      );
+      const { io } = makeIO({
+        lines: ["1", "", ""],
+        hidden: ["sk-ant-new"],
+        models: null,
+        probe: [true],
+      });
+      const { env, out } = captureEnv();
+      expect(await onboardDirectLLM({ slug: SLUG, env, io })).toBe("configured");
+      const cfg = readConfig();
+      // The scaffold placeholder is pruned — and the prune says so on screen;
+      // the real profile stays.
+      expect(Object.keys(cfg.profiles).sort()).toEqual(["claude", "deepseek"]);
+      expect(out()).toContain('Removing leftover placeholder profile "claude-default"');
+      expect(out()).not.toContain('placeholder profile "deepseek"');
+    } finally {
+      if (prevAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = prevAnthropic;
+    }
+  });
+
   it("Enter on the effort prompt stores an explicit high (owner default)", async () => {
     const { io } = makeIO({
       lines: ["1", "", "", "", ""],

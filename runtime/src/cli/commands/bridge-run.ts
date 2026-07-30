@@ -116,8 +116,29 @@ export async function runBridgeRun(
     if (!accepted) return 0;
   }
 
-  const config = readBridgeConfig();
+  const config = readRunBridgeConfig();
   return runBridgeWithConfig({ config, env });
+}
+
+/** readBridgeConfig, with the expected local-config failures mapped to a
+ *  CommandError (exit 1 + hint) instead of the exit-99 catchall. */
+function readRunBridgeConfig(): BridgeConfig {
+  try {
+    return readBridgeConfig();
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (message.includes("bridge is not configured")) {
+      throw new CommandError("bridge_not_configured", "AIFight Bridge is not configured.", {
+        hint: "Run `aifight setup` for a new agent, or `aifight connect <PAIRING_CODE>` for an existing agent.",
+      });
+    }
+    if (message.includes("bridge config is invalid")) {
+      throw new CommandError("bridge_config_invalid", "The local bridge config is damaged and cannot be read.", {
+        hint: "Re-link this machine with `aifight connect <PAIRING_CODE>`, or re-run `aifight setup`.",
+      });
+    }
+    throw cause;
+  }
 }
 
 export async function runBridgeWithConfig(opts: {

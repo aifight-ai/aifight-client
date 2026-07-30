@@ -73,6 +73,12 @@ vi.mock("@aifight/aifight/bridge/runner", () => ({
   },
 }));
 
+// The version-policy gate (审查 P1-2) runs inside start(); pin it to "current"
+// so these tests never touch the real network.
+vi.mock("@aifight/aifight/bridge/update-check", () => ({
+  checkBridgeUpdate: async () => ({ status: "current", currentVersion: "0.0.0", message: "current" }),
+}));
+
 const { BridgeHost } = await import("./bridge-host");
 
 const ORIGINAL_HOME = process.env.AIFIGHT_RUNTIME_HOME;

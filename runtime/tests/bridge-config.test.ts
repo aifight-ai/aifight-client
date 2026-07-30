@@ -210,6 +210,82 @@ describe("bridge config credential encryption (F10)", () => {
   });
 });
 
+// Behaviour-neutral writes: apply-settings decides "the running bridge is
+// stale" by comparing bridge.json's mtime against the port file's, so a write
+// that changes nothing the RUNNING bridge reads (encryption re-encoding, dead
+// claim credentials, a chat-panel edit that is already live in memory) must
+// leave the timestamp — and therefore the restart hint — alone.
+describe("bridge config preserveMtime writes", () => {
+  /** The same comparison apply-settings' bridgeRestartPending makes. */
+  function restartPendingLike(home: string): boolean {
+    try {
+      const started = fs.statSync(path.join(home, "port")).mtimeMs;
+      return fs.statSync(getBridgeConfigPath()).mtimeMs > started;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Port file = "the bridge started an hour ago"; bridge.json = "and it read
+   *  this file two hours ago" — i.e. no restart is pending. */
+  function pretendBridgeStarted(home: string): void {
+    fs.writeFileSync(path.join(home, "port"), "45996", { mode: 0o644 });
+    const started = new Date(Date.now() - 3_600_000);
+    fs.utimesSync(path.join(home, "port"), started, started);
+    const readAt = new Date(Date.now() - 7_200_000);
+    fs.utimesSync(getBridgeConfigPath(), readAt, readAt);
+  }
+
+  it("a preserveMtime write lands its content but keeps the timestamp (no restart hint)", () => {
+    const dir = useTempHome();
+    writeBridgeConfig(config());
+    pretendBridgeStarted(dir);
+
+    writeBridgeConfig({ ...config(), agentName: "renamed", updatedAt: new Date().toISOString() }, { preserveMtime: true });
+
+    expect(readBridgeConfig().agentName).toBe("renamed"); // the write really landed
+    expect(restartPendingLike(dir)).toBe(false);
+  });
+
+  it("an ordinary write still bumps the timestamp (the restart hint itself works)", () => {
+    const dir = useTempHome();
+    writeBridgeConfig(config());
+    pretendBridgeStarted(dir);
+
+    writeBridgeConfig({ ...config(), agentName: "renamed", updatedAt: new Date().toISOString() });
+
+    expect(restartPendingLike(dir)).toBe(true);
+  });
+
+  it("the lazy plaintext→encrypted migration does not read as a settings change", () => {
+    const dir = useTempHome();
+    const cfg: BridgeConfig = { ...config(), claimToken: "tok-legacy-claim" };
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(getBridgeConfigPath(), JSON.stringify(cfg, null, 2) + "\n");
+    pretendBridgeStarted(dir);
+
+    expect(readBridgeConfig().apiKey).toBe(cfg.apiKey); // triggers the migration rewrite
+    const disk = JSON.parse(fs.readFileSync(getBridgeConfigPath(), "utf8")) as Record<string, unknown>;
+    expect(disk.apiKey).toMatch(/^enc:/); // ...which really rewrote the file
+    expect(restartPendingLike(dir)).toBe(false);
+  });
+
+  it("claim-credential scrubbing does not read as a settings change", () => {
+    const dir = useTempHome();
+    writeBridgeConfig({
+      ...config(),
+      claimUrl: "https://aifight.ai/claim/tok-claim-once",
+      claimToken: "tok-claim-once",
+    });
+    pretendBridgeStarted(dir);
+
+    dropClaimCredentialsAfterClaim();
+
+    expect(readBridgeConfig().claimToken).toBeUndefined(); // the scrub landed
+    expect(restartPendingLike(dir)).toBe(false);
+  });
+});
+
 // D1: a bridge.json whose credential fields still point at OS-keychain entries
 // migrates to the AES file backend on read, so future reads never touch the
 // keychain (no macOS authorization popup). Keychain decrypt/delete is

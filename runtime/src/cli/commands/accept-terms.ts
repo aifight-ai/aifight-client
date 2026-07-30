@@ -34,12 +34,20 @@ export async function runAcceptTerms(args: HandlerArgs, env: HandlerEnv): Promis
   }
 
   const base = config.baseUrl.replace(/\/+$/, "");
-  const status = await fetchLegalStatus(config, base, env.fetchImpl);
-  if (status === null) {
+  const fetched = await fetchLegalStatus(config, base, env.fetchImpl);
+  if (fetched.kind === "credentials_rejected") {
+    // 401/403 is not "the network is down" — the saved bridge key no longer
+    // authenticates, and no retry will change that. Say what actually helps.
+    throw new CommandError("credentials_rejected", "AIFight rejected this machine's saved credentials.", {
+      hint: "Re-link this machine with `aifight connect <PAIRING_CODE>` from your dashboard, or re-run `aifight setup`.",
+    });
+  }
+  if (fetched.kind === "unreachable") {
     throw new CommandError("status_unavailable", "Could not reach AIFight to check your Terms status.", {
       hint: "Check your connection and try again.",
     });
   }
+  const status = fetched.status;
   if (!status.isClaimed) {
     throw new CommandError("not_claimed", "Claim this agent before accepting the Terms.", {
       hint: "Run `aifight status` to find your claim link.",
@@ -104,12 +112,21 @@ export async function runAcceptTerms(args: HandlerArgs, env: HandlerEnv): Promis
   return 0;
 }
 
+/** Outcome of the Terms-status fetch — a rejected credential is reported
+ *  separately from "could not reach the server" because the fix is different. */
+type LegalStatusResult =
+  | { readonly kind: "ok"; readonly status: LegalStatus }
+  /** 401/403 — the saved bridge key no longer authenticates (rotated/revoked). */
+  | { readonly kind: "credentials_rejected" }
+  /** Network failure, timeout, or an unexpected/non-2xx response. */
+  | { readonly kind: "unreachable" };
+
 /** GET /api/agents/me/status → claim + Terms-pending state and current versions. */
 async function fetchLegalStatus(
   config: BridgeConfig,
   base: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<LegalStatus | null> {
+): Promise<LegalStatusResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS);
   try {
@@ -118,20 +135,24 @@ async function fetchLegalStatus(
       headers: { "X-API-Key": config.apiKey },
       signal: controller.signal,
     }, { fetchImpl });
-    if (!res.ok) return null;
+    if (res.status === 401 || res.status === 403) return { kind: "credentials_rejected" };
+    if (!res.ok) return { kind: "unreachable" };
     const raw = (await res.json().catch(() => undefined)) as Record<string, unknown> | undefined;
-    if (!raw || typeof raw !== "object") return null;
+    if (!raw || typeof raw !== "object") return { kind: "unreachable" };
     if (typeof raw.current_terms_version !== "string" || typeof raw.current_privacy_version !== "string") {
-      return null;
+      return { kind: "unreachable" };
     }
     return {
-      isClaimed: raw.is_claimed === true,
-      termsPending: raw.terms_pending === true,
-      currentTermsVersion: raw.current_terms_version,
-      currentPrivacyVersion: raw.current_privacy_version,
+      kind: "ok",
+      status: {
+        isClaimed: raw.is_claimed === true,
+        termsPending: raw.terms_pending === true,
+        currentTermsVersion: raw.current_terms_version,
+        currentPrivacyVersion: raw.current_privacy_version,
+      },
     };
   } catch {
-    return null;
+    return { kind: "unreachable" };
   } finally {
     clearTimeout(timer);
   }

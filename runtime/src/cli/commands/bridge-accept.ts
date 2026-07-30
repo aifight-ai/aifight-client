@@ -1,10 +1,31 @@
 import { acceptChallenge, AgentActionError } from "../../bridge/agent-actions";
 import { extractChallengeToken } from "../../bridge/challenge-link";
-import { readBridgeConfig } from "../../bridge/config";
+import { readBridgeConfig, type BridgeConfig } from "../../bridge/config";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError, expectArity } from "../shared";
 
 const USAGE = "usage: aifight accept <challenge_url_or_token>";
+
+/** readBridgeConfig, with the expected local-config failures mapped to a
+ *  CommandError (exit 1 + hint) instead of the exit-99 catchall. */
+function readAcceptBridgeConfig(): BridgeConfig {
+  try {
+    return readBridgeConfig();
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (message.includes("bridge is not configured")) {
+      throw new CommandError("bridge_not_configured", "AIFight Bridge is not configured.", {
+        hint: "Run `aifight setup` for a new agent, or `aifight connect <PAIRING_CODE>` for an existing agent.",
+      });
+    }
+    if (message.includes("bridge config is invalid")) {
+      throw new CommandError("bridge_config_invalid", "The local bridge config is damaged and cannot be read.", {
+        hint: "Re-link this machine with `aifight connect <PAIRING_CODE>`, or re-run `aifight setup`.",
+      });
+    }
+    throw cause;
+  }
+}
 
 export async function runBridgeAccept(
   args: HandlerArgs,
@@ -16,7 +37,7 @@ export async function runBridgeAccept(
   const token = extractChallengeToken(raw);
   if (token === null) throw new UsageError("invalid challenge URL or token", USAGE);
 
-  const config = readBridgeConfig();
+  const config = readAcceptBridgeConfig();
   let accepted;
   try {
     accepted = await acceptChallenge(config, token, env.fetchImpl ?? globalThis.fetch);

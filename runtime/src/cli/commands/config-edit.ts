@@ -322,6 +322,15 @@ export async function resolveKeyRef(input: {
   }
   if (envName !== undefined) return { type: "env", name: envName };
   if (filePath !== undefined) return { type: "file", path: filePath };
+  // --key-stdin reads until EOF; on a terminal stdin that never comes, so the
+  // command looks hung. Refuse up front and say what a pipe looks like.
+  if (input.stdinValue === undefined && process.stdin.isTTY === true) {
+    throw configError("config_key_stdin_tty", {
+      problem: "--key-stdin reads the key from a pipe, but stdin is a terminal",
+      valid: "Pipe the key in, or use --env / --file instead. The raw key is never passed on the command line.",
+      example: 'printf %s "$ANTHROPIC_API_KEY" | aifight config add claude --protocol claude --key-stdin',
+    });
+  }
   // --key-stdin: read one line, store it 0600 at the same path the wizard uses.
   const value = (input.stdinValue ?? (await readStdinAll())).split(/\r?\n/)[0]!.trim();
   if (value === "") {

@@ -64,6 +64,10 @@ const STRINGS = {
     zh: "桥已经掉线超过 {minutes} 分钟，还在自动重连中。这段时间里的对局会被判负。",
     en: "The bridge has been offline for over {minutes} minutes and is still retrying. Matches during an outage are forfeited.",
   },
+  alert_recovered: {
+    zh: "✅ 桥已恢复在线（这次离线约 {minutes} 分钟）。",
+    en: "✅ The bridge is back online (it was offline for about {minutes} minutes).",
+  },
   alert_forfeit: {
     zh: "这一局被判负（{reason}）。通常是代理没能在回合内出牌，或桥掉线了。",
     en: "That match was forfeited ({reason}). Usually the agent failed to answer in time, or the bridge dropped offline.",
@@ -81,8 +85,8 @@ const STRINGS = {
     en: "Another AIFight client (the desktop app, or another machine) now owns this agent, so this one stopped playing.",
   },
   alert_fatal_bridge_stopped: {
-    zh: "桥已经放弃重连并停止运行,这台机器现在没有代理在场上。服务模式下会自动重启,如果这条消息之后一直没有恢复通知,就要上机器看看了。",
-    en: "The bridge gave up reconnecting and stopped, so nothing is playing from this machine. A service install restarts it automatically; if no recovery message follows, the machine needs a look.",
+    zh: "桥已经放弃重连并停止运行,这台机器现在没有代理在场上。服务模式下会自动重启；如果之后一直收不到战报、bot 也不应答,就要上机器看看了。",
+    en: "The bridge gave up reconnecting and stopped, so nothing is playing from this machine. A service install restarts it automatically; if it stays silent after that (no match reports, the bot does not answer), the machine needs a look.",
   },
   alert_fatal_credential_rejected: {
     zh: "AIFight 拒绝了本机的凭据,已停止上场。重新配对即可恢复。",
@@ -220,6 +224,13 @@ const STRINGS = {
     en: "This process may still be queued; automatic queueing fully stops after the bridge restarts.",
   },
   settings_daily_failed: { zh: "没能同步到 AIFight：{reason}", en: "Could not sync it to AIFight: {reason}" },
+  // The change is live in the running bridge, but the disk write failed — the
+  // panel must say so, or the new value on screen reads as "saved" while a
+  // restart quietly reverts it.
+  settings_unsaved: {
+    zh: "⚠️ 本次已生效，但没能写入磁盘——桥重启后会回退。",
+    en: "⚠️ Applied for this session, but it could not be written to disk — a bridge restart will revert it.",
+  },
   settings_custom_prompt: {
     zh: "回复一个 0 到 {max} 之间的整数作为每日上限（0 = 只手动开局）。",
     en: "Reply with a whole number from 0 to {max} for the daily cap (0 = manual only).",
@@ -254,7 +265,10 @@ const STRINGS = {
     zh: "名字要 {min} 到 {max} 个字符,再回复一个。",
     en: "The name has to be {min}–{max} characters — reply with another one.",
   },
-  settings_renamed: { zh: "显示名已改为 {name}。", en: "Display name is now {name}." },
+  settings_renamed: {
+    zh: "显示名已改为 {name}。CLI 控制命令（aifight start/stop）要等桥重启后才认新名字。",
+    en: "Display name is now {name}. CLI control commands (aifight start/stop) pick up the new name after the bridge restarts.",
+  },
   confirm_rename: { zh: "把显示名改成 <b>{name}</b>?", en: "Change the display name to <b>{name}</b>?" },
   confirm_create_challenge: { zh: "生成一个 {game} 约战链接?", en: "Create a {game} challenge link?" },
   confirm_accept_challenge: {
@@ -282,11 +296,6 @@ const STRINGS = {
   runner_busy: { zh: "正在对局中,稍后再试。", en: "Already in a match — try again when it finishes." },
   runner_unavailable: { zh: "桥当前没有连接,稍后再试。", en: "The bridge is not connected right now — try again shortly." },
   runner_failed: { zh: "没能执行：{reason}", en: "That did not go through: {reason}" },
-  control_off: {
-    zh: "遥控已关闭,这个 bot 现在只发通知。在机器上执行 <code>aifight telegram set control on</code> 并重启桥即可打开。",
-    en: "Remote control is off — this bot only sends notifications. Run <code>aifight telegram set control on</code> on the machine and restart the bridge to turn it on.",
-  },
-  control_off_toast: { zh: "遥控已关闭", en: "Remote control is off" },
   word_on: { zh: "开", en: "on" },
   word_off: { zh: "关", en: "off" },
   help_body: {
@@ -364,6 +373,10 @@ export function renderNotifyEvent(
       );
     case "alert.disconnected":
       return alert(locale, t(locale, "alert_disconnected", { minutes: Math.round(event.sinceMs / 60_000) }));
+    case "alert.recovered":
+      // Good news stands on its own without the 🚨 header; at least a minute,
+      // so a same-second blip does not read as "0 minutes".
+      return { text: t(locale, "alert_recovered", { minutes: Math.max(1, Math.round(event.offlineMs / 60_000)) }) };
     case "alert.forfeit":
       return alert(
         locale,
@@ -409,7 +422,8 @@ function renderMatchResult(
     escapeHtml(agentName),
   ];
   if (event.opponents.length > 0) {
-    lines.push(t(locale, "result_line_opponents", { names: escapeHtml(event.opponents.join("、")) }));
+    // 、 is the Chinese list comma; an English sentence takes ", ".
+    lines.push(t(locale, "result_line_opponents", { names: escapeHtml(event.opponents.join(locale === "zh" ? "、" : ", ")) }));
   }
   if (event.forfeitedSelf && event.forfeitReason !== undefined) {
     lines.push(t(locale, "result_line_forfeit_reason", { reason: escapeHtml(event.forfeitReason) }));

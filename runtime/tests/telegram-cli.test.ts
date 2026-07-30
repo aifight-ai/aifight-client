@@ -138,6 +138,27 @@ describe("aifight telegram status", () => {
     expect(r.stdout).toContain("linked to chat 4242");
   });
 
+  // Used to fall into the interactive setup wizard and die as a usage error
+  // (exit 2) — a script has no terminal, so it gets a status document instead.
+  it("bare `aifight telegram --json` on an unlinked machine answers not_configured", async () => {
+    useTempHome();
+    writeBridgeConfig(baseConfig());
+
+    const r = await runCapture(["telegram", "--json"]);
+
+    expect(r.code).toBe(0);
+    expect((JSON.parse(r.stdout) as Record<string, unknown>).status).toBe("not_configured");
+  });
+
+  it("bare `aifight telegram --json` with no agent at all answers no_bridge", async () => {
+    useTempHome();
+
+    const r = await runCapture(["telegram", "--json"]);
+
+    expect(r.code).toBe(0);
+    expect((JSON.parse(r.stdout) as Record<string, unknown>).status).toBe("no_bridge");
+  });
+
   it("rejects an unknown subcommand with usage (exit 2)", async () => {
     useTempHome();
     const r = await runCapture(["telegram", "frobnicate"]);
@@ -219,6 +240,32 @@ describe("aifight telegram set", () => {
     seedLinked();
     expect((await runCapture(["telegram", "set", "results"])).code).toBe(2);
     expect((await runCapture(["telegram", "set", "results", "daily", "extra"])).code).toBe(2);
+  });
+
+  // --json suppresses the "now restart the bridge" hint, so the flag is the
+  // only way a script can learn the running bridge is still on old settings.
+  it("set/mute/unlink --json all say whether a bridge restart is pending", async () => {
+    useTempHome();
+    seedLinked();
+
+    const first = JSON.parse((await runCapture(["telegram", "set", "results", "daily", "--json"])).stdout) as Record<string, unknown>;
+    expect(first.restartPending).toBe(false); // no bridge running here
+
+    // A bridge that started long ago — every write below is newer than it.
+    const dir = process.env.AIFIGHT_RUNTIME_HOME!;
+    fs.writeFileSync(path.join(dir, "port"), "45996", { mode: 0o644 });
+    const old = new Date("2020-01-01T00:00:00Z");
+    fs.utimesSync(path.join(dir, "port"), old, old);
+
+    for (const argv of [
+      ["telegram", "set", "results", "both"],
+      ["telegram", "mute", "1h"],
+      ["telegram", "unlink"],
+    ]) {
+      const r = await runCapture([...argv, "--json"]);
+      expect(r.code, argv.join(" ")).toBe(0);
+      expect((JSON.parse(r.stdout) as Record<string, unknown>).restartPending, argv.join(" ")).toBe(true);
+    }
   });
 });
 

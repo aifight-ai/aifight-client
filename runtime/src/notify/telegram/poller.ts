@@ -18,6 +18,13 @@ const DEFAULT_LONG_POLL_SECONDS = 50;
 const BACKOFF_START_MS = 1_000;
 const BACKOFF_MAX_MS = 60_000;
 
+/** How often to re-ask when Telegram answers 409 Conflict: another process is
+ *  already polling this bot (the desktop app, or the same bot set up on a
+ *  second machine). That is a standoff, not an outage — the other poller may
+ *  be there on purpose, so this loop yields at a slow fixed cadence instead of
+ *  racing it, while staying ready to take back over the moment it stops. */
+const CONFLICT_RETRY_MS = 5 * 60_000;
+
 /** Floor between two EMPTY polls. A healthy long poll blocks for up to 50 s, so
  *  this never fires in normal operation — it exists because a proxy (or a
  *  Telegram edge having a bad day) that answers `{ok:true,result:[]}` instantly
@@ -109,6 +116,19 @@ export function startTelegramPoller(opts: TelegramPollerOptions): TelegramPoller
           reportAuthFailure(cause);
           return;
         }
+        if (isConflict(cause)) {
+          // Logged at error level, once per attempt, because messages the other
+          // process confirms first never reach this one — to the user the bot
+          // "plays dead". Not folded into the ordinary backoff: the wait is
+          // long and fixed, and the wording names the actual remedy.
+          log(
+            "error",
+            "telegram.poll_conflict",
+            `Another process is already polling this bot (${describe(cause)}) — for example the same bot was also set up in the desktop app or on another machine. Whichever one asks first wins each message, so this one stays mostly silent; retrying every ${Math.round(CONFLICT_RETRY_MS / 60_000)} minutes. Stop the other poller (or unlink one of them) to fix it.`,
+          );
+          await sleep(CONFLICT_RETRY_MS, controller.signal);
+          continue;
+        }
         const retryAfter = cause instanceof TelegramApiError ? cause.retryAfterMs : undefined;
         const waitMs = retryAfter ?? backoffMs;
         log(
@@ -158,6 +178,12 @@ export function startTelegramPoller(opts: TelegramPollerOptions): TelegramPoller
 
 function isAuthFailure(cause: unknown): boolean {
   return cause instanceof TelegramApiError && cause.kind === "auth";
+}
+
+/** HTTP 409 from getUpdates: Telegram allows exactly one poller per bot.
+ *  pairing.ts checks the same condition on its own loop. */
+function isConflict(cause: unknown): boolean {
+  return cause instanceof TelegramApiError && cause.status === 409;
 }
 
 /** Never includes a request URL — see the note at the top of api.ts. */

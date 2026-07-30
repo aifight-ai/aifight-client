@@ -90,10 +90,12 @@ function harness(opts: { fetchImpl?: typeof fetch; section?: Partial<BridgeTeleg
     settings: () => settings,
     updateSettings: (next) => {
       settings = next;
+      return true;
     },
     config: () => config,
     updateConfig: (next) => {
       config = next;
+      return true;
     },
     runner,
     watchChallenge: (token, game) => watched.push({ token, game }),

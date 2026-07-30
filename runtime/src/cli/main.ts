@@ -198,7 +198,16 @@ export async function run(
     let configured = true;
     try {
       readBridgeConfig();
-    } catch {
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (!message.includes("bridge is not configured")) {
+        // A present-but-unreadable bridge.json is NOT "not set up yet" — saying
+        // so would walk the user into a re-register over a file that may only
+        // need re-linking. Say what actually happened and how to repair it.
+        env.stderr("aifight: the local bridge config is damaged and cannot be read.\n");
+        env.stderr("Re-link this machine with `aifight connect <PAIRING_CODE>` from your dashboard, or re-run `aifight setup`.\n");
+        return 1;
+      }
       configured = false;
     }
     // Resolved once, before the panel opens: an unclaimed agent cannot play at
@@ -572,6 +581,14 @@ function commandUsage(positional: readonly string[]): string | undefined {
         "Usage: aifight accept <challenge_url_or_token>",
         "  Accept a challenge URL that someone sent to this human or Agent.",
         "  The local bridge must be online so game_start can be delivered.",
+      ].join("\n");
+    case "accept-terms":
+      return [
+        "Usage: aifight accept-terms [--yes]",
+        "  Review and accept updated Terms of Service / Privacy Policy from the CLI —",
+        "  no browser needed — so your agent stays active. The current documents are",
+        "  printed with links to read them in full before you agree.",
+        "  --yes accepts non-interactively (use only after reading the linked documents).",
       ].join("\n");
     case "telegram":
       return [

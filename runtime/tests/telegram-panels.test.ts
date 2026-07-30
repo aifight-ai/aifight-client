@@ -22,7 +22,7 @@ interface Sent {
   readonly keyboard?: ReadonlyArray<ReadonlyArray<{ text: string; callback_data?: string; url?: string }>>;
 }
 
-function apiStub(): { api: TelegramApi; sent: Sent[]; buttons: () => string[] } {
+function apiStub(editError?: string): { api: TelegramApi; sent: Sent[]; buttons: () => string[] } {
   const sent: Sent[] = [];
   const api = {
     sendMessage: async (p: { text: string; keyboard?: never }) => {
@@ -30,6 +30,7 @@ function apiStub(): { api: TelegramApi; sent: Sent[]; buttons: () => string[] } 
       return { message_id: sent.length, chat: { id: CHAT } };
     },
     editMessageText: async (p: { text: string; keyboard?: never }) => {
+      if (editError !== undefined) throw new Error(editError);
       sent.push({ kind: "edit", text: p.text, ...(p.keyboard !== undefined ? { keyboard: p.keyboard } : {}) });
     },
     answerCallbackQuery: async (p: { text?: string }) => {
@@ -98,6 +99,7 @@ interface Harness {
   readonly config: () => BridgeConfig;
   readonly runner: ReturnType<typeof runnerStub>;
   readonly nonces: ReturnType<typeof createNonceStore>;
+  readonly logs: string[];
 }
 
 function harness(opts: {
@@ -106,9 +108,12 @@ function harness(opts: {
   runner?: Partial<PanelRunner> | null;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  /** When set, editMessageText throws this message (a cleared chat history). */
+  editError?: string;
 } = {}): Harness {
-  const stub = apiStub();
+  const stub = apiStub(opts.editError);
   const runner = runnerStub(opts.runner ?? {});
+  const logs: string[] = [];
   let settings: BridgeTelegramConfig = { ...defaultTelegramConfig(CHAT), ...opts.section };
   let config: BridgeConfig = bridgeConfig(opts.config);
   const nonces = createNonceStore(opts.now !== undefined ? { now: opts.now } : {});
@@ -119,13 +124,16 @@ function harness(opts: {
     updateSettings: (next) => {
       settings = next;
       config = { ...config, telegram: next };
+      return true;
     },
     config: () => config,
     updateConfig: (next) => {
       config = next;
+      return true;
     },
     runner: opts.runner === null ? null : runner.runner,
     nonces,
+    onLog: (e) => logs.push(e.code),
     ...(opts.fetchImpl !== undefined ? { fetchImpl: opts.fetchImpl } : {}),
     ...(opts.now !== undefined ? { now: opts.now } : {}),
   });
@@ -139,6 +147,7 @@ function harness(opts: {
     config: () => config,
     runner,
     nonces,
+    logs,
   };
 }
 
@@ -248,16 +257,9 @@ describe("panel access control", () => {
     expect(h.sent).toHaveLength(0);
   });
 
-  it("with control off, explains itself once and does nothing", async () => {
-    const h = harness({ section: { control: false } });
-
-    await h.handle(command("/menu"));
-    await h.handle(tap("v1:play:ask_start:coup"));
-
-    expect(h.runner.joined).toHaveLength(0);
-    expect(h.sent.map((s) => s.kind)).toEqual(["send", "answer"]);
-    expect(h.sent[0]!.text).toContain("aifight telegram set control on");
-  });
+  // "control: off" has no panel-level branch at all: the companion simply
+  // never starts the poller (covered in telegram-notify.test.ts), so the bot
+  // is silent because no update ever arrives, not because one is answered.
 });
 
 describe("panel navigation", () => {
@@ -275,6 +277,27 @@ describe("panel navigation", () => {
     const h = harness();
     await h.handle(tap("v1:play:open"));
     expect(h.sent.map((s) => s.kind)).toEqual(["answer", "edit"]);
+  });
+
+  // The user cleared the chat history, so the panel message is gone
+  // ("message to edit not found"). Without a fallback every button looks dead.
+  it("falls back to a fresh panel message when the edit target is gone", async () => {
+    const h = harness({ editError: "Bad Request: message to edit not found" });
+    await h.handle(tap("v1:play:open"));
+
+    expect(h.sent.map((s) => s.kind)).toEqual(["answer", "send"]);
+    expect(h.sent[1]!.text).toContain("Play");
+    expect(h.logs).toContain("telegram.panel_failed");
+  });
+
+  // "message is not modified" just means the user re-tapped the panel they are
+  // already looking at — re-sending it would duplicate the panel every time.
+  it("does NOT re-send when Telegram only says the message is not modified", async () => {
+    const h = harness({ editError: "Bad Request: message is not modified" });
+    await h.handle(tap("v1:play:open"));
+
+    expect(h.sent.map((s) => s.kind)).toEqual(["answer"]);
+    expect(h.logs).toHaveLength(0);
   });
 
   it("shows today's count, phase and ratings on the status panel", async () => {
@@ -697,9 +720,9 @@ describe("panel resilience", () => {
     const handler = createPanelHandler({
       api,
       settings: () => defaultTelegramConfig(CHAT),
-      updateSettings: () => undefined,
+      updateSettings: () => true,
       config: () => bridgeConfig(),
-      updateConfig: () => undefined,
+      updateConfig: () => true,
       runner: null,
       onLog: (e) => logs.push(e.code),
     });

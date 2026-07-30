@@ -37,7 +37,7 @@ import { runTelegram } from "./telegram.js";
 // with the dispatch switch in runConfig.
 const KNOWN_CONFIG_SUBS: readonly string[] = [
   "llm", "init", "validate", "test", "probe", "show", "explain", "set-key",
-  "route", "use", "review", "add", "update", "models", "remove", "clear-key",
+  "route", "use", "review", "reasoning", "add", "update", "models", "remove", "clear-key",
 ];
 import { runBridgeSet, SETUP_WIZARD_CAP_MAX } from "./bridge-set.js";
 import { readBridgeConfig } from "../../bridge/config.js";
@@ -84,8 +84,10 @@ export async function runConfig(args: HandlerArgs, env: HandlerEnv): Promise<num
     // Bare `aifight config` in a terminal opens THE panel — the same one bare
     // `aifight` shows. It used to open a second, narrower menu of its own, which
     // is what made the CLI feel like it had two different front doors
-    // (owner, walking a fresh VPS install, 2026-07-29).
-    if (!args.jsonMode && process.stdin.isTTY === true && env.openMainPanel !== undefined) {
+    // (owner, walking a fresh VPS install, 2026-07-29). Both stdin AND stdout
+    // must be TTYs (mirrors the bare-`aifight` gate in main.ts): a piped/redirected
+    // stream keeps the scriptable behavior.
+    if (!args.jsonMode && process.stdin.isTTY === true && process.stdout.isTTY === true && env.openMainPanel !== undefined) {
       return env.openMainPanel();
     }
     // Non-interactive (piped input, CI, --json), or no panel wired: print usage.
@@ -98,7 +100,7 @@ export async function runConfig(args: HandlerArgs, env: HandlerEnv): Promise<num
     // manage profiles). The bare-`aifight` panel routes here so choosing "LLM"
     // does not open a whole second menu under the first one.
     case "llm": {
-      if (args.jsonMode || process.stdin.isTTY !== true) {
+      if (args.jsonMode || process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
         env.stdout(USAGE + "\n");
         return 0;
       }

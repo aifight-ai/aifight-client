@@ -52,7 +52,7 @@ export async function runRecord(
     return 0;
   }
 
-  env.stdout(renderRecord(profile, config.agentName, base));
+  env.stdout(renderRecord(profile, config.agentName, base, config.claimUrl));
   return 0;
 }
 
@@ -88,7 +88,7 @@ async function fetchProfile(url: string, fetchImpl: typeof fetch): Promise<unkno
 
 // ── Rendering ────────────────────────────────────────────────────────
 
-function renderRecord(profile: unknown, fallbackName: string, base: string): string {
+function renderRecord(profile: unknown, fallbackName: string, base: string, claimUrl?: string): string {
   const root = asObj(profile);
   const agent = asObj(root.agent);
   const summary = asObj(root.summary);
@@ -111,7 +111,7 @@ function renderRecord(profile: unknown, fallbackName: string, base: string): str
 
   if (totalGames <= 0) {
     lines.push("No ranked matches yet — play a few, then check back.");
-    const note = rankedStatusNote(isClaimed, 0, false, base);
+    const note = rankedStatusNote(isClaimed, 0, false, base, claimUrl);
     if (note) {
       lines.push("");
       lines.push(note);
@@ -140,7 +140,7 @@ function renderRecord(profile: unknown, fallbackName: string, base: string): str
   lines.push(`  ${padRight("Win rate", 14)}${pct(winRate)}`);
   lines.push(`  ${padRight("Games", 14)}${totalGames} across ${gamesActive} game${gamesActive === 1 ? "" : "s"}`);
 
-  const note = rankedStatusNote(isClaimed, gamesNeeded, eligible, base);
+  const note = rankedStatusNote(isClaimed, gamesNeeded, eligible, base, claimUrl);
   if (note) {
     lines.push("");
     lines.push(note);
@@ -202,9 +202,15 @@ function rankedStatusNote(
   gamesNeeded: number,
   eligible: boolean,
   base: string,
+  claimUrl?: string,
 ): string | undefined {
   if (!isClaimed) {
-    return `Note: this agent isn't claimed yet — open its claim link to verify your email (${base}/dashboard) before it can play ranked.`;
+    // Point at the REAL claim link when it is still on file locally — sending
+    // the user to the dashboard without the link is a dead end.
+    if (claimUrl !== undefined) {
+      return `Note: this agent isn't claimed yet — open this link to claim it before it can play ranked:\n  ${claimUrl}`;
+    }
+    return `Note: this agent isn't claimed yet — run \`aifight status\` for its claim link (or find the agent in the dashboard: ${base}/dashboard) before it can play ranked.`;
   }
   if (!eligible && gamesNeeded > 0) {
     return `Note: ${gamesNeeded} more ranked match${gamesNeeded === 1 ? "" : "es"} in one game to qualify for the leaderboard.`;

@@ -65,6 +65,11 @@ export type NotifyEvent =
       readonly reasonSummary: string;
     }
   | { readonly kind: "alert.disconnected"; readonly sinceMs: number }
+  | {
+      readonly kind: "alert.recovered";
+      /** How long the just-ended outage lasted, for the message text. */
+      readonly offlineMs: number;
+    }
   | { readonly kind: "alert.forfeit"; readonly game?: string; readonly reason?: string; readonly matchId: string }
   | {
       readonly kind: "alert.fatal";
@@ -129,8 +134,10 @@ export function createBridgeNotifier(opts: BridgeNotifierOptions): BridgeNotifie
   /** Why the last model call for a match failed, so the alert can say more than
    *  "it failed" — the provider's own classification (auth / quota / …). */
   const lastRuntimeFailure = new Map<string, string>();
-  /** One "you are offline" message per outage, not one per retry. */
-  let disconnectAlerted = false;
+  /** One "you are offline" message per outage, not one per retry — and the
+   *  timestamp of that message, so a reconnect can close the loop with a
+   *  "back online" note instead of leaving the phone on the bad news. */
+  let disconnectAlertedAt: number | null = null;
 
   function emit(event: NotifyEvent): void {
     try {
@@ -246,15 +253,23 @@ export function createBridgeNotifier(opts: BridgeNotifierOptions): BridgeNotifie
             // The 15-minute judgement already happened: the reconnect layer
             // raises severity to "error" once an outage passes that mark, so
             // there is no second timer to keep here.
-            if (event.level !== "error" || disconnectAlerted) return;
-            disconnectAlerted = true;
+            if (event.level !== "error" || disconnectAlertedAt !== null) return;
+            disconnectAlertedAt = now();
             emit({ kind: "alert.disconnected", sinceMs: OFFLINE_ALERT_THRESHOLD_MS });
             return;
           }
           case "reconnect.attempt_success":
-          case "bridge.connected":
-            disconnectAlerted = false;
+          case "bridge.connected": {
+            // Answer the alert.disconnected the phone is still showing. A
+            // one-minute outage gets the same note — the user who just read
+            // "you are offline" is watching for exactly this. Never sent for
+            // an outage that was never alerted (a blip under the threshold).
+            if (disconnectAlertedAt !== null) {
+              emit({ kind: "alert.recovered", offlineMs: Math.max(0, now() - disconnectAlertedAt) });
+              disconnectAlertedAt = null;
+            }
             return;
+          }
           case "bridge.device_mismatch":
             emit({ kind: "alert.fatal", code: "device_mismatch", message: truncate(event.message) });
             return;

@@ -7,6 +7,7 @@ import { ControlClientError } from "../control-client";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { expectArity, makeClient } from "../shared";
 import type { BridgeConfig } from "../../bridge/config";
+import { agentSeatHolderPid } from "./bridge-start";
 
 const USAGE = "usage: aifight status [--live]";
 
@@ -50,6 +51,7 @@ export async function runBridgeStatus(
       update,
       platformAgentStatus,
       config: redacted,
+      claimUrl: unclaimedClaimUrl(platformAgentStatus, config) ?? null,
     }) + "\n");
     return 0;
   }
@@ -64,6 +66,13 @@ export async function runBridgeStatus(
   env.stdout(`Profile: ${profileLabel(platformAgentStatus, config)}\n`);
   if (platformAgentStatus.kind === "unavailable") {
     env.stdout(`Profile check: ${platformAgentStatus.message}\n`);
+  }
+  // An unclaimed agent cannot play at all — the claim link IS the way past the
+  // gate, so print it here instead of leaving the user at "Profile: unclaimed".
+  const claimUrl = unclaimedClaimUrl(platformAgentStatus, config);
+  if (claimUrl !== undefined) {
+    env.stdout("Claim: this agent is not claimed yet — it cannot play until you open this link:\n");
+    env.stdout(`  ${claimUrl}\n`);
   }
   if (platformAgentStatus.kind === "ok" && platformAgentStatus.termsPending) {
     const dashUrl = `${config.baseUrl.replace(/\/+$/, "")}/dashboard`;
@@ -109,8 +118,18 @@ async function runLiveStatus(args: HandlerArgs, env: HandlerEnv): Promise<number
     agents = Array.isArray(body.agents) ? body.agents : [];
   } catch (e) {
     if (e instanceof ControlClientError && e.kind === "daemon_unreachable") {
+      // A live seat holder with no control API is the desktop app's
+      // in-process bridge — say so instead of "not running" (see bridge-start).
+      const pid = agentSeatHolderPid();
       if (args.jsonMode) {
-        env.stdout(JSON.stringify({ status: "bridge_not_running" }) + "\n");
+        env.stdout(JSON.stringify(
+          pid !== undefined
+            ? { status: "bridge_running_without_control_api", pid }
+            : { status: "bridge_not_running" },
+        ) + "\n");
+      } else if (pid !== undefined) {
+        env.stdout(`A bridge for this agent is already running on this machine (PID ${pid}), but it does not expose the CLI control API.\n`);
+        env.stdout("If you use the AIFight desktop app, your agent is online inside it — check live status there, or quit the app and use `aifight run` (or the service).\n");
       } else {
         env.stdout("Bridge not running on this machine — live status needs `aifight run` (or the background service).\n");
         env.stdout("Plain `aifight status` shows the stored configuration instead.\n");
@@ -138,6 +157,17 @@ async function runLiveStatus(args: HandlerArgs, env: HandlerEnv): Promise<number
     env.stdout(`Active matches: ${matches.length === 0 ? "none" : matches.map((m) => m.game ?? "?").join(", ")}\n`);
   }
   return 0;
+}
+
+/**
+ * The locally saved claim URL while the agent is not confirmed claimed. The
+ * platform's "claimed" answer is authoritative (and has already scrubbed the
+ * local URL via dropClaimCredentialsAfterClaim above); an unreachable platform
+ * falls back to the local file, which can lag but never over-reports "claimed".
+ */
+function unclaimedClaimUrl(status: PlatformAgentStatus, config: BridgeConfig): string | undefined {
+  if (status.kind === "ok" && status.isClaimed) return undefined;
+  return config.claimUrl;
 }
 
 function profileLabel(status: PlatformAgentStatus, config: BridgeConfig): string {

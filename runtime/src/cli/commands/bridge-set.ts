@@ -1,4 +1,4 @@
-import { readBridgeConfig, writeBridgeConfig } from "../../bridge/config";
+import { readBridgeConfig, writeBridgeConfig, type BridgeConfig } from "../../bridge/config";
 import {
   DAILY_CAP_CONFIRM_THRESHOLD,
   DailyPolicySyncError,
@@ -13,6 +13,27 @@ import { createOnboardIO } from "./onboard-io";
 
 // Re-exported for the CLI surfaces that already import them from here.
 export { DAILY_CAP_CONFIRM_THRESHOLD, SETUP_WIZARD_CAP_MAX, dailyCapNeedsConfirm };
+
+/** readBridgeConfig, with the expected local-config failures mapped to a
+ *  CommandError (exit 1 + hint) instead of the exit-99 catchall. */
+function readSetBridgeConfig(): BridgeConfig {
+  try {
+    return readBridgeConfig();
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (message.includes("bridge is not configured")) {
+      throw new CommandError("bridge_not_configured", "AIFight Bridge is not configured.", {
+        hint: "Run `aifight setup` for a new agent, or `aifight connect <PAIRING_CODE>` for an existing agent.",
+      });
+    }
+    if (message.includes("bridge config is invalid")) {
+      throw new CommandError("bridge_config_invalid", "The local bridge config is damaged and cannot be read.", {
+        hint: "Re-link this machine with `aifight connect <PAIRING_CODE>`, or re-run `aifight setup`.",
+      });
+    }
+    throw cause;
+  }
+}
 
 const USAGE = [
   "usage: aifight set daily <N> [--yes]",
@@ -70,7 +91,7 @@ async function setDaily(raw: string, args: HandlerArgs, env: HandlerEnv): Promis
     }
   }
 
-  const config = readBridgeConfig();
+  const config = readSetBridgeConfig();
   try {
     await syncDailyPolicy(config, limit, env.fetchImpl ?? globalThis.fetch);
   } catch (cause) {
@@ -175,7 +196,7 @@ async function setGames(raw: string, args: HandlerArgs, env: HandlerEnv): Promis
     }
   }
 
-  const config = readBridgeConfig();
+  const config = readSetBridgeConfig();
   const updated = { ...config, autoGames: unique, updatedAt: new Date().toISOString() };
   writeBridgeConfig(updated);
 

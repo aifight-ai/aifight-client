@@ -978,16 +978,10 @@ function BridgeErrorBanner() {
         <div className="flex shrink-0 items-center gap-2">
           {/* 连接审计 #6: protocol-version close — an app update is the ONLY fix,
               so lead with it. Retry stays available (harmless; useful right
-              after updating), but a fresh agent would not help and is hidden. */}
-          {status.code === "updateRequired" && (
-            <button
-              onClick={() => void window.aifight?.checkForUpdates()}
-              disabled={busy}
-              className="flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-2.5 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60"
-            >
-              {t("about.checkUpdates")}
-            </button>
-          )}
+              after updating), but a fresh agent would not help and is hidden.
+              审查 P1-1: the action owns the whole updater flow (busy → download
+              & restart → explicit fallback text), see UpdateRequiredAction. */}
+          {status.code === "updateRequired" && <UpdateRequiredAction />}
           {/* Hidden when the seat is simply taken by another bridge on this
               machine: registering a fresh agent would archive the user's real
               one, lose its rating history, and STILL not connect — the seat
@@ -1018,6 +1012,93 @@ function BridgeErrorBanner() {
         <div className="mt-2 whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--text-muted)]">{message}</div>
       )}
     </div>
+  );
+}
+
+// 审查 P1-1: the updateRequired banner's primary action. It used to be a dead
+// end — "Check for updates" ran the check, and with auto-download OFF (the
+// default) the result stopped at "available" inside Settings while the banner
+// itself gave no feedback at all, leaving the app's only recovery path looking
+// broken. The action subscribes to the updater stream itself: busy while
+// checking/downloading, a direct "Update & restart" once an update is
+// available (download, then install on arrival — the AboutCard flow), and
+// explicit text + the download page when the check finds nothing or fails.
+function UpdateRequiredAction() {
+  const { t } = useTranslation();
+  const [update, setUpdate] = useState<UpdateStatus>({ state: "idle" });
+  // Set when the user clicks "Update & restart": the click already IS the
+  // install consent, so the app restarts as soon as the download lands
+  // instead of parking on a second prompt (mirrors AboutCard).
+  const installWhenReady = useRef(false);
+
+  useEffect(() => {
+    const api = window.aifight;
+    if (api === undefined) return;
+    return api.onUpdateStatus((s) => {
+      setUpdate(s);
+      if (s.state === "downloaded" && installWhenReady.current) {
+        installWhenReady.current = false;
+        void api.installUpdate();
+      }
+      if (s.state === "error") installWhenReady.current = false;
+    });
+  }, []);
+
+  const check = () => void window.aifight?.checkForUpdates().catch(() => undefined);
+  const updateAndRestart = () => {
+    installWhenReady.current = true;
+    void window.aifight?.downloadUpdate().catch(() => {
+      installWhenReady.current = false;
+    });
+  };
+  const primaryBtn =
+    "flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-2.5 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60";
+
+  if (update.state === "available") {
+    return (
+      <button onClick={updateAndRestart} className={primaryBtn}>
+        {t("about.updateAndRestart")}
+      </button>
+    );
+  }
+  if (update.state === "downloaded") {
+    return (
+      <button onClick={() => void window.aifight?.installUpdate()} className={primaryBtn}>
+        {t("about.restart")}
+      </button>
+    );
+  }
+  if (update.state === "checking" || update.state === "downloading") {
+    return (
+      <span className="flex items-center gap-1.5 text-[12px] text-[var(--text-muted)]">
+        <Loader2 size={13} className="animate-spin" />
+        {update.state === "checking" ? t("about.checking") : t("about.downloading", { percent: update.percent })}
+      </span>
+    );
+  }
+  // idle / not-available / error: offer the check (again), and once a check
+  // has answered, say plainly what it found — never a silent no-op.
+  return (
+    <span className="flex items-center gap-2">
+      {update.state === "not-available" && (
+        <span className="text-[12px] text-[var(--text-muted)]">
+          {t("bridgeUpdate.latestHelp")}
+          <a
+            href="https://aifight.ai/download"
+            target="_blank"
+            rel="noreferrer"
+            className="ml-1 inline-flex items-center gap-0.5 text-[var(--accent)] hover:underline"
+          >
+            <ExternalLink size={11} />
+            {t("bridgeUpdate.downloadPage")}
+          </a>
+        </span>
+      )}
+      {update.state === "error" && <span className="text-[12px] text-red-400">{t("about.failed")}</span>}
+      <button onClick={check} className={primaryBtn}>
+        {t("about.checkUpdates")}
+      </button>
+    </span>
   );
 }
 

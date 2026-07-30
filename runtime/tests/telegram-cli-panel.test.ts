@@ -209,6 +209,19 @@ describe("aifight telegram — interactive panel", () => {
     expect(h.out().match(/AIFight Telegram companion/g)?.length).toBeGreaterThan(1);
   });
 
+  // The failure message alone says THAT it failed; the UsageError hint is the
+  // part that says what would succeed — swallowing it left users guessing.
+  it("a rejected value also prints what would be accepted", async () => {
+    useTempHome();
+    seedLinked();
+    const h = harness(["2", "25:99", "q"]);
+
+    await telegramPanel(ARGS, h.env, h.io);
+
+    expect(h.out()).toContain("Could not complete that");
+    expect(h.out()).toContain("HH:MM");
+  });
+
   // The complaint that started all of this: three edits in one sitting, three
   // separate "now go run `aifight service restart`" messages.
   it("offers the restart ONCE on the way out, not after every edit", async () => {

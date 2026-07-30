@@ -632,9 +632,9 @@ const en = {
     // the rest sits behind the Details toggle.
     bridgeError: {
       lockHeld:
-        'Run "aifight service stop" in a terminal, then hit Reconnect — another AIFight bridge (PID {{pid}}) on this computer is running your agent.\nOnly one connection per agent stays live, so the app and a background service take turns rather than sharing it. Stopping the service frees this computer\u2019s slot for right now; "aifight service uninstall" also stops it coming back after a restart. Neither one changes which client OWNS the agent — but once the service lets go and the app connects, the app will tell you if the agent still belongs to the service and show you where to paste a pairing code.\n{{detail}}',
+        'Run "aifight service stop" in a terminal, then hit Reconnect — another AIFight bridge (PID {{pid}}) on this computer is running your agent.\nOnly one connection per agent stays live, so the app and a background service take turns rather than sharing it. Stopping the service frees this computer\u2019s slot for right now; "aifight service uninstall" also stops it coming back after a restart. Neither one changes which client OWNS the agent — but once the service lets go and the app connects, the app will tell you if the agent still belongs to the service and show you where to paste a pairing code.\n{{detail}}\nIf you\'re sure no other bridge is running, quit other AIFight apps or delete the lock file at {{lockPath}}.',
       lockHeldUnknown:
-        'Run "aifight service stop" in a terminal, then hit Reconnect — another AIFight bridge on this computer is running your agent.\nOnly one connection per agent stays live, so the app and a background service take turns rather than sharing it. Stopping the service frees this computer\u2019s slot for right now; "aifight service uninstall" also stops it coming back after a restart. Neither one changes which client OWNS the agent — but once the service lets go and the app connects, the app will tell you if the agent still belongs to the service and show you where to paste a pairing code.\n{{detail}}',
+        'Run "aifight service stop" in a terminal, then hit Reconnect — another AIFight bridge on this computer is running your agent.\nOnly one connection per agent stays live, so the app and a background service take turns rather than sharing it. Stopping the service frees this computer\u2019s slot for right now; "aifight service uninstall" also stops it coming back after a restart. Neither one changes which client OWNS the agent — but once the service lets go and the app connects, the app will tell you if the agent still belongs to the service and show you where to paste a pairing code.\n{{detail}}\nIf you\'re sure no other bridge is running, quit other AIFight apps or delete the lock file at {{lockPath}}.',
       lockFailed:
         "The app can't bring your agent online — see below for what to fix.\n{{detail}}",
       seatTakenParked:
@@ -642,7 +642,11 @@ const en = {
       seatSupersededSelf:
         "Evicted by a connection claiming this app's own identity. Standing by and probing — if this keeps happening, please report it (possible client bug or identity forgery).",
       updateRequired:
-        "This app is too old for the AIFight server (protocol version mismatch). Update the app, then reconnect — retrying without updating cannot succeed.",
+        "This version of the app is too old for the AIFight server. Update the app, then reconnect — retrying without updating cannot succeed.",
+    },
+    bridgeUpdate: {
+      latestHelp: "Already on the latest version — try again later, or reinstall manually from the",
+      downloadPage: "download page",
     },
     authTrouble: {
       title: "The server keeps rejecting this agent's credential",
@@ -1301,16 +1305,20 @@ const zh = {
     },
     bridgeError: {
       lockHeld:
-        "在终端执行「aifight service stop」,再点「重连」——本机另一个 AIFight 客户端(进程号 {{pid}})正在跑你的 agent。\n一个 agent 只保留一条连线,所以 app 和后台服务是轮流接手,不是一起上。「stop」腾出本机此刻的位置,「aifight service uninstall」还能让它开机后不再自己起来。这两条都不改变 Agent 归谁所有——但服务一松手、App 连上去之后,App 会告诉你它是不是仍归后台服务,并给出贴配对码的地方。\n{{detail}}",
+        "在终端执行「aifight service stop」,再点「重连」——本机另一个 AIFight 客户端(进程号 {{pid}})正在跑你的 agent。\n一个 agent 只保留一条连线,所以 app 和后台服务是轮流接手,不是一起上。「stop」腾出本机此刻的位置,「aifight service uninstall」还能让它开机后不再自己起来。这两条都不改变 Agent 归谁所有——但服务一松手、App 连上去之后,App 会告诉你它是不是仍归后台服务,并给出贴配对码的地方。\n{{detail}}\n如果你确定没有其他 bridge 在运行:退出其他 AIFight 应用,或删除锁文件 {{lockPath}}。",
       lockHeldUnknown:
-        "在终端执行「aifight service stop」,再点「重连」——本机另一个 AIFight 客户端正在跑你的 agent。\n一个 agent 只保留一条连线,所以 app 和后台服务是轮流接手,不是一起上。「stop」腾出本机此刻的位置,「aifight service uninstall」还能让它开机后不再自己起来。这两条都不改变 Agent 归谁所有——但服务一松手、App 连上去之后,App 会告诉你它是不是仍归后台服务,并给出贴配对码的地方。\n{{detail}}",
+        "在终端执行「aifight service stop」,再点「重连」——本机另一个 AIFight 客户端正在跑你的 agent。\n一个 agent 只保留一条连线,所以 app 和后台服务是轮流接手,不是一起上。「stop」腾出本机此刻的位置,「aifight service uninstall」还能让它开机后不再自己起来。这两条都不改变 Agent 归谁所有——但服务一松手、App 连上去之后,App 会告诉你它是不是仍归后台服务,并给出贴配对码的地方。\n{{detail}}\n如果你确定没有其他 bridge 在运行:退出其他 AIFight 应用,或删除锁文件 {{lockPath}}。",
       lockFailed: "app 无法让 agent 上线,请按下面的提示处理。\n{{detail}}",
       seatTakenParked:
         "另一条连接正在使用这个 agent(另一台电脑,或本机 app 之外的 CLI 服务)。app 已进入待命,每隔几分钟自动查看席位是否空出——点「重连」立即查看一次。",
       seatSupersededSelf:
         "被一条自称「本 app 自己」的连接顶下线。app 已待命并持续探测——若反复出现请反馈给我们(可能是客户端缺陷或身份伪造)。",
       updateRequired:
-        "这个版本的 app 对服务器来说太旧了(协议版本不匹配)。请先更新 app 再重连——不更新的话,重试多少次都不会成功。",
+        "这个版本的 app 对服务器来说太旧了。请先更新 app 再重连——不更新的话,重试多少次都不会成功。",
+    },
+    bridgeUpdate: {
+      latestHelp: "已是最新版本——请稍后再试,或手动重装:",
+      downloadPage: "下载页",
     },
     authTrouble: {
       title: "服务器持续拒绝这个 agent 的凭证",

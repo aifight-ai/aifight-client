@@ -111,14 +111,19 @@ describe("aifight config — opens THE panel, not a second menu", () => {
         return 0;
       },
     } as unknown as HandlerEnv;
-    const prevTTY = process.stdin.isTTY;
+    // The interactive gate needs BOTH streams to be terminals (mirrors the
+    // bare-`aifight` gate in main.ts): fake the full TTY, not just stdin.
+    const prevInTTY = process.stdin.isTTY;
+    const prevOutTTY = process.stdout.isTTY;
     Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
     try {
       const code = await runConfig(ARGS([]), env);
       expect(code).toBe(0);
       expect(opened, "aifight config must open the same panel bare `aifight` shows").toBe(1);
     } finally {
-      Object.defineProperty(process.stdin, "isTTY", { value: prevTTY, configurable: true });
+      Object.defineProperty(process.stdin, "isTTY", { value: prevInTTY, configurable: true });
+      Object.defineProperty(process.stdout, "isTTY", { value: prevOutTTY, configurable: true });
     }
   });
 

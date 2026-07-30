@@ -21,8 +21,9 @@
 // the menu's control flow is unit-testable without a real terminal.
 
 import type { HandlerEnv } from "../shared.js";
-import { SUPPORTED_GAMES } from "../shared.js";
+import { CommandError, SUPPORTED_GAMES, UsageError } from "../shared.js";
 import { applyPendingBridgeRestart, withDeferredApply } from "./apply-settings.js";
+import { MAX_MANUAL_MATCHES } from "./bridge-start.js";
 
 export interface MenuDeps {
   readonly env: HandlerEnv;
@@ -51,6 +52,15 @@ function describeError(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+/** The actionable "what to do next" line typed errors carry (e.g. "Start it
+ *  with `aifight service start`"). The CLI funnel always prints it; a menu
+ *  catch that drops it turns a recoverable failure into a dead end. Mirrors
+ *  printActionError in config.ts. */
+function errorHint(cause: unknown): string | undefined {
+  if (cause instanceof CommandError || cause instanceof UsageError) return cause.hint;
+  return undefined;
+}
+
 // The "adjust later" actions, in display order. Each gathers any arguments via
 // the injected prompt, then dispatches to the existing command handler — the menu
 // adds NO new behavior, it is purely a friendlier front door.
@@ -70,9 +80,12 @@ const ITEMS: readonly MenuItem[] = [
     label: "Play — request a manual ranked match",
     run: async ({ env, prompt, dispatch }) => {
       const game = (await prompt(`Game (blank = auto-pick; options: ${SUPPORTED_GAMES.join(", ")}): `)).trim();
-      const countRaw = (await prompt("How many matches? (default 1): ")).trim() || "1";
-      if (!/^\d+$/.test(countRaw)) {
-        env.stdout("Count must be a whole number.\n");
+      // Validate against the same 1-20 ceiling `aifight start` enforces, here —
+      // dispatching an out-of-range count only to be bounced back is a dead end.
+      const countRaw = (await prompt(`How many matches? (1-${MAX_MANUAL_MATCHES}, default 1): `)).trim() || "1";
+      const count = /^\d+$/.test(countRaw) ? Number.parseInt(countRaw, 10) : 0;
+      if (count < 1 || count > MAX_MANUAL_MATCHES) {
+        env.stdout(`Count must be a whole number between 1 and ${MAX_MANUAL_MATCHES}.\n`);
         return;
       }
       await dispatch("start", game ? [game, countRaw] : [countRaw]);
@@ -222,8 +235,11 @@ export async function runInteractiveMenu(deps: MenuDeps): Promise<number> {
       await withDeferredApply(() => item.run(deps));
     } catch (cause) {
       // A handler error (UsageError / CommandError / unexpected) must not drop
-      // the panel — surface the message the same way the CLI funnel would.
+      // the panel — surface the message the same way the CLI funnel would,
+      // hint included (a swallowed hint is a dead end).
       env.stdout(`aifight: ${describeError(cause)}\n`);
+      const hint = errorHint(cause);
+      if (hint !== undefined) env.stdout(`${hint}\n`);
     }
   }
 }

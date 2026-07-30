@@ -4,7 +4,7 @@
 // D2: own the bridge engine (BridgeHost) and read the shared config on launch.
 // D3 will replace the console callbacks below with real IPC channels.
 
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, shell, Tray, powerMonitor } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, shell, Tray, powerMonitor, powerSaveBlocker } from "electron";
 import path from "node:path";
 
 import { BridgeHost } from "./bridge-host";
@@ -58,6 +58,40 @@ function isAllowedExternalUrl(raw: string): boolean {
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+
+// ── macOS App Nap mitigation (审查 P1-3) ─────────────────────────────────────
+// The app is DESIGNED to keep the agent online from the tray (close-to-tray
+// below — Telegram/Slack-style), but the bridge's liveness is purely
+// timer-driven (WS ping ~25s / liveness ~60s, plus reconnect backoff
+// countdowns). macOS App Nap coalesces a hidden/occluded app's timers: pings
+// go out late → the server drops the socket → the reconnect timers get napped
+// too, and the agent sits silently offline for hours. While the window is
+// hidden (or minimized) AND the bridge is live (running or reconnecting), hold
+// a "prevent-app-suspension" blocker — on macOS that disables App Nap for this
+// app, and on Windows it also opts the process out of background power
+// throttling. The blocker id is paired 1:1 with `start` and always stopped on
+// window-show, on bridge stop, and on quit. (Written from the Electron/macOS
+// power-management docs; not measured on real hardware — App Nap is not
+// observable from an automated test.)
+let napBlockerId: number | null = null;
+let mainWindowVisible = false;
+let bridgeTimerCritical = false;
+
+function updateNapBlocker(): void {
+  const want = !mainWindowVisible && bridgeTimerCritical;
+  if (want && napBlockerId === null) {
+    napBlockerId = powerSaveBlocker.start("prevent-app-suspension");
+  } else if (!want && napBlockerId !== null) {
+    powerSaveBlocker.stop(napBlockerId);
+    napBlockerId = null;
+  }
+}
+
+function stopNapBlocker(): void {
+  if (napBlockerId === null) return;
+  powerSaveBlocker.stop(napBlockerId);
+  napBlockerId = null;
+}
 // Set on before-quit so the window's "close" handler can tell a real exit
 // (tray "Quit" / ⌘Q / app menu) from a close-to-tray, and let it through.
 // D6b: no longer a bare one-way boolean — a failed quitAndInstall (macOS
@@ -97,6 +131,11 @@ const bridgeHost = new BridgeHost({
     const agent = status.config !== undefined ? ` (${status.config.runtimeType}:${status.config.agentName})` : "";
     console.log(`[bridge] ${status.phase}${agent}${detail}`);
     broadcast(IPC.status, status);
+    // App Nap mitigation (above): the blocker follows bridge liveness — while
+    // running or reconnecting ("starting") the ping/backoff timers must fire
+    // on time, so a hidden window must not let macOS suspend the app.
+    bridgeTimerCritical = status.phase === "running" || status.phase === "starting";
+    updateNapBlocker();
   },
   onLog: (event) => broadcast(IPC.log, event),
   onTrace: (trace) => broadcast(IPC.trace, trace),
@@ -114,6 +153,9 @@ registerBridgeIpc(bridgeHost);
 // bridgeHost exists, and quit-time cleanup should not ride on window bookkeeping.
 app.on("before-quit", () => {
   bridgeHost.releaseAgentSeatSync();
+  // Pair the App Nap blocker on the way out (it is process-scoped and dies
+  // with us, but stop it explicitly — never leave a stale id behind).
+  stopNapBlocker();
 });
 
 // Bring the window forward when an OS match notification is clicked. The renderer
@@ -210,6 +252,26 @@ function createWindow(): void {
 
   void mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
 
+  // App Nap mitigation: track whether the window is user-visible. Hiding to
+  // the tray (the close handler below) and minimizing both make the app a
+  // suspension candidate for macOS; showing/restoring releases the blocker.
+  mainWindow.on("show", () => {
+    mainWindowVisible = true;
+    updateNapBlocker();
+  });
+  mainWindow.on("hide", () => {
+    mainWindowVisible = false;
+    updateNapBlocker();
+  });
+  mainWindow.on("minimize", () => {
+    mainWindowVisible = false;
+    updateNapBlocker();
+  });
+  mainWindow.on("restore", () => {
+    mainWindowVisible = true;
+    updateNapBlocker();
+  });
+
   // Closing the window (red X / Alt+F4) hides it to the tray / menu bar rather
   // than quitting, so the bridge keeps the agent online in the background. A real
   // exit (tray "Quit" / ⌘Q / app menu) marks the quit intent via before-quit, which lets
@@ -224,6 +286,8 @@ function createWindow(): void {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+    mainWindowVisible = false;
+    updateNapBlocker();
   });
 }
 
@@ -310,8 +374,10 @@ app.whenReady().then(async () => {
   // on launch, and (when a daily auto-match cap is set) enter automatic matchmaking
   // so the platform can pull us into matches up to that cap at its own pace.
   // Unconfigured → stay offline; the renderer shows onboarding. A failed start
-  // surfaces as phase "error" for the UI. Matching always starts un-paused; the
-  // renderer's "pause matching" toggle is session-only and resets each launch.
+  // surfaces as phase "error" for the UI. The "pause matching" toggle is
+  // PERSISTED across launches (owner ruling, 连接审计 #13: pausing is a spend
+  // decision, so it must survive a relaunch) — the main process holds the flag
+  // and the renderer reads it back via BridgeStatus.matchingPaused.
   const summary = bridgeHost.readConfigSummary();
   if (summary.config !== undefined) {
     // Enrollment is owned by the host's connected edge (works for launch,

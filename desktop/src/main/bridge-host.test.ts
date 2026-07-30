@@ -398,6 +398,10 @@ describe("agent seat — one Bridge per machine", () => {
     expect(String(status.codeParams?.detail)).toContain(String(process.pid));
     // English fallback for an untranslated locale; the UI prefers bridgeError.*.
     expect(status.message).toContain("already running this agent");
+    // 审查 #7: pid-reuse-safe advice — the lock file is named explicitly, so
+    // the user never goes hunting for a process that isn't there.
+    expect(String(status.codeParams?.lockPath)).toBe(path.join(home, "lock"));
+    expect(status.message).toContain("delete the lock file at");
     // The seat holder's files are untouched — deleting them would strand it.
     expect(fs.existsSync(path.join(home, "lock"))).toBe(true);
     expect(fs.existsSync(path.join(home, "pid"))).toBe(true);

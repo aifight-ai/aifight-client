@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { getConfig, saveProfile, setKey, clearKey, setActive, setRoute, deleteProfile, modelCapabilitiesForFamily, discoverModelsForFamily } from "./config-host";
+import { getConfig, saveProfile, setKey, clearKey, setActive, setRoute, deleteProfile, modelCapabilitiesForFamily, discoverModelsForFamily, enqueueConfigMutation } from "./config-host";
 
 const ORIGINAL_HOME = process.env.AIFIGHT_HOME;
 const tmpDirs: string[] = [];
@@ -742,5 +742,41 @@ describe("🔒 discoverModelsForFamily: stored keys stay on their own endpoint",
     } finally {
       restore();
     }
+  });
+});
+
+// ── Mutation serialization (审查 #10) ───────────────────────────────────────
+// Every exported mutator is a read-modify-write on config.json; the FIFO chain
+// is what guarantees two in-flight mutations can't interleave reads and lose
+// the older write. Mirrors the cli-host enqueueCliTask test.
+describe("enqueueConfigMutation: strict FIFO", () => {
+  it("next task starts only after the previous settles; a failure never breaks the chain", async () => {
+    const order: string[] = [];
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => (releaseA = resolve));
+    const a = enqueueConfigMutation(async () => {
+      order.push("a:start");
+      await gateA;
+      order.push("a:end");
+      return "A";
+    });
+    const b = enqueueConfigMutation(async () => {
+      order.push("b:start");
+      throw new Error("boom");
+    });
+    const c = enqueueConfigMutation(async () => {
+      order.push("c:start");
+      return "C";
+    });
+
+    // While A is blocked, B and C must not have started.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(order).toEqual(["a:start"]);
+
+    releaseA();
+    await expect(a).resolves.toBe("A");
+    await expect(b).rejects.toThrow("boom");
+    await expect(c).resolves.toBe("C");
+    expect(order).toEqual(["a:start", "a:end", "b:start", "c:start"]);
   });
 });

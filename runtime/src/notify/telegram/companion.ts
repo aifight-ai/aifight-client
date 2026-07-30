@@ -29,7 +29,7 @@ const FLUSH_BUDGET_MS = 1_500;
 
 /** Sends still queued beyond this are dropped: a phone that is 200 messages
  *  behind does not need them, and an unbounded chain would keep the process
- *  alive at shutdown. */
+ *  alive at shutdown. Alerts are the exception — see makeRoomFor. */
 const MAX_PENDING = 50;
 
 export interface TelegramChannelOptions {
@@ -46,7 +46,17 @@ export interface TelegramChannelOptions {
 export function createTelegramChannel(opts: TelegramChannelOptions): NotifyChannel {
   const now = opts.now ?? Date.now;
   let stopped = false;
-  let pending = 0;
+  /** One entry per queued-or-sending message, oldest first. The list IS the
+   *  backlog the MAX_PENDING cap applies to, and the only place a queued
+   *  message can be sacrificed to make room for an alert. */
+  interface PendingSend {
+    readonly event: NotifyEvent;
+    /** Set when its turn on the chain has come — too late to drop. */
+    started: boolean;
+    /** Sacrificed for an alert before its turn came; its chain link no-ops. */
+    dropped: boolean;
+  }
+  const pendingSends: PendingSend[] = [];
   /** Sends run one after another so the chat reads in the order things happened. */
   let tail: Promise<void> = Promise.resolve();
 
@@ -67,6 +77,34 @@ export function createTelegramChannel(opts: TelegramChannelOptions): NotifyChann
       default:
         return true;
     }
+  }
+
+  /**
+   * Queue-full policy. Normally the newcomer is dropped. But an alert is the
+   * reason the phone exists — a "the bridge is down" must not die behind 50
+   * match reports — so it takes the slot of the oldest not-yet-sent non-alert
+   * instead. A queue that is nothing but alerts keeps the old policy.
+   */
+  function makeRoomFor(event: NotifyEvent): boolean {
+    if (event.kind.startsWith("alert.")) {
+      const at = pendingSends.findIndex((p) => !p.started && !p.event.kind.startsWith("alert."));
+      if (at !== -1) {
+        const [victim] = pendingSends.splice(at, 1);
+        victim!.dropped = true;
+        opts.onLog?.({
+          level: "warning",
+          code: "telegram.queue_full",
+          message: `Telegram is not keeping up; dropped a ${victim!.event.kind} notification to make room for an alert`,
+        });
+        return true;
+      }
+    }
+    opts.onLog?.({
+      level: "warning",
+      code: "telegram.queue_full",
+      message: `Telegram is not keeping up; dropped a ${event.kind} notification`,
+    });
+    return false;
   }
 
   async function send(event: NotifyEvent): Promise<void> {
@@ -113,18 +151,13 @@ export function createTelegramChannel(opts: TelegramChannelOptions): NotifyChann
         return; // an unreadable settings block must not break the bridge
       }
       if (!wanted) return;
-      if (pending >= MAX_PENDING) {
-        opts.onLog?.({
-          level: "warning",
-          code: "telegram.queue_full",
-          message: `Telegram is not keeping up; dropped a ${event.kind} notification`,
-        });
-        return;
-      }
-      pending += 1;
+      if (pendingSends.length >= MAX_PENDING && !makeRoomFor(event)) return;
+      const entry: PendingSend = { event, started: false, dropped: false };
+      pendingSends.push(entry);
       tail = tail.then(async () => {
+        entry.started = true;
         try {
-          await send(event);
+          if (!entry.dropped) await send(event);
         } catch (cause) {
           opts.onLog?.({
             level: "warning",
@@ -132,7 +165,8 @@ export function createTelegramChannel(opts: TelegramChannelOptions): NotifyChann
             message: `Could not send a ${event.kind} notification: ${describe(cause)}`,
           });
         } finally {
-          pending -= 1;
+          const at = pendingSends.indexOf(entry);
+          if (at !== -1) pendingSends.splice(at, 1);
         }
       });
     },
@@ -255,42 +289,66 @@ export function startTelegramCompanion(deps: TelegramCompanionDeps): TelegramCom
    * revert someone else's edit (e.g. a rename made from the Dashboard between
    * our read and our write).
    *
-   * A failed write is logged, not thrown: the change still holds for this
-   * session, and a settings toggle is never worth taking the bridge down for.
+   * Returns true when the change is on disk. A failed write is logged, not
+   * thrown: the change still holds for this session, and a settings toggle is
+   * never worth taking the bridge down for — but the panel is told (via the
+   * return value) so it can say "session-only" instead of implying "saved".
+   *
+   * preserveMtime: the change is already live in this process, so the write is
+   * behaviour-neutral for the running bridge and must not trip the
+   * restart-pending mtime check (see writeBridgeConfig).
    */
-  function persist(patch: ConfigPatch): void {
+  function persist(patch: ConfigPatch): boolean {
     const previousSection = settings;
     config = { ...config, ...patch };
     if (patch.telegram !== undefined) settings = patch.telegram;
     if (deps.persistConfig !== undefined) {
       deps.persistConfig(config);
-      return;
+      return true;
     }
     try {
       const onDisk = readBridgeConfig();
       const merged: { -readonly [K in keyof ConfigPatch]: ConfigPatch[K] } = { ...patch };
+      let telegramDropped = false;
       if (patch.telegram !== undefined) {
         // The section is an OBJECT, so "only the fields that changed" has to go
         // one level deeper: writing this process's whole snapshot back would
         // revert a `telegram set` made from the CLI since the bridge started —
         // and, worse, put back a section that `telegram unlink` just removed.
         if (onDisk.telegram === undefined) {
-          deps.onLog?.({
-            level: "warning",
-            code: "telegram.config_write_skipped",
-            message: "This machine was unlinked from Telegram, so the change was not saved; it applies until the bridge restarts.",
-          });
-          return;
+          // Unlinked under our feet. Only the telegram half of the patch is
+          // dropped — the rest (a daily cap, a rename) still lands on disk.
+          delete merged.telegram;
+          telegramDropped = true;
+        } else {
+          merged.telegram = mergeSection(onDisk.telegram, previousSection, patch.telegram);
         }
-        merged.telegram = mergeSection(onDisk.telegram, previousSection, patch.telegram);
       }
-      writeBridgeConfig({ ...onDisk, ...merged, updatedAt: new Date().toISOString() });
+      // A rename is NOT behaviour-neutral for the running bridge: the control
+      // API keeps routing by the boot-time name, so `aifight start/stop`
+      // addressed to the new name 404 until a restart. That one write must
+      // bump the mtime so the CLI's restart-pending hint fires; every other
+      // panel write (toggles, mutes, daily cap) stays neutral.
+      writeBridgeConfig(
+        { ...onDisk, ...merged, updatedAt: new Date().toISOString() },
+        { preserveMtime: merged.agentName === undefined },
+      );
+      if (telegramDropped) {
+        deps.onLog?.({
+          level: "warning",
+          code: "telegram.config_write_skipped",
+          message: "This machine was unlinked from Telegram, so the change was not saved; it applies until the bridge restarts.",
+        });
+        return false;
+      }
+      return true;
     } catch (cause) {
       deps.onLog?.({
         level: "warning",
         code: "telegram.config_write_failed",
         message: `Applied for this session, but could not save it: ${describe(cause)}`,
       });
+      return false;
     }
   }
 

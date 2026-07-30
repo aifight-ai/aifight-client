@@ -780,4 +780,90 @@ describe("Agent FSM", () => {
       expect(out.state.activeMatches?.["session-9"]).toBeDefined();
     });
   });
+
+  describe("join_queue optimistic rollback", () => {
+    function errorMessage(message: string) {
+      return { type: "error", data: { message } } as const;
+    }
+
+    it("a rejected join rolls back to the previously confirmed queue", () => {
+      // Confirmed membership in liars_dice, then an optimistic switch to
+      // texas_holdem that the server refuses (gate denial). The runtime must
+      // fall back to liars_dice — the membership the server actually still
+      // holds — instead of showing a queue that was rejected.
+      let s = transitionAgentFSM(initial(), { type: "command.join_queue", game: "liars_dice" }).state;
+      s = transitionAgentFSM(s, { type: "ws.message", message: queueJoined("liars_dice", "ranked") }).state;
+      s = transitionAgentFSM(s, { type: "command.join_queue", game: "texas_holdem" }).state;
+      expect(s.queue).toEqual({ game: "texas_holdem", mode: "ranked" });
+
+      const out = transitionAgentFSM(s, { type: "ws.message", message: errorMessage("play rate limit") });
+
+      expect(out.state.queue).toEqual({ game: "liars_dice", mode: "ranked" });
+      expect(out.state.phase).toBe("queuing");
+      expect(out.state.lastError).toBe("play rate limit");
+      const codes = out.effects.filter((e) => e.type === "notify").map((e) => e.code);
+      expect(codes).toEqual(["server.error", "fsm.join_queue_rejected"]);
+    });
+
+    it("a rejected first join leaves the agent unqueued", () => {
+      const s = transitionAgentFSM(initial(), { type: "command.join_queue", game: "texas_holdem" }).state;
+
+      const out = transitionAgentFSM(s, { type: "ws.message", message: errorMessage("matchmaking paused") });
+
+      expect(out.state.queue).toBeUndefined();
+      expect(out.state.phase).toBe("connected");
+      expect(out.state.lastError).toBe("matchmaking paused");
+    });
+
+    it("a confirmed join is not rolled back by a later unrelated error", () => {
+      let s = transitionAgentFSM(initial(), { type: "command.join_queue", game: "coup" }).state;
+      s = transitionAgentFSM(s, { type: "ws.message", message: queueJoined("coup", "ranked") }).state;
+
+      const out = transitionAgentFSM(s, { type: "ws.message", message: errorMessage("bad action") });
+
+      expect(out.state.queue).toEqual({ game: "coup", mode: "ranked" });
+      expect(out.state.phase).toBe("queuing");
+      expect(out.state.lastError).toBe("bad action");
+      const codes = out.effects.filter((e) => e.type === "notify").map((e) => e.code);
+      expect(codes).toEqual(["server.error"]);
+    });
+
+    it("leaving before the verdict keeps the queue cleared when the error lands", () => {
+      let s = transitionAgentFSM(initial(), { type: "command.join_queue", game: "texas_holdem" }).state;
+      s = transitionAgentFSM(s, { type: "command.leave_queue" }).state;
+
+      const out = transitionAgentFSM(s, { type: "ws.message", message: errorMessage("too late") });
+
+      expect(out.state.queue).toBeUndefined();
+      expect(out.state.phase).toBe("connected");
+    });
+
+    it("rapid re-joins roll back to the ORIGINAL confirmed queue, not an optimistic one", () => {
+      let s = transitionAgentFSM(initial(), { type: "command.join_queue", game: "liars_dice" }).state;
+      s = transitionAgentFSM(s, { type: "ws.message", message: queueJoined("liars_dice", "ranked") }).state;
+      // Two optimistic joins before either verdict: the first optimistic
+      // membership (coup) was never confirmed and must not become the
+      // rollback target of the second.
+      s = transitionAgentFSM(s, { type: "command.join_queue", game: "coup" }).state;
+      s = transitionAgentFSM(s, { type: "command.join_queue", game: "texas_holdem" }).state;
+
+      const out = transitionAgentFSM(s, { type: "ws.message", message: errorMessage("gate denied") });
+
+      expect(out.state.queue).toEqual({ game: "liars_dice", mode: "ranked" });
+      expect(out.state.phase).toBe("queuing");
+    });
+
+    it("a reconnect clears the pending join, so a later error cannot resurrect it", () => {
+      let s = transitionAgentFSM(initial(), { type: "command.join_queue", game: "texas_holdem" }).state;
+      s = transitionAgentFSM(s, {
+        type: "reconnect.event",
+        event: { type: "attempt-success", attempt: 1, elapsedMs: 500, severity: "info" },
+      }).state;
+
+      const out = transitionAgentFSM(s, { type: "ws.message", message: errorMessage("stale error") });
+
+      expect(out.state.queue).toBeUndefined();
+      expect(out.state.phase).toBe("connected");
+    });
+  });
 });

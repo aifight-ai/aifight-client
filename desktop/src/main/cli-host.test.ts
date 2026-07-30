@@ -107,13 +107,14 @@ describe("argvForCliOp — fixed argv templates", () => {
     expect(argvForCliOp({ kind: "accept", url: "https://x/" + "a".repeat(2048) })).toBeNull();
   });
 
-  it("configReviewSet: only the three enum modes", () => {
-    expect(argvForCliOp({ kind: "configReviewSet", mode: "off" })).toEqual(["config", "review", "auto", "off"]);
+  it("configReviewSet: only the three enum modes, with --json like every other config op", () => {
+    expect(argvForCliOp({ kind: "configReviewSet", mode: "off" })).toEqual(["config", "review", "auto", "off", "--json"]);
     expect(argvForCliOp({ kind: "configReviewSet", mode: "losses_only" })).toEqual([
       "config",
       "review",
       "auto",
       "losses_only",
+      "--json",
     ]);
     expect(argvForCliOp({ kind: "configReviewSet", mode: "everything" as never })).toBeNull();
   });

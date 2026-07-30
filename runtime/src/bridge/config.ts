@@ -315,13 +315,33 @@ export function archiveReplacedBridgeConfig(config: BridgeConfig): string | null
   }
 }
 
-export function writeBridgeConfig(config: BridgeConfig): void {
+export interface WriteBridgeConfigOptions {
+  /**
+   * Restore the file's mtime to what it was before this write.
+   *
+   * apply-settings judges "a restart is pending" by bridge.json being newer
+   * than the port file, but some writes change nothing the RUNNING bridge
+   * would read differently — lazy encryption migration, dead claim-credential
+   * cleanup, the Telegram companion saving a change it already applied in
+   * memory. Without this, those behaviour-neutral writes still bump the mtime
+   * and produce a restart prompt that does nothing.
+   *
+   * Concurrency: the mtime is read before the write and restored after it, so
+   * another writer landing in between can have its timestamp masked (one
+   * missed restart hint) or its own restore resurrected (one spurious hint).
+   * Both are tolerable — the hint is advisory, never a gate.
+   */
+  readonly preserveMtime?: boolean;
+}
+
+export function writeBridgeConfig(config: BridgeConfig, opts: WriteBridgeConfigOptions = {}): void {
   ensureRuntimeHome();
   const filePath = getBridgeConfigPath();
   // Every encrypt mints a fresh keychain entry, so collect the previous refs
   // first and release whichever are not carried over once the new file lands
   // — otherwise each save would leak one entry.
   const staleRefs = readStoredFieldRefs(filePath);
+  const previousMtime = opts.preserveMtime === true ? statMtime(filePath) : undefined;
 
   const onDisk: Record<string, unknown> = { ...config };
   for (const field of ENCRYPTED_FIELDS) {
@@ -353,11 +373,28 @@ export function writeBridgeConfig(config: BridgeConfig): void {
       // Best effort. The runtime home itself is still narrowed to 0700.
     }
   }
+  if (previousMtime !== undefined) {
+    try {
+      fs.utimesSync(filePath, new Date(), previousMtime);
+    } catch {
+      // Best effort: a fresh mtime here only means one extra restart hint.
+    }
+  }
   const carriedOver = new Set(
     ENCRYPTED_FIELDS.map((f) => onDisk[f]).filter((v): v is string => typeof v === "string"),
   );
   for (const ref of staleRefs) {
     if (!carriedOver.has(ref)) releaseFieldSecret(ref);
+  }
+}
+
+/** The file's current mtime, or undefined when there is no file yet (a first
+ *  write has no timestamp worth preserving). */
+function statMtime(filePath: string): Date | undefined {
+  try {
+    return fs.statSync(filePath).mtime;
+  } catch {
+    return undefined;
   }
 }
 
@@ -444,9 +481,11 @@ export function readBridgeConfig(): BridgeConfig {
   //     releases the now-orphaned keychain entries (releaseFieldSecret).
   // Best effort — reading must keep working even when a rewrite fails, so a
   // failed migration just leaves the file as-is and the next read retries.
+  // preserveMtime: the migration changes the ENCODING, not any value, so it
+  // must not read as "settings changed since the bridge started".
   if (anyPlaintext || anyKeychainFormat) {
     try {
-      writeBridgeConfig(config);
+      writeBridgeConfig(config, { preserveMtime: true });
     } catch {
       // Keep the existing file; the next read retries the migration.
     }
@@ -472,7 +511,9 @@ export function dropClaimCredentialsAfterClaim(): void {
   if (config.claimToken === undefined && config.claimUrl === undefined) return;
   const { claimToken: _claimToken, claimUrl: _claimUrl, ...rest } = config;
   try {
-    writeBridgeConfig({ ...rest, updatedAt: new Date().toISOString() });
+    // preserveMtime: dropping already-dead credentials changes nothing the
+    // running bridge reads, so it must not look like a settings edit.
+    writeBridgeConfig({ ...rest, updatedAt: new Date().toISOString() }, { preserveMtime: true });
   } catch {
     // Keep the old file; a later observation retries.
   }

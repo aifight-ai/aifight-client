@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { writeBridgeConfig } from "../src/bridge/config";
 import { runInteractiveMenu, type MenuDeps } from "../src/cli/commands/menu";
+import { CommandError } from "../src/cli/shared";
 import type { HandlerEnv } from "../src/cli/shared";
 
 // The panel reads (and, on the way out, may offer to restart) the local bridge.
@@ -70,7 +71,7 @@ interface Harness {
  *  "q" is the honest stop: out of script means done. */
 function harness(
   answers: string[],
-  opts?: { configured?: boolean; throwOn?: string; claim?: MenuDeps["claim"] },
+  opts?: { configured?: boolean; throwOn?: string; throwError?: Error; claim?: MenuDeps["claim"] },
 ): Harness {
   const chunks: string[] = [];
   const dispatched: Array<{ cmd: string; positional: string[] }> = [];
@@ -88,7 +89,7 @@ function harness(
       prompt: () => Promise.resolve(answers[i++] ?? "q"),
       dispatch: (cmd, positional) => {
         dispatched.push({ cmd, positional });
-        if (opts?.throwOn === cmd) throw new Error(`boom in ${cmd}`);
+        if (opts?.throwOn === cmd) throw opts.throwError ?? new Error(`boom in ${cmd}`);
         return Promise.resolve(0);
       },
       showHelp: () => {
@@ -216,6 +217,42 @@ describe("interactive menu", () => {
       { cmd: "record", positional: [] },
     ]);
     expect(h.out()).toContain("aifight: boom in status");
+  });
+
+  it("a failing action prints the error's hint, not just its message", async () => {
+    // The CLI funnel always prints a CommandError's hint (e.g. "Start it with
+    // `aifight service start`"); the menu's catch used to swallow it and leave
+    // the failure a dead end.
+    const h = harness(["1", "q"], {
+      throwOn: "status",
+      throwError: new CommandError("bridge_not_running", "AIFight Bridge is not running.", {
+        hint: "Start it with `aifight service start`.",
+      }),
+    });
+    const code = await runInteractiveMenu(h.deps);
+    expect(code).toBe(0);
+    expect(h.out()).toContain("aifight: AIFight Bridge is not running.");
+    expect(h.out()).toContain("aifight service start");
+  });
+
+  it("play rejects a count of 0 before dispatching", async () => {
+    const h = harness(["3", "coup", "0", "q"]);
+    await runInteractiveMenu(h.deps);
+    expect(h.dispatched).toEqual([]);
+    expect(h.out()).toContain("between 1 and 20");
+  });
+
+  it("play rejects a count above 20 before dispatching", async () => {
+    const h = harness(["3", "coup", "999", "q"]);
+    await runInteractiveMenu(h.deps);
+    expect(h.dispatched).toEqual([]);
+    expect(h.out()).toContain("between 1 and 20");
+  });
+
+  it("play accepts the 1-20 boundary", async () => {
+    const h = harness(["3", "coup", "20", "q"]);
+    await runInteractiveMenu(h.deps);
+    expect(h.dispatched).toEqual([{ cmd: "start", positional: ["coup", "20"] }]);
   });
 });
 

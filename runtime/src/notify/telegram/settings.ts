@@ -137,13 +137,3 @@ export function parseMuteSpec(raw: string, now: number): MuteOutcome {
 export function isMuted(section: BridgeTelegramConfig, now: number): boolean {
   return section.mutedUntil !== undefined && section.mutedUntil > now;
 }
-
-/** Drop an expired mute deadline so the stored section stays truthful. */
-export function withoutExpiredMute(
-  section: BridgeTelegramConfig,
-  now: number,
-): BridgeTelegramConfig {
-  if (section.mutedUntil === undefined || section.mutedUntil > now) return section;
-  const { mutedUntil: _expired, ...rest } = section;
-  return rest;
-}

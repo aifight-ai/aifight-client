@@ -87,8 +87,11 @@ export function argvForCliOp(op: CliOp): string[] | null {
     case "configReviewGet":
       return ["config", "review", "--json"];
     case "configReviewSet":
+      // The CLI's `config review auto <mode>` honours --json on its write path
+      // too (printReviewConfig), so the renderer gets the same structured
+      // result as every other config op.
       return op.mode === "off" || op.mode === "all" || op.mode === "losses_only"
-        ? ["config", "review", "auto", op.mode]
+        ? ["config", "review", "auto", op.mode, "--json"]
         : null;
     case "configReasoningGet":
       return ["config", "reasoning", "--json"];
@@ -159,7 +162,9 @@ async function runCliArgv(argv: string[]): Promise<CliRunResult> {
   }
 
   // Desktop callers pass --json so commands take their structured, non-interactive
-  // path. We append it below for safety on commands that support it.
+  // path. Each argv template in argvForCliOp carries it explicitly where the
+  // subcommand supports it (sessionsExport is the one deliberate exception) —
+  // nothing is appended here.
   let out = "";
   let err = "";
 

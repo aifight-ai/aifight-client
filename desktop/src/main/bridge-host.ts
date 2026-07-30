@@ -16,9 +16,10 @@
 // (config.ts → store/paths → node builtins, plus — since F10 — the runtime's
 // account/credentials, whose @napi-rs/keyring is an N-API prebuilt that loads
 // under Electron without a rebuild), plus the runtime's daemon/runtime-files-write
-// (node builtins only — see the single-instance guard below). Reading the shared
-// config on launch still never opens a connection; it touches the OS keychain
-// only to decrypt the stored credentials.
+// (node builtins only — see the single-instance guard below) and — since 审查
+// P1-2 — bridge/update-check (import-free; the version-policy gate in start()).
+// Reading the shared config on launch still never opens a connection; it
+// touches the OS keychain only to decrypt the stored credentials.
 
 import {
   archiveReplacedBridgeConfig,
@@ -36,9 +37,17 @@ import {
   writePid,
   type LockHandle,
 } from "@aifight/aifight/daemon/runtime-files-write";
-import { ensureRuntimeHome } from "@aifight/aifight/store/paths";
+import { checkBridgeUpdate } from "@aifight/aifight/bridge/update-check";
+import { ensureRuntimeHome, getRuntimeHome } from "@aifight/aifight/store/paths";
 import fs from "node:fs";
 import path from "node:path";
+// The app version doubles as the bridge version the platform's version policy
+// judges: the desktop bundles the runtime in lockstep (same x.y.z-beta.N
+// line). Read it from package.json — NOT the runtime's index barrel, which
+// eagerly imports better-sqlite3 (see the lazy-engine note at the top of this
+// file). bridge/update-check itself is import-free, so it joins the safe
+// static surface (config.ts / runtime-files-write) without the native trap.
+import desktopPkg from "../../package.json";
 import type { BridgeRunner as BridgeRunnerInstance } from "@aifight/aifight/bridge/runner";
 import type { BridgeDecisionTrace } from "@aifight/aifight/bridge/provider";
 import type { ServerMessageEnvelope } from "@aifight/aifight/wsclient/frame-handler";
@@ -581,14 +590,28 @@ export class BridgeHost {
         // since reused, it is the ONLY text that says what actually helps
         // (delete the lock file) — every message we could compose from
         // heldByPid alone tells the user to stop a process that isn't there.
+        //
+        // 审查 #7: same-boot pid reuse makes "stop PID N" misleading even when
+        // the probe says the pid is alive (the OS recycled it onto an unrelated
+        // process). Name the lock file + the manual escape hatch explicitly so
+        // the advice never dead-ends; `lockPath` lets the localized strings
+        // render the same sentence (the runtime's own text only names the path
+        // in the stale-lock case).
+        const lockPath = path.join(getRuntimeHome(), "lock");
+        const recovery =
+          "If you're sure no other bridge is running, quit other AIFight apps " +
+          `or delete the lock file at ${lockPath}.`;
         return {
           code: pid !== undefined ? "lockHeld" : "lockHeldUnknown",
-          codeParams: pid !== undefined ? { pid, detail: cause.message } : { detail: cause.message },
+          codeParams:
+            pid !== undefined
+              ? { pid, detail: cause.message, lockPath }
+              : { detail: cause.message, lockPath },
           message:
             (pid !== undefined
               ? `Another AIFight bridge (PID ${pid}) is already running this agent on this computer.`
               : "Another AIFight bridge is already running this agent on this computer.") +
-            `\n${cause.message}`,
+            `\n${cause.message}\n${recovery}`,
         };
       }
       const detail = cause instanceof Error ? cause.message : describeError(cause);
@@ -608,7 +631,7 @@ export class BridgeHost {
     this.#seatRetryTimer = setTimeout(() => {
       this.#seatRetryTimer = null;
       if (this.#runner !== null || this.#lock !== null) return;
-      void this.start().catch(() => undefined);
+      void this.#startQuietly().catch(() => undefined);
     }, SEAT_RETRY_INTERVAL_MS);
     // Never hold the app open just to poll for a lock.
     this.#seatRetryTimer.unref?.();
@@ -676,11 +699,32 @@ export class BridgeHost {
     }
   }
 
-  async #startOnce(): Promise<BridgeStatus> {
+  /**
+   * Seat-retry start (审查 #4): identical to start() but QUIET until the seat
+   * is ours. The retry fires every 5s while another bridge holds the lock, and
+   * the loud path announces "starting" BEFORE #acquireAgentSeat — so every
+   * pass flipped the pill starting→error→starting on a 5s cycle. The quiet
+   * path leaves the standing seat-error status untouched until the lock is
+   * actually acquired; only then does the normal starting flow begin.
+   */
+  async #startQuietly(): Promise<BridgeStatus> {
+    if (this.#runner !== null) return this.#status;
+    if (this.#starting !== null) return this.#starting;
+    const run = this.#startOnce({ quiet: true });
+    this.#starting = run;
+    try {
+      return await run;
+    } finally {
+      this.#starting = null;
+    }
+  }
+
+  async #startOnce(opts: { readonly quiet?: boolean } = {}): Promise<BridgeStatus> {
     // A manual start supersedes any pending seat retry — and begins with a
     // clean stop intent (see #stopDuringStart).
     this.#cancelSeatRetry();
     this.#stopDuringStart = false;
+    const quiet = opts.quiet === true;
 
     let config: BridgeConfig;
     try {
@@ -699,17 +743,37 @@ export class BridgeHost {
     this.#queued = null;
     this.#connInfo = null;
     this.#closeCauseVersion = false;
-    this.#setStatus({ phase: "starting", config: summary, message: undefined });
+    // 审查 #4: a LOUD start (launch / Retry button) announces "starting" right
+    // away; the quiet seat-retry must not — it fires every 5s while the seat
+    // is held, and broadcasting "starting" here is exactly what made the pill
+    // flicker starting↔error. The standing seat error simply stays up.
+    if (!quiet) this.#setStatus({ phase: "starting", config: summary, message: undefined });
 
     // One agent, one bridge per machine — claim the seat BEFORE we can connect.
     const conflict = this.#acquireAgentSeat();
     if (conflict !== null) {
-      this.#setStatus({ phase: "error", config: summary, ...conflict });
+      // Quiet retry: the standing status already IS this seat error, so there
+      // is nothing new to broadcast — just keep probing.
+      if (!quiet) this.#setStatus({ phase: "error", config: summary, ...conflict });
       // Keep checking. The user's fix is to stop the other bridge, and having
       // to come back and press Reconnect after doing so is a step they should
       // not need — especially since the holder is usually a background service
       // they cannot see.
       this.#scheduleSeatRetry();
+      return this.#status;
+    }
+    // Seat acquired — the quiet retry now joins the normal loud flow.
+    if (quiet) this.#setStatus({ phase: "starting", config: summary, message: undefined });
+
+    // Platform version policy (审查 P1-2 — CLI parity: bridge-run.ts runs the
+    // same gate before dialing). An unsupported build must refuse here instead
+    // of connecting into a certain protocol-mismatch close; a recommended
+    // update warns but runs; a failed/unreachable check never blocks startup —
+    // being offline must not lock the user out of their own agent.
+    const versionRefusal = await this.#checkVersionPolicy(config);
+    if (versionRefusal !== null) {
+      this.#releaseAgentSeat();
+      this.#setStatus({ phase: "error", config: summary, ...versionRefusal });
       return this.#status;
     }
 
@@ -740,21 +804,11 @@ export class BridgeHost {
             // "starting"/"连接中", and RELEASE the runner so 重连 (→ start()) truly
             // restarts rather than no-opping on a non-null runner.
             const runner = this.#runner;
-            this.#runner = null;
             this.#connUnsub?.();
             this.#connUnsub = null;
             this.#connectedAt = null;
             this.#queued = null;
             this.#connInfo = null;
-            // Seat release ONLY after stop() truly finished (审查 F3): the old
-            // fire-and-forget released the lock while a mid-dial zombie of the
-            // stopping runner could still land — a live connection holding the
-            // seat with no lock, which is exactly what invited the standby CLI
-            // service in alongside. stop() is bounded now (P1), so this settles.
-            void (async () => {
-              if (runner !== null) await runner.stop().catch(() => {});
-              this.#releaseAgentSeat();
-            })();
             this.#setStatus({
               phase: "error",
               config: this.#status.config,
@@ -764,6 +818,21 @@ export class BridgeHost {
               message: this.#closeCauseVersion ? VERSION_MISMATCH_MESSAGE : RECONNECT_GAVE_UP_MESSAGE,
               ...(this.#closeCauseVersion ? { code: "updateRequired" as const } : {}),
             });
+            // Teardown is SERIAL and #runner is cleared LAST (审查 #9). The old
+            // order nulled #runner up front and released the seat from a
+            // fire-and-forget IIFE: a start() landing in between saw no runner,
+            // passed the seat check (the lock was still ours), put a NEW runner
+            // online — and then the trailing IIFE deleted the lock under it,
+            // leaving a live bridge holding no seat. Keeping #runner set until
+            // stop() + the seat release have both settled makes a start() in
+            // that window simply re-return the error status above; the seat is
+            // only handed over once no connection is left to protect. (The
+            // release still comes strictly after stop() settles — 审查 F3.)
+            void (async () => {
+              if (runner !== null) await runner.stop().catch(() => {});
+              this.#releaseAgentSeat();
+              this.#runner = null;
+            })();
           }
           this.#callbacks.onLog?.(event);
         },
@@ -840,6 +909,45 @@ export class BridgeHost {
       this.#setStatus({ phase: "error", config: summary, message: describeError(cause) });
     }
     return this.#status;
+  }
+
+  /**
+   * The platform's bridge-version policy gate (审查 P1-2), the same check the
+   * CLI runs in bridge-run.ts before dialing: GET /api/bridge/version via the
+   * runtime's checkBridgeUpdate, judged against this app's version.
+   *
+   *   - "unsupported"        → refuse with the updateRequired code; the
+   *     renderer's error banner turns that into the app-update flow (审查
+   *     P1-1), which is the ONLY way forward — connecting would end in a
+   *     protocol-mismatch close anyway.
+   *   - "update_recommended" → warn-and-go (the CLI's [warn] line), surfaced
+   *     through the normal log stream.
+   *   - "unknown" / a throw  → proceed. The check failing (offline, old server
+   *     without the route) must never lock the user out of their own agent.
+   *
+   * Returns null when the start may proceed.
+   */
+  async #checkVersionPolicy(config: BridgeConfig): Promise<Pick<BridgeStatus, "message" | "code"> | null> {
+    const baseUrl = config.baseUrl?.replace(/\/+$/, "");
+    if (!baseUrl) return null;
+    let update: Awaited<ReturnType<typeof checkBridgeUpdate>>;
+    try {
+      update = await checkBridgeUpdate({ baseUrl, currentVersion: desktopPkg.version });
+    } catch (cause) {
+      // checkBridgeUpdate already maps every failure to "unknown"; this catch
+      // is belt-and-braces so a throw can never block a start.
+      this.#callbacks.onLog?.({ level: "info", code: "desktop.version_check_failed", message: describeError(cause) });
+      return null;
+    }
+    if (update.status === "unsupported") {
+      return { code: "updateRequired", message: update.message };
+    }
+    if (update.status === "update_recommended") {
+      this.#callbacks.onLog?.({ level: "warning", code: "bridge.update_recommended", message: update.message });
+    } else if (update.status === "unknown") {
+      this.#callbacks.onLog?.({ level: "info", code: "desktop.version_check_skipped", message: update.message });
+    }
+    return null;
   }
 
   async stop(): Promise<BridgeStatus> {
@@ -993,9 +1101,31 @@ export class BridgeHost {
    * Enter automatic matchmaking: a single non-one-shot queue join. The server then
    * auto-requeues + matches us up to the daily cap at its own pace (the FIRST join
    * must come from us — internal/matchmaking/requeue.go). Gated on the SERVER's
-   * current policy (the source of truth, reflecting Dashboard edits): only join
-   * when the daily cap > 0. No-op when offline. Never throws.
+   * current policy (the source of truth, reflecting Dashboard edits): join only
+   * when a FETCHED daily cap is > 0 — a failed policy read (null) skips this
+   * round rather than enrolling blind (审查 #5; the next connected edge retries).
+   * No-op when offline. Never throws.
    */
+  async joinAutoMatch(): Promise<void> {
+    if (this.#runner === null) return;
+    const policy = await this.getAgentPolicy();
+    // The daily cap is the token-burn safety valve; enrolling on a failed read
+    // could blow straight past a cap the user set to 0.
+    if (policy === null) {
+      this.#callbacks.onLog?.({
+        level: "warning",
+        code: "desktop.automatch_policy_unknown",
+        message: "Auto-match skipped this round: the agent policy could not be read from the server; the next connect retries.",
+      });
+      return;
+    }
+    if (policy.maxGamesPerDay <= 0) return; // auto-match disabled server-side
+    try {
+      this.#runner.joinQueue(pickAutoGame(this.#status.config?.autoGames, this.liveGamesSync()) as Game, "ranked");
+    } catch (cause) {
+      this.#callbacks.onLog?.({ level: "warning", code: "desktop.automatch_failed", message: describeError(cause) });
+    }
+  }
   /** P4 projection applier — THE single writer of phase/uptime/counter while a
    *  runner is alive. Snapshots are seq-guarded so a stale/reordered one can
    *  never overwrite a newer state (审查 F6). */
@@ -1087,17 +1217,6 @@ export class BridgeHost {
    *  of resuming a stale frozen countdown. Wired to powerMonitor "resume". */
   pokeAfterWake(): void {
     this.#runner?.poke();
-  }
-
-  async joinAutoMatch(): Promise<void> {
-    if (this.#runner === null) return;
-    const policy = await this.getAgentPolicy();
-    if (policy !== null && policy.maxGamesPerDay <= 0) return; // auto-match disabled server-side
-    try {
-      this.#runner.joinQueue(pickAutoGame(this.#status.config?.autoGames, this.liveGamesSync()) as Game, "ranked");
-    } catch (cause) {
-      this.#callbacks.onLog?.({ level: "warning", code: "desktop.automatch_failed", message: describeError(cause) });
-    }
   }
 
   /**

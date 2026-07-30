@@ -1,9 +1,30 @@
 import { createChallenge, AgentActionError, type ChallengeGame } from "../../bridge/agent-actions";
-import { readBridgeConfig } from "../../bridge/config";
+import { readBridgeConfig, type BridgeConfig } from "../../bridge/config";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError, expectArity } from "../shared";
 
 const USAGE = "usage: aifight challenge <texas_holdem|liars_dice|coup>";
+
+/** readBridgeConfig, with the expected local-config failures mapped to a
+ *  CommandError (exit 1 + hint) instead of the exit-99 catchall. */
+function readChallengeBridgeConfig(): BridgeConfig {
+  try {
+    return readBridgeConfig();
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (message.includes("bridge is not configured")) {
+      throw new CommandError("bridge_not_configured", "AIFight Bridge is not configured.", {
+        hint: "Run `aifight setup` for a new agent, or `aifight connect <PAIRING_CODE>` for an existing agent.",
+      });
+    }
+    if (message.includes("bridge config is invalid")) {
+      throw new CommandError("bridge_config_invalid", "The local bridge config is damaged and cannot be read.", {
+        hint: "Re-link this machine with `aifight connect <PAIRING_CODE>`, or re-run `aifight setup`.",
+      });
+    }
+    throw cause;
+  }
+}
 
 export async function runBridgeChallenge(
   args: HandlerArgs,
@@ -18,7 +39,7 @@ export async function runBridgeChallenge(
     );
   }
 
-  const config = readBridgeConfig();
+  const config = readChallengeBridgeConfig();
   let created;
   try {
     created = await createChallenge(config, game as ChallengeGame, env.fetchImpl ?? globalThis.fetch);
