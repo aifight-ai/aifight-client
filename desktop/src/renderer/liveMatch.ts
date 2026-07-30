@@ -113,6 +113,16 @@ export interface LiveMatchState {
   readonly pendingAction: PendingAction | null;
   /** One-shot UI notice: the synthetic own-action was rolled back unconfirmed. */
   readonly syncNotice: "action_unconfirmed" | null;
+  /**
+   * Live turn authority (2026-07-30): true from an action_request (our decision
+   * window opens — we are thinking) until the decision leaves (final_action
+   * trace), closes without landing (action_stale / unconfirmed rollback), a
+   * not-our-turn reconnect (game_state) lands, or the match ends. The shared
+   * board renderer can't know this — its "acting" seat is event-derived
+   * (poker/coup mark the LAST actor) — so the cockpit reads this flag for the
+   * authoritative turn state instead.
+   */
+  readonly myTurn: boolean;
 }
 
 export function emptyLiveMatch(): LiveMatchState {
@@ -130,6 +140,7 @@ export function emptyLiveMatch(): LiveMatchState {
     injectedHandKey: null,
     pendingAction: null,
     syncNotice: null,
+    myTurn: false,
   };
 }
 
@@ -146,13 +157,16 @@ export function reduceServerMessage(state: LiveMatchState, msg: ServerMessage): 
       return onGameState(state, msg.data as GameStateData);
     case "game_over":
       return onGameOver(state, msg.data as GameOverData);
-    case "action_stale":
+    case "action_stale": {
       // The server refused our submitted action (it answered a superseded
       // request, so it was never judged) — the synthetic own-action (F2) must
       // roll back to the last confirmed state. Benign when nothing is pending
       // (e.g. a Coup response window another player closed first — those
-      // responses are never synthesized).
-      return state.pendingAction !== null ? rollbackPendingAction(state, state.pendingAction) : state;
+      // responses are never synthesized). Either way our decision window is
+      // closed, so myTurn clears too.
+      const next = state.pendingAction !== null ? rollbackPendingAction(state, state.pendingAction) : state;
+      return next.myTurn ? { ...next, myTurn: false } : next;
+    }
     default:
       // welcome / queue_joined / queue_left / match_confirm_request /
       // readiness_check / error — not board-relevant.
@@ -273,7 +287,9 @@ function onActionRequest(state: LiveMatchState, data: ActionRequestData): LiveMa
     injectedHandKey = injectKey;
   }
 
-  return { ...reconciled, events, ownerPrivate, injectedHandKey };
+  // Our decision window opens with this request — the board's turn authority
+  // (myTurn) flips to us until the final_action trace says we decided.
+  return { ...reconciled, events, ownerPrivate, injectedHandKey, myTurn: true };
 }
 
 // ── game_state (reconnect, not your turn) ────────────────────────────────────
@@ -282,7 +298,9 @@ function onGameState(state: LiveMatchState, data: GameStateData): LiveMatchState
   if (data === undefined || data === null) return state;
   if (state.sessionId === null || data.match_id !== state.sessionId) return state;
   const { ownerPrivate } = extractOwnerPrivate(state.game, data.state);
-  return { ...state, ownerPrivate };
+  // game_state is the reconnect snapshot for when it is NOT our turn (a
+  // reconnect on our turn arrives as an action_request instead).
+  return { ...state, ownerPrivate, myTurn: false };
 }
 
 // ── game_over ────────────────────────────────────────────────────────────────
@@ -322,6 +340,7 @@ function onGameOver(state: LiveMatchState, data: GameOverData): LiveMatchState {
     // (no notice; the public-replay tail merge completes the real closing stretch).
     events: pending !== null ? state.events.filter((x) => x !== pending.event) : state.events,
     pendingAction: null,
+    myTurn: false,
     match,
     finished: true,
     outcome: ownerOutcome(data.result, state.ownerPlayerId),
@@ -443,7 +462,9 @@ function onMatchFeed(state: LiveMatchState, data: MatchFeedData): LiveMatchState
  * synthesized: all five poker moves, the dice bid, and coup turn actions. A
  * dice challenge / coup challenge/block/pass resolves with server-computed
  * data (actual counts, claimed roles), so those wait for the real event.
- * Returns the same state reference when the trace is not actionable.
+ * Either way the trace means our decision was MADE, so myTurn clears even
+ * when nothing is injected. Returns the same state reference when the trace
+ * belongs to another session / a finished match (nothing changed at all).
  */
 export function injectFinalAction(
   state: LiveMatchState,
@@ -452,7 +473,11 @@ export function injectFinalAction(
   if (state.sessionId === null || state.match === null || state.finished) return state;
   if (trace.matchId !== state.sessionId || state.ownerPlayerId === null) return state;
   const mapped = mapFinalAction(state.game, trace.action);
-  if (mapped === null) return state;
+  if (mapped === null) {
+    // Not synthesizable (challenge/block/pass, unknown kind) — no board event,
+    // but our decision window did close with this trace.
+    return state.myTurn ? { ...state, myTurn: false } : state;
+  }
   // A still-pending earlier synthetic is superseded by this newer decision —
   // the runtime only asks for the next decision after the previous one closed,
   // so the unconfirmed one never landed. Drop it without the notice.
@@ -468,6 +493,7 @@ export function injectFinalAction(
   return {
     ...state,
     events: [...base, synthetic],
+    myTurn: false, // our decision left — the window passes to the others
     pendingAction: {
       event: synthetic,
       kind: mapped.kind,
@@ -628,6 +654,7 @@ function rollbackPendingAction(state: LiveMatchState, pending: PendingAction): L
     ...state,
     events: state.events.filter((x) => x !== pending.event),
     pendingAction: null,
+    myTurn: false, // the window closed without our action landing
     syncNotice: "action_unconfirmed",
   };
 }

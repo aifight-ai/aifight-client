@@ -9,6 +9,7 @@ import type {
   AgentPolicy,
   AgentProfileData,
   BridgeStatus,
+  ChallengeInfo,
   HexagonData,
   CliOp,
   CliRunResult,
@@ -223,6 +224,12 @@ export async function getEvents(): Promise<EventsData | null> {
   const api = window.aifight;
   if (api === undefined) return null;
   return api.getEvents();
+}
+/** The agent's own challenges (hosted + accepted). Null on error / old server. */
+export async function getChallenges(): Promise<readonly ChallengeInfo[] | null> {
+  const api = window.aifight;
+  if (api === undefined) return null;
+  return api.getChallenges();
 }
 export async function getLaunchAtLogin(): Promise<boolean> {
   return (await window.aifight?.getLaunchAtLogin()) ?? false;

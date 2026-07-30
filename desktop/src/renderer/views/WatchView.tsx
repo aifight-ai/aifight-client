@@ -184,6 +184,12 @@ export function WatchView() {
       : synthesizeTraces(match, events, ownerPlayerId);
   const badge: "live" | "demo" | "replay" = finished || interrupted ? "replay" : hasLiveTraces || isLive ? "live" : "demo";
 
+  // The bridge's turn authority, for the cockpit's turn strip + board-marker
+  // correction (live, still-running match only): an open action_request means
+  // OUR agent is deciding; anything else means we're waiting on the others.
+  const turnState: "mine" | "waiting" | undefined =
+    isLive && !finished && !interrupted ? (liveMatch.myTurn ? "mine" : "waiting") : undefined;
+
   const outcome = outcomeText(t, liveMatch.outcome);
   const replayHref =
     liveMatch.replayPath !== null ? replayOrigin(status?.config?.baseUrl) + liveMatch.replayPath : null;
@@ -259,6 +265,7 @@ export function WatchView() {
           traces={traces.slice()}
           isLive={isLive && !finished && !interrupted}
           badge={badge}
+          turnState={turnState}
           note={
             finished
               ? t("cockpit.finishedNote")

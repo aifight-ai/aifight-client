@@ -127,6 +127,10 @@ export function registerBridgeIpc(host: BridgeHost): void {
   // Public events list (no auth). Registration is deep-linked to the web by the renderer.
   handle(IPC.eventsGet, () => host.getEvents());
 
+  // The agent's own challenges (agent key). Powers the dashboard's duel-status
+  // list (waiting-for-taker / accepted-pending-match), polled by the renderer.
+  handle(IPC.challengesGet, () => host.getChallenges());
+
   // Open the agent's claim page in the user's browser (claim link embeds a token,
   // so main opens it directly — the URL is never returned to the renderer).
   handle(IPC.openClaim, () => {

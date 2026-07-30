@@ -60,6 +60,7 @@ import type {
   BridgeHostPhase,
   BridgeLogEvent,
   BridgeStatus,
+  ChallengeInfo,
   ConnectionHealth,
   EventsData,
   HexagonData,
@@ -74,6 +75,7 @@ import { fetchReplayTail } from "./replay-tail";
 import { fetchParticipantEvents } from "./match-events";
 import { normalizeEvents } from "./events";
 import { normalizeAgentProfile } from "./agentProfile";
+import { normalizeChallenges } from "./challenges";
 import {
   FALLBACK_LIVE_GAMES,
   parseGamesResponse,
@@ -413,6 +415,33 @@ export class BridgeHost {
       if (!res.ok) return null;
       const body = (await res.json()) as HexagonData;
       return typeof body?.enabled === "boolean" ? body : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The agent's own challenges (约战) via the agent key: GET
+   * /api/agents/me/challenges — duels the agent hosts OR has accepted,
+   * normalized to renderer rows. Null on any error or non-OK status (an old
+   * server 404s the route) so the dashboard section simply hides. Never throws.
+   */
+  async getChallenges(): Promise<readonly ChallengeInfo[] | null> {
+    const ep = this.#meEndpoint("/api/agents/me/challenges");
+    if (ep === null) return null;
+    let agentId: string;
+    try {
+      agentId = readBridgeConfig().agentId;
+    } catch {
+      return null;
+    }
+    try {
+      const res = await fetch(ep.url, {
+        headers: { "X-API-Key": ep.apiKey },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) return null;
+      return normalizeChallenges(await res.json(), agentId);
     } catch {
       return null;
     }

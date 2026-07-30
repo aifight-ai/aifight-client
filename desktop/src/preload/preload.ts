@@ -62,6 +62,7 @@ const api: AifightBridgeApi = {
   getLeaderboard: (scope) => ipcRenderer.invoke(IPC.leaderboardGet, scope),
   getReplayTail: (replayPath) => ipcRenderer.invoke(IPC.replayTailGet, replayPath),
   getEvents: () => ipcRenderer.invoke(IPC.eventsGet),
+  getChallenges: () => ipcRenderer.invoke(IPC.challengesGet),
   setMatchingPaused: (paused: boolean) => ipcRenderer.invoke(IPC.setMatchingPaused, paused),
   getLaunchAtLogin: () => ipcRenderer.invoke(IPC.loginItemGet),
   setLaunchAtLogin: (enabled: boolean) => ipcRenderer.invoke(IPC.loginItemSet, enabled),

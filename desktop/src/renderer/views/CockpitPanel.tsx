@@ -14,7 +14,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Play, Pause, SkipBack, SkipForward, ChevronLeft, ChevronRight, Radio } from "lucide-react";
+import { Play, Pause, SkipBack, SkipForward, ChevronLeft, ChevronRight, Radio, Brain, Hourglass } from "lucide-react";
 
 import { GameStateVisual } from "@aifight/ui";
 import type { MatchDetail, MatchEvent } from "@aifight/api-types";
@@ -38,6 +38,15 @@ export interface CockpitPanelProps {
   readonly badge: TraceBadge;
   /** Bottom note under the board. */
   readonly note: string;
+  /**
+   * Live turn authority from the bridge (liveMatch.myTurn): "mine" = our
+   * action_request is open (our agent is deciding); "waiting" = someone else's
+   * window. Drives the authoritative turn strip under the board and the
+   * data-turn attribute that suppresses the board's event-derived (stale)
+   * "acting" markers. Undefined outside live play (replay/demo/history) — the
+   * board then renders exactly as the shared renderer derives it.
+   */
+  readonly turnState?: "mine" | "waiting";
   /** Empty-state text for the reasoning panel. */
   readonly emptyTraceHint?: string;
   /** Left side of the control row (game switcher / live status / session label). */
@@ -62,21 +71,29 @@ export interface CockpitPanelProps {
   readonly fill?: boolean;
 }
 
-/** Replay auto-advance speeds — the same dial the website's replay page offers. */
-const SPEEDS = [0.5, 1, 1.5, 3];
+/**
+ * Transport speed dial (owner ruling 2026-07-30): four gears 0.5/1/2/3, shared
+ * by the live catch-up walk AND replay playback — one speed state, one button.
+ */
+const SPEEDS = [0.5, 1, 2, 3];
 
 /**
  * F1 catch-up policy (pure, exported for tests): when the live log grows while
  * following, how should the transport reach the new tip?
  *  - 1 new step: jump straight to it — a single move should feel instant.
- *  - a batch: walk one step per CATCHUP_STEP_MS so a burst of opponent moves
- *    plays out like a broadcast instead of a hard jump (the 111→120 jump the
- *    owner hit).
+ *  - a batch: walk one step per catchUpStepMs(speed) so a burst of opponent
+ *    moves plays out like a broadcast instead of a hard jump (the 111→120 jump
+ *    the owner hit). 1× = a watchable 3s/step (the old 600ms "flashed by");
+ *    0.5× = 6s, 2× = 1.5s, 3× = 1s.
  *  - a huge backlog (reconnect replay / long offline stretch): converge
  *    immediately, or the board would lag further and further behind live.
  */
-export const CATCHUP_STEP_MS = 600;
+export const CATCHUP_STEP_MS = 3000;
 export const CATCHUP_MAX_QUEUE = 12;
+/** Live catch-up step pacing at the given transport speed (ms per step). */
+export function catchUpStepMs(speed: number): number {
+  return CATCHUP_STEP_MS / speed;
+}
 export function liveCatchUpPlan(backlog: number): { readonly kind: "jump" } | { readonly kind: "wait" } | { readonly kind: "none" } {
   if (backlog <= 0) return { kind: "none" };
   if (backlog === 1 || backlog > CATCHUP_MAX_QUEUE) return { kind: "jump" };
@@ -85,7 +102,7 @@ export function liveCatchUpPlan(backlog: number): { readonly kind: "jump" } | { 
 
 export function CockpitPanel(props: CockpitPanelProps) {
   const { t } = useTranslation();
-  const { game, match, events, ownerPlayerId, ownerPrivate, traces, isLive, badge, note, emptyTraceHint, headerLeft, headerRight } = props;
+  const { game, match, events, ownerPlayerId, ownerPrivate, traces, isLive, badge, note, turnState, emptyTraceHint, headerLeft, headerRight } = props;
   const fill = props.fill ?? true;
 
   const [step, setStep] = useState(props.initialStep ?? events.length);
@@ -96,9 +113,10 @@ export function CockpitPanel(props: CockpitPanelProps) {
   // Live: stick to the newest event while following — but NEVER hard-jump a
   // batch (F1). A multi-step arrival (an action_request's new_events bundle or
   // a polled participant-feed merge) walks to the tip at the catch-up cadence
-  // so the board plays out like a broadcast; a parked user (following=false,
-  // they scrubbed by hand) is never disturbed. The catch-up only ever advances
-  // +1 per tick, so a burst arriving mid-walk simply extends the queue.
+  // (paced by the shared speed dial: 1× = 3s/step) so the board plays out like
+  // a broadcast; a parked user (following=false, they scrubbed by hand) is
+  // never disturbed. The catch-up only ever advances +1 per tick, so a burst
+  // arriving mid-walk simply extends the queue.
   useEffect(() => {
     if (!isLive || !following) return;
     const plan = liveCatchUpPlan(events.length - step);
@@ -107,9 +125,9 @@ export function CockpitPanel(props: CockpitPanelProps) {
       setStep(events.length);
       return;
     }
-    const id = window.setTimeout(() => setStep((s) => Math.min(s + 1, events.length)), CATCHUP_STEP_MS);
+    const id = window.setTimeout(() => setStep((s) => Math.min(s + 1, events.length)), catchUpStepMs(speed));
     return () => window.clearTimeout(id);
-  }, [isLive, following, step, events.length]);
+  }, [isLive, following, step, events.length, speed]);
 
   // Replay: when the event log EXTENDS (the finished match's public-replay tail
   // merging in after mount — it always lands late, the replay row is written at
@@ -241,15 +259,15 @@ export function CockpitPanel(props: CockpitPanelProps) {
             <TransportButton title={t("cockpit.toEnd")} onClick={() => stepTo(events.length)}>
               <SkipForward size={15} />
             </TransportButton>
-            {!isLive && (
-              <button
-                className="v3-cp-speed"
-                title={t("cockpit.speed")}
-                onClick={() => setSpeed((s) => SPEEDS[(SPEEDS.indexOf(s) + 1) % SPEEDS.length])}
-              >
-                {speed}×
-              </button>
-            )}
+            {/* Speed dial: live (catch-up pacing) AND replay (playback) share
+                this one state — 0.5/1/2/3 gears (owner ruling 2026-07-30). */}
+            <button
+              className="v3-cp-speed"
+              title={t("cockpit.speed")}
+              onClick={() => setSpeed((s) => SPEEDS[(SPEEDS.indexOf(s) + 1) % SPEEDS.length])}
+            >
+              {speed}×
+            </button>
             <input
               type="range"
               className="v3-cp-slider"
@@ -291,14 +309,41 @@ export function CockpitPanel(props: CockpitPanelProps) {
           {/* No isLive flag to the board: the owner's OWN cards (injected upstream)
               show at full fidelity; opponents stay hidden because nothing reveals
               them. ownerPlayerId is kept for parity with the trace attribution.
-              data-owner-seat drives the v3 "YOUR AGENT" seat styling (CSS only). */}
+              data-owner-seat drives the v3 "YOUR AGENT" seat styling (CSS only).
+              data-turn carries the bridge's turn authority (live only): the v3
+              stylesheet uses it to suppress the board's event-derived "acting"
+              markers where they contradict the real decision window, and to paint
+              the thinking highlight on our own seat while we decide. */}
           <div
             className="aifight-game-canvas"
             data-owner={ownerPlayerId}
             data-owner-seat={ownerSeat >= 0 ? String(ownerSeat) : undefined}
+            data-turn={turnState}
           >
             <GameStateVisual match={match} events={visible} />
           </div>
+          {/* Authoritative turn strip (live only): the shared board renderer
+              derives its "acting" seat from events — poker/coup mark the LAST
+              actor, which lagged the real window (owner screenshot 2026-07-30:
+              Seat 4 "TO ACT / thinking…" while OUR action_request was open).
+              The bridge knows the window; say it here, in one place. */}
+          {turnState === "mine" && (
+            <div className="v3-turn" data-kind="mine">
+              <Brain size={12} />
+              {t("cockpit.turnMine")}
+            </div>
+          )}
+          {turnState === "waiting" && (
+            <div className="v3-turn" data-kind="waiting">
+              <Hourglass size={12} />
+              {t("cockpit.waitingOthers")}
+              <span className="v3-dots" aria-hidden>
+                <i />
+                <i />
+                <i />
+              </span>
+            </div>
+          )}
           <p className="v3-board-note">{note}</p>
         </div>
         {/* fill=false (History detail, document flow): without a bounded height
@@ -319,6 +364,7 @@ export function CockpitPanel(props: CockpitPanelProps) {
             emptyHint={emptyTraceHint}
             onJumpToStep={stepTo}
             transportStep={step}
+            waitingForOthers={isLive && turnState === "waiting"}
           />
         </div>
       </div>

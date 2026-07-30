@@ -123,6 +123,19 @@ export interface AgentStats {
   readonly winRate: number;
   /** Aggregate Glicko-2 rating; null until enough rated games. */
   readonly rating: number | null;
+  /**
+   * The UNDISCOUNTED counterpart of `rating`: the profile's ratings[] already
+   * publishes per-game rating + deviation, so main derives the games-weighted
+   * raw rating with the leaderboard's own coverage bonus. Null when no game
+   * has a leaderboard-sized sample yet (or on an older server payload).
+   */
+  readonly trueRating: number | null;
+  /**
+   * Games-weighted Glicko-2 rating deviation (RD) over the same games — the
+   * uncertainty the leaderboard's conservative score (Rating − 2·RD) subtracts.
+   * Null alongside trueRating.
+   */
+  readonly rd: number | null;
   /** Global cross-game rank; null until leaderboard-eligible. */
   readonly rank: number | null;
   readonly leaderboardEligible: boolean;
@@ -319,6 +332,27 @@ export interface EventCard {
 
 export interface EventsData {
   readonly events: EventCard[];
+}
+
+// ── My challenges (约战) ──────────────────────────────────────────────────────
+// Agent-key read of GET /api/agents/me/challenges (hosted AND accepted duels).
+// The desktop polls this to show the lifecycle of the user's own challenges —
+// "waiting for a taker" (pending, with its expiry countdown) and "accepted,
+// match pending" (accepted / waiting_online). Played/finished ones live in
+// History instead and are filtered out by the renderer.
+
+/** One duel row, normalized by main from the server's pending_duels shape. */
+export interface ChallengeInfo {
+  readonly id: string;
+  readonly game: string;
+  /** Raw server status: pending / accepted / waiting_online / in_match / finished / expired / cancelled. */
+  readonly status: string;
+  /** True when the LOCAL agent created (hosts) this challenge. */
+  readonly isHost: boolean;
+  /** Opponent display name; "" while nobody has accepted. */
+  readonly opponentName: string;
+  readonly createdAt: string;
+  readonly expiresAt: string;
 }
 
 // ── Strategy editor (D8.5) ───────────────────────────────────────────────────
@@ -730,6 +764,7 @@ export const IPC = {
   avatarUpload: "avatar:upload",
   leaderboardGet: "leaderboard:get",
   eventsGet: "events:get",
+  challengesGet: "challenges:get",
   openClaim: "bridge:open-claim",
   openDashboard: "app:open-dashboard",
   acceptLegal: "bridge:accept-legal",
@@ -844,6 +879,9 @@ export interface AifightBridgeApi {
   getReplayTail(replayPath: string): Promise<readonly ReplayTailFrame[] | null>;
   /** Public list of events (赛事). Null on error. No auth; registration is deep-linked to the web. */
   getEvents(): Promise<EventsData | null>;
+  /** The agent's own challenges (hosted + accepted), agent-key read. Null on error
+   *  or an old server without the route — the renderer hides the section then. */
+  getChallenges(): Promise<readonly ChallengeInfo[] | null>;
   /** Pause/resume automatic matchmaking without going offline. Session-only (resets to un-paused each launch). */
   setMatchingPaused(paused: boolean): Promise<{ ok: boolean; error?: string }>;
   /** Open the shared AIFight config folder (~/.aifight) in the OS file manager. Returns "" on success. */

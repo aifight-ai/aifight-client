@@ -694,12 +694,22 @@ function resultLabel(agentId: string, gameOver: MsgGameOver): string {
   if (player === undefined) return "completed";
   if (gameOver.data.forfeited_by === player.player_id) return "forfeit";
   if (gameOver.data.forfeit_reason !== undefined) return "opponent forfeit";
-  if (gameOver.data.result.is_draw) return "draw";
-  const ownPayoff = gameOver.data.result.payoffs[player.player_id];
+  const payoffs = gameOver.data.result.payoffs;
+  const ownPayoff = payoffs[player.player_id];
   if (typeof ownPayoff !== "number") {
+    if (gameOver.data.result.is_draw) return "draw";
     return gameOver.data.result.winner === player.player_id ? "1st place" : "completed";
   }
-  const higher = Object.values(gameOver.data.result.payoffs).filter((payoff) => payoff > ownPayoff).length;
+  const values = Object.values(payoffs);
+  const top = Math.max(...values);
+  if (ownPayoff >= top) {
+    // "draw" only when I SHARE the top score. The server sets is_draw for any
+    // split at the top — including one between opponents only (e.g. a Hold'em
+    // split pot I wasn't in). That is not my draw: fall through to my real
+    // placement instead of mislabeling a 3rd place as 平局.
+    return values.filter((payoff) => payoff >= top).length > 1 ? "draw" : "1st place";
+  }
+  const higher = values.filter((payoff) => payoff > ownPayoff).length;
   return `${ordinal(higher + 1)} place`;
 }
 

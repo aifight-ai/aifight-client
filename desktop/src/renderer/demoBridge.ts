@@ -309,7 +309,10 @@ export function installDemoBridge(): void {
     getAgentProfile: () =>
       Promise.resolve({
         name: "Demo Strategist",
-        stats: { totalGames: 132, wins: 73, losses: 53, draws: 6, winRate: 0.553, rating: 1619, rank: 7, leaderboardEligible: true },
+        stats: {
+          totalGames: 132, wins: 73, losses: 53, draws: 6, winRate: 0.553,
+          rating: 1619, trueRating: 1741, rd: 61, rank: 7, leaderboardEligible: true,
+        },
       }),
     getOwnProfileRaw: () => Promise.resolve(RAW_PROFILE as unknown as Record<string, unknown>),
     getOwnRadar: (game?: string) =>
@@ -339,6 +342,7 @@ export function installDemoBridge(): void {
     getLeaderboard: () => Promise.resolve(null),
     getReplayTail: () => Promise.resolve(null),
     getEvents: () => Promise.resolve(null),
+    getChallenges: () => Promise.resolve(null),
     setMatchingPaused: (paused: boolean) => {
       STATUS = { ...STATUS, matchingPaused: paused };
       for (const fn of statusListeners) fn(STATUS);

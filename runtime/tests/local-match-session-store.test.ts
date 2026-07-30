@@ -393,4 +393,38 @@ describe("LocalMatchSessionStore", () => {
     expect(typeof ar.state_summary).toBe("string");
     expect((ar.state_summary as string).length).toBeLessThanOrEqual(4096 + 32);
   });
+
+  // beta.35 owner feedback: a Hold'em match where the TWO OTHER players split
+  // the pot (server is_draw=true) showed "draw" on MY row even though I placed
+  // third. The label must come from MY payoff vs the top score, not the raw flag.
+  describe("result_label: draw vs real placement", () => {
+    function threePlayerGameOver(payoffs: Record<string, number>, isDraw: boolean): MsgGameOver {
+      const over = gameOver();
+      over.data.result = { payoffs, is_draw: isDraw };
+      over.data.players = [
+        { agent_id: "agent-1", agent_name: "alpha", player_id: "p0", position: 0 },
+        { agent_id: "agent-2", agent_name: "beta", player_id: "p1", position: 1 },
+        { agent_id: "agent-3", agent_name: "gamma", player_id: "p2", position: 2 },
+      ];
+      return over;
+    }
+
+    function labelOf(over: MsgGameOver): string | undefined {
+      const store = new LocalMatchSessionStore({ runtimeHome: tempHome(), now: () => new Date("2026-05-18T01:02:03.000Z") });
+      store.recordServerMessage(bridgeConfig(), over);
+      return store.listSessions()[0]?.result_label;
+    }
+
+    it("an opponents-only tie for first shows MY real placement, not a draw", () => {
+      expect(labelOf(threePlayerGameOver({ p0: 0, p1: 1, p2: 1 }, true))).toBe("3rd place");
+    });
+
+    it("a top tie I share is a draw", () => {
+      expect(labelOf(threePlayerGameOver({ p0: 1, p1: 1, p2: 0 }, true))).toBe("draw");
+    });
+
+    it("a sole top score is 1st place (payoff-driven, no winner field needed)", () => {
+      expect(labelOf(threePlayerGameOver({ p0: 1, p1: 0, p2: 0 }, false))).toBe("1st place");
+    });
+  });
 });

@@ -23,7 +23,7 @@ import {
   useBridgeStatus, runCli, bridgeStart, requestMatches, setMatchingPaused, openClaim, openDashboard,
   acceptLegal, openLegal,
   getAgentProfile, getOwnProfileRaw, getAgentPolicy, setAgentPolicy, setAgentName, getUsageOverview, resultText,
-  getLLMConfig, desktopAvatarActions,
+  getChallenges, getLLMConfig, desktopAvatarActions,
 } from "../useBridge";
 import { localizeServerError, isClaimNameError } from "../errors";
 import { computeRankedHint } from "../rankedHint";
@@ -39,7 +39,7 @@ import { gameLabel } from "../../shared/games";
 import { RatingChart, PerGameCards, AchievementShelf } from "./AgentProfileViz";
 import { StyleRadarCard } from "./StyleRadarCard";
 import type { AgentProfile } from "@aifight/api-types";
-import type { AgentPolicy, AgentProfileData, AgentStats, BridgeStatus, CliOp, UsageOverview } from "../../shared/ipc";
+import type { AgentPolicy, AgentProfileData, AgentStats, BridgeStatus, ChallengeInfo, CliOp, UsageOverview } from "../../shared/ipc";
 
 function clampInt(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, Math.round(Number.isFinite(v) ? v : 0)));
@@ -829,6 +829,8 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   const [usage, setUsage] = useState<UsageOverview | null>(() => cachedUsage);
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [challenges, setChallenges] = useState<CreatedChallenge[]>([]);
+  // Own challenges (约战) from the server — polled; null until the first answer.
+  const [myDuels, setMyDuels] = useState<readonly ChallengeInfo[] | null>(null);
 
   const loadPolicy = (resetForm: boolean) => {
     void getAgentPolicy().then((p) => {
@@ -867,6 +869,9 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
       setSessions(Array.isArray(list) ? (list as SessionRow[]).slice(0, 10) : []);
     });
   };
+  const loadChallenges = () => {
+    void getChallenges().then(setMyDuels);
+  };
   const checkClaim = () => {
     void runCli({ kind: "status" }).then((r) => {
       const pa = (r.json as { platformAgentStatus?: { kind: string; isClaimed?: boolean } } | undefined)?.platformAgentStatus;
@@ -880,8 +885,18 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
     loadPolicy(false);
     loadUsage();
     loadSessions();
+    loadChallenges();
   };
   useEffect(checkClaim, []);
+
+  // Own-challenge status list (约战): 30s poll. Cheap agent-key GET; the
+  // section hides entirely when nothing is open, and a duel leaving the
+  // pending/accepted states drops out on the next tick.
+  useEffect(() => {
+    const timer = window.setInterval(loadChallenges, 30_000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // One-shot migration of the legacy renderer-side pause bit into the main
   // process (连接审计 #13). An install that was paused before this version must
@@ -933,6 +948,11 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   const cap = policy?.maxGamesPerDay ?? 0;
   const gamesToday = policy?.gamesToday;
   const inMatch = live.match.sessionId !== null && !live.match.finished;
+  // Only the pre-game lifecycle shows in the battle card; in_match/finished
+  // duels are covered by the recent-matches list and History.
+  const openDuels = (myDuels ?? []).filter(
+    (d) => d.status === "pending" || d.status === "accepted" || d.status === "waiting_online",
+  );
   const activity: Activity = !connected
     ? "offline"
     : inMatch
@@ -1254,7 +1274,24 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
 
       {/* ── KPI strip ── */}
       <div className="v3-dv-kpis">
-        <Kpi icon={Gauge} label={t("play.stats.rating")} value={stats?.rating != null ? String(stats.rating) : "—"} accent />
+        {/* Headline = the leaderboard's conservative score (Rating − 2×RD);
+            the sub line discloses the TRUE rating ± RD so the conservative
+            number never reads as "my rating is suspiciously low" (owner ruling
+            2026-07-30: conservative stays the headline, true rating is the
+            annotation). Falls back to the bare aggregate when ratings[] wasn't
+            in the payload (older server). */}
+        <Kpi
+          icon={Gauge}
+          label={t("play.stats.rating")}
+          value={stats?.rating != null ? stats.rating.toFixed(1) : "—"}
+          sub={
+            stats !== null && stats.trueRating !== null && stats.rd !== null
+              ? t("play.stats.trueRatingSub", { rating: Math.round(stats.trueRating), rd: Math.round(stats.rd) })
+              : undefined
+          }
+          title={stats !== null && stats.rd !== null ? t("play.stats.ratingTip", { rd: stats.rd.toFixed(1) }) : undefined}
+          accent
+        />
         <Kpi icon={Trophy} label={t("play.stats.rank")} value={stats?.rank != null ? `#${stats.rank}` : "—"} accent />
         <Kpi
           icon={Swords}
@@ -1311,8 +1348,10 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
       {/* ── Main area (owner column order, 2026-07-02): one grid, two flex
              columns. Left (2/3): per-game → rating trend → recent matches →
              achievements. Right (1/3): style radar → auto-match → battle →
-             token usage. flex-1 sits on recent matches (left) and the battle
-             card (right) so both columns close on the same bottom edge. ── */}
+             token usage. Only the LEFT column stretches (flex-1 on recent
+             matches). The right column flows naturally — a flex-1 battle card
+             used to stretch into dead space and strand the token-usage card at
+             the column bottom, disconnected (beta.35 screenshot). ── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="flex flex-col gap-4 lg:col-span-2">
           {ratings.length > 0 && (
@@ -1487,7 +1526,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
           </div>
 
           {/* Quick actions: one game selector → play now / create challenge; then accept */}
-          <div id="play-quick-actions" className="v3-dv-card flex-1 space-y-4 px-5 py-4">
+          <div id="play-quick-actions" className="v3-dv-card space-y-4 px-5 py-4">
             <div>
               <div className="v3-dv-hd mb-2">{t("play.actions.title")}</div>
               <GamePicker value={game} onChange={setGame} />
@@ -1540,6 +1579,36 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                   {t("play.accept.btn")}
                 </Btn>
               </div>
+              {/* My open challenges (约战), 30s-polled: a hosted row waits for a
+                  taker and counts down to its expiry; an accepted row waits for
+                  the match to start. Hidden entirely when nothing is open. */}
+              {openDuels.length > 0 && (
+                <div className="mt-3 space-y-1.5">
+                  {openDuels.map((d) => (
+                    <div key={d.id} className="v3-dv-inset flex flex-wrap items-center gap-x-2.5 gap-y-0.5 px-3 py-2">
+                      <span className="text-[12px] font-medium text-[var(--text)]">{gameLabel(d.game)}</span>
+                      {d.status === "pending" ? (
+                        <>
+                          <span className="v3-dv-chip" data-tone="warn">
+                            <i className="dot pulse" />
+                            {t("play.duels.pending")}
+                          </span>
+                          <span className="ml-auto font-mono text-[10.5px] tabular-nums text-[var(--text-faint)]">
+                            {fmtTimePoint(d.createdAt, i18n.language)} · {t("play.duels.expiresIn", { time: formatRemaining(d.expiresAt) })}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="v3-dv-chip" data-tone="ok">{t("play.duels.accepted")}</span>
+                          <span className="ml-auto text-[10.5px] text-[var(--text-faint)]">
+                            {d.opponentName !== "" ? t("play.duels.acceptedHintVs", { name: d.opponentName }) : t("play.duels.acceptedHint")}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -1633,6 +1702,20 @@ export function fmtTimePoint(iso: string | undefined, locale: string, now: Date 
   return `${d.toLocaleDateString(locale, { year: "numeric", month: "2-digit", day: "2-digit" })} ${time}`;
 }
 
+/** Compact remaining time until an ISO deadline: "23h 12m" / "47m" / "<1m".
+ *  "0m" once past — the server lazy-expires the duel and the next poll drops
+ *  the row. `now` is injectable for tests. */
+export function formatRemaining(iso: string, now: Date = new Date()): string {
+  const ms = new Date(iso).getTime() - now.getTime();
+  if (!Number.isFinite(ms) || ms <= 0) return "0m";
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 1) return "<1m";
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
 function ResultDot({ label }: { label: string | undefined }) {
   const cls = label === "win" ? "v3-dv-dot v3-dv-dot--acc" : label === "loss" ? "v3-dv-dot v3-dv-dot--err" : "v3-dv-dot";
   return <span className={cls} />;
@@ -1640,7 +1723,9 @@ function ResultDot({ label }: { label: string | undefined }) {
 
 function ResultChip({ label, t }: { label: string; t: (k: string) => string }) {
   const key = label === "win" ? "cockpit.outcomeWin" : label === "loss" ? "cockpit.outcomeLoss" : label === "draw" ? "cockpit.outcomeDraw" : "";
-  const tone = label === "win" ? "accent" : label === "loss" ? "err" : "neutral";
+  // First place earns the brand accent (reads in both light and dark); every
+  // lower placement stays neutral so the highlight means something (beta.35).
+  const tone = label === "win" || label === "1st place" ? "accent" : label === "loss" ? "err" : "neutral";
   return (
     <span className="v3-dv-chip" data-tone={tone}>
       {key !== "" ? t(key) : label}
@@ -1736,16 +1821,19 @@ function Kpi({
   label,
   value,
   sub,
+  title,
   accent = false,
 }: {
   icon: LucideIcon;
   label: string;
   value: string;
   sub?: string;
+  /** Native tooltip explaining the metric (e.g. the conservative-score note). */
+  title?: string;
   accent?: boolean;
 }) {
   return (
-    <div className={"v3-dv-kpi" + (accent ? " v3-dv-kpi--acc" : "")}>
+    <div className={"v3-dv-kpi" + (accent ? " v3-dv-kpi--acc" : "")} title={title}>
       <Icon size={13} className="k-ic" />
       <div className="k-val">{value}</div>
       <div className="k-lab">{label}</div>

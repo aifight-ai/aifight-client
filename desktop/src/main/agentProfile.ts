@@ -14,12 +14,21 @@ const num = (v: unknown, fallback = 0): number =>
 const optNum = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
 
+// Mirror of the cross-game board's coverage bonus (internal/rating
+// crossGameAggregate): +5% per extra game, hard-capped at +50%. Deriving the
+// desktop's "true rating" with the SAME weighting + bonus as the conservative
+// aggregate keeps the two KPI numbers directly comparable.
+function coverageBonus(gamesActive: number): number {
+  return gamesActive > 1 ? Math.min(1.5, 1 + 0.05 * (gamesActive - 1)) : 1;
+}
+
 /** Map a raw profile response to { name, stats }. Never throws; bad input → nulls. */
 export function normalizeAgentProfile(json: unknown): AgentProfileData {
   const j = (json ?? {}) as {
     agent?: { name?: unknown } | null;
     summary?: Record<string, unknown> | null;
     ranking?: Record<string, unknown> | null;
+    ratings?: unknown;
   };
   const rawName = j.agent?.name;
   const name = typeof rawName === "string" && rawName.length > 0 ? rawName : null;
@@ -38,6 +47,34 @@ export function normalizeAgentProfile(json: unknown): AgentProfileData {
       : totalGames > 0
         ? wins / totalGames
         : 0;
+
+  // The headline aggregate (stats.rating) is CONSERVATIVE — per game Rating −
+  // 2·RD, games-weighted, × coverage bonus — which reads lower than the agent's
+  // real strength. The profile's ratings[] already publishes each game's raw
+  // rating + deviation (public data), so derive the undiscounted counterpart
+  // here: same eligible set (rated_games_played ≥ the leaderboard floor), same
+  // games-played weights, same bonus. Null when nothing qualifies yet.
+  const minGames = num(s?.leaderboard_min_games, 5);
+  let weight = 0;
+  let ratingSum = 0;
+  let rdSum = 0;
+  let counted = 0;
+  const rows = Array.isArray(j.ratings) ? j.ratings : [];
+  for (const row of rows) {
+    const g = row as Record<string, unknown> | null;
+    const gRating = optNum(g?.rating);
+    const gRd = optNum(g?.deviation);
+    const gamesPlayed = num(g?.games_played);
+    const ratedGames = num(g?.rated_games_played);
+    if (gRating === null || gRd === null || gamesPlayed <= 0 || ratedGames < minGames) continue;
+    weight += gamesPlayed;
+    ratingSum += gRating * gamesPlayed;
+    rdSum += gRd * gamesPlayed;
+    counted += 1;
+  }
+  const trueRating = weight > 0 ? (ratingSum / weight) * coverageBonus(counted) : null;
+  const rd = weight > 0 ? rdSum / weight : null;
+
   const stats: AgentStats = {
     totalGames,
     wins,
@@ -45,6 +82,8 @@ export function normalizeAgentProfile(json: unknown): AgentProfileData {
     draws,
     winRate,
     rating: optNum(s?.aggregate_rating ?? r?.aggregate_rating),
+    trueRating,
+    rd,
     rank: optNum(s?.global_rank ?? r?.rank),
     leaderboardEligible: typeof s?.leaderboard_eligible === "boolean" ? s.leaderboard_eligible : false,
   };

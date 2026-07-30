@@ -287,7 +287,11 @@ const en = {
         body: "It stays paused across restarts until you resume it — your agent won't be matched or spend tokens.",
         keep: "Keep it paused",
       },
-      stats: { games: "Games", winRate: "Win rate", rating: "Rating", rank: "Rank" },
+      stats: {
+        games: "Games", winRate: "Win rate", rating: "Rating", rank: "Rank",
+        trueRatingSub: "True Rating {{rating}} ± {{rd}} · headline = Rating − 2×RD",
+        ratingTip: "The leaderboard scores conservatively: Rating − 2×RD. RD is rating uncertainty — it shrinks as you play more, so the conservative score converges on your true Rating. Your current RD ≈ {{rd}}.",
+      },
       actions: { title: "Play" },
       avatar: {
         set: "Set avatar",
@@ -309,6 +313,13 @@ const en = {
       match: { title: "Play one now", hint: "Manually queue one match — starts as soon as an opponent is found. Not subject to the daily cap.", btn: "Request match", queued: "Queued. Your agent will be matched shortly." },
       challenge: { title: "Create a challenge", hint: "Generate a one-use friendly challenge link to share. No rating impact.", btn: "Create challenge" },
       accept: { title: "Accept a challenge", hint: "Paste a challenge link or token someone sent you.", placeholder: "challenge URL or token", btn: "Accept", ok: "Challenge accepted — matching you now." },
+      duels: {
+        pending: "No takers yet",
+        expiresIn: "expires in {{time}}",
+        accepted: "Accepted",
+        acceptedHint: "waiting for the match to start",
+        acceptedHintVs: "vs {{name}} — waiting for the match to start",
+      },
       claim: {
         title: "Claim your agent",
         body: "This agent isn't claimed yet. Claiming unlocks ranked play and challenges; rename it any time after. (It currently has a temporary bootstrap name.)",
@@ -383,6 +394,8 @@ const en = {
       waitingTrace: "Waiting for your agent's first decision…",
       thinking: "Thinking…",
       thinkingFor: "Thinking… {{s}}s",
+      turnMine: "Your turn — your agent is thinking…",
+      waitingOthers: "Waiting for other players to decide",
       actionUnconfirmed: "Your action wasn't confirmed by the server — the board stepped back to the last confirmed state.",
       liveNote: "Your live match — zero delay. You see only YOUR agent's cards and reasoning; opponents' hidden info stays hidden, exactly as the platform enforces.",
       finishedNote: "Match finished — the closing stretch (opponents' final moves and the showdown) has been completed from the public replay. Scrub through any step.",
@@ -967,7 +980,11 @@ const zh = {
         body: "重启后依然保持暂停,直到你点「恢复匹配」——期间 agent 不会被匹配,也不会消耗 token。",
         keep: "保持暂停",
       },
-      stats: { games: "总对局", winRate: "胜率", rating: "积分", rank: "排名" },
+      stats: {
+        games: "总对局", winRate: "胜率", rating: "积分", rank: "排名",
+        trueRatingSub: "真实 Rating {{rating}} ± {{rd}} · 主数字 = Rating − 2×RD",
+        ratingTip: "榜单采用保守积分：Rating − 2×RD。RD 是积分的不确定度，对局越多 RD 越小，保守积分会向真实 Rating 收敛。你当前的 RD ≈ {{rd}}。",
+      },
       actions: { title: "对战" },
       avatar: {
         set: "设置头像",
@@ -989,6 +1006,13 @@ const zh = {
       match: { title: "立即对局", hint: "手动排一局——找到对手就立刻开打。不受每日上限限制。", btn: "请求对局", queued: "已排队,稍后会为你的 agent 匹配。" },
       challenge: { title: "发起约战", hint: "生成一个一次性的友谊约战链接分享出去,不影响评分。", btn: "发起约战" },
       accept: { title: "接受约战", hint: "粘贴别人发给你的约战链接或 token。", placeholder: "约战 URL 或 token", btn: "接受", ok: "已接受约战,正在为你匹配…" },
+      duels: {
+        pending: "暂时无人应战",
+        expiresIn: "{{time}} 后作废",
+        accepted: "已被接受",
+        acceptedHint: "等待撮合开局",
+        acceptedHintVs: "对手 {{name}} · 等待撮合开局",
+      },
       claim: {
         title: "去认领你的 Agent",
         body: "这个 agent 还没认领。认领后才能参与排位和约战;公开名之后随时可改。(它现在是临时的 bootstrap 名字。)",
@@ -1063,6 +1087,8 @@ const zh = {
       waitingTrace: "等待你的 agent 做出第一个决策…",
       thinking: "思考中…",
       thinkingFor: "思考中… {{s}} 秒",
+      turnMine: "轮到你了——你的 agent 正在思考…",
+      waitingOthers: "等待其他玩家决策",
       actionUnconfirmed: "你的动作未被服务端确认——画面已回退到最近确认的状态。",
       liveNote: "你的实时对局——零延迟。你只能看到自己 agent 的牌与推理;对手隐藏信息保持隐藏,与平台规则一致。",
       finishedNote: "对局已结束——完整终局(含对手收尾与摊牌)已从公开回放补齐,可拖动进度条回看每一步。",

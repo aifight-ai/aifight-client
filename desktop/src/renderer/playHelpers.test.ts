@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { CAP_CONFIRM_THRESHOLD, capNeedsConfirm, divisionOf, fmtTimePoint, formatTokens } from "./views/PlayView";
+import { CAP_CONFIRM_THRESHOLD, capNeedsConfirm, divisionOf, fmtTimePoint, formatRemaining, formatTokens } from "./views/PlayView";
 
 describe("capNeedsConfirm", () => {
   it("threshold is 10 (change deliberately, with the CLI mirror)", () => {
@@ -57,5 +57,19 @@ describe("fmtTimePoint", () => {
   it("tolerates missing / broken timestamps", () => {
     expect(fmtTimePoint(undefined, "en", now)).toBe("");
     expect(fmtTimePoint("not-a-date", "en", now)).toBe("");
+  });
+});
+
+describe("formatRemaining", () => {
+  const now = new Date("2026-07-29T20:00:00.000Z");
+  it("hours+minutes, minutes, and sub-minute shapes", () => {
+    expect(formatRemaining("2026-07-30T19:12:00.000Z", now)).toBe("23h 12m");
+    expect(formatRemaining("2026-07-30T08:00:00.000Z", now)).toBe("12h");
+    expect(formatRemaining("2026-07-29T20:47:30.000Z", now)).toBe("47m");
+    expect(formatRemaining("2026-07-29T20:00:20.000Z", now)).toBe("<1m");
+  });
+  it("past or broken deadlines → 0m (the row drops on the next poll)", () => {
+    expect(formatRemaining("2026-07-29T19:00:00.000Z", now)).toBe("0m");
+    expect(formatRemaining("not-a-date", now)).toBe("0m");
   });
 });

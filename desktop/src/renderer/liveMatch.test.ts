@@ -530,7 +530,11 @@ describe("injectFinalAction + reconcile (F2)", () => {
       data: { match_id: "real", session_id: SESSION, result: { winner: OWNER, is_draw: false }, players: [] },
     } as unknown as ServerMessage], s0);
     expect(injectFinalAction(fin, finalAction("fold"))).toBe(fin);
-    expect(injectFinalAction(s0, finalAction("surrender"))).toBe(s0); // not a poker action
+    // Not a poker action: nothing is injected, but the decision window DID close.
+    const unmappable = injectFinalAction(s0, finalAction("surrender"));
+    expect(unmappable.events).toBe(s0.events);
+    expect(unmappable.pendingAction).toBeNull();
+    expect(unmappable.myTurn).toBe(false);
   });
 
   it("dice: bid injects + confirms; challenge is NEVER synthesized (engine-computed fields)", () => {
@@ -540,8 +544,10 @@ describe("injectFinalAction + reconcile (F2)", () => {
     const d2 = feed([actionRequest({ round: 1 }, [{ type: "bid", player: OWNER, data: { quantity: 3, face: 4 }, seq: 1, ts: "t1" }])], d1);
     expect(d2.pendingAction).toBeNull();
     expect(d2.events.filter((e) => e.type === "bid")).toHaveLength(1);
-    // challenge → no injection at all
-    expect(injectFinalAction(d0, finalAction("challenge"))).toBe(d0);
+    // challenge → no injection at all (but the decision window closes)
+    const ch = injectFinalAction(d0, finalAction("challenge"));
+    expect(ch.events).toBe(d0.events);
+    expect(ch.myTurn).toBe(false);
   });
 
   it("dice: a new round starting rolls an unconfirmed bid back", () => {
@@ -563,10 +569,13 @@ describe("injectFinalAction + reconcile (F2)", () => {
     const s1 = injectFinalAction(c0, finalAction("assassinate", { target: OPP }));
     const s2 = feed([actionRequest({ phase: "block" }, [{ type: "action", player: OWNER, data: { action: "assassinate", target: "p9" }, seq: 0, ts: "t0" }])], s1);
     expect(s2.syncNotice).toBe("action_unconfirmed");
-    // phase responses are never synthesized
-    expect(injectFinalAction(c0, finalAction("challenge"))).toBe(c0);
-    expect(injectFinalAction(c0, finalAction("block", { role: "duke" }))).toBe(c0);
-    expect(injectFinalAction(c0, finalAction("pass"))).toBe(c0);
+    // phase responses are never synthesized (but each still closes the window)
+    for (const tr of [finalAction("challenge"), finalAction("block", { role: "duke" }), finalAction("pass")]) {
+      const r = injectFinalAction(c0, tr);
+      expect(r.events).toBe(c0.events);
+      expect(r.pendingAction).toBeNull();
+      expect(r.myTurn).toBe(false);
+    }
   });
 
   it("reconnect history reconciles: the full log confirms (or contradicts) the synthetic", () => {
@@ -581,5 +590,93 @@ describe("injectFinalAction + reconcile (F2)", () => {
     expect(s2.pendingAction).toBeNull();
     expect(s2.syncNotice).toBeNull();
     expect(s2.events.filter((e) => e.type === "player_action")).toHaveLength(1);
+  });
+});
+
+// ── myTurn: live turn authority (2026-07-30) ────────────────────────────────
+
+describe("myTurn — live turn authority", () => {
+  const finalAction = (type: string, data?: Record<string, unknown>) => ({
+    matchId: SESSION,
+    action: { type, ...(data !== undefined ? { data } : {}) },
+  });
+
+  it("starts closed; an action_request opens our decision window", () => {
+    const s0 = feed([gameStart("texas_holdem")]);
+    expect(s0.myTurn).toBe(false);
+    const s1 = feed(
+      [actionRequest({ hand_num: 1 }, [{ type: "new_hand", data: { hand_num: 1 }, seq: 0, ts: "t0" }])],
+      s0,
+    );
+    expect(s1.myTurn).toBe(true);
+  });
+
+  it("ignores action_requests for another session (window untouched)", () => {
+    const s0 = feed([gameStart("texas_holdem")]);
+    const s1 = feed([actionRequest({ hand_num: 1 }, null, "99999999-9999-9999-9999-999999999999")], s0);
+    expect(s1.myTurn).toBe(false);
+  });
+
+  it("closes when our decision leaves (final_action trace), synthesized or not", () => {
+    const s0 = feed([
+      gameStart("texas_holdem"),
+      actionRequest({ hand_num: 1 }, [{ type: "new_hand", data: { hand_num: 1 }, seq: 0, ts: "t0" }]),
+    ]);
+    expect(s0.myTurn).toBe(true);
+    const s1 = injectFinalAction(s0, finalAction("fold"));
+    expect(s1.myTurn).toBe(false);
+    expect(s1.pendingAction).not.toBeNull(); // synthesized, awaiting confirmation
+  });
+
+  it("closes on a non-synthesizable decision too (coup pass)", () => {
+    const c0 = feed([gameStart("coup"), actionRequest({ phase: "challenge" }, null)]);
+    expect(c0.myTurn).toBe(true);
+    const c1 = injectFinalAction(c0, finalAction("pass"));
+    expect(c1.myTurn).toBe(false);
+    expect(c1.events).toHaveLength(0); // never synthesized
+  });
+
+  it("closes on action_stale even with nothing pending", () => {
+    const s0 = feed([gameStart("coup"), actionRequest({ phase: "block" }, null)]);
+    expect(s0.myTurn).toBe(true);
+    const s1 = reduceServerMessage(s0, { type: "action_stale", data: {} } as unknown as ServerMessage);
+    expect(s1.myTurn).toBe(false);
+    expect(s1.syncNotice).toBeNull(); // benign: the window was closed by someone else
+  });
+
+  it("closes on a game_state reconnect snapshot (not our turn)", () => {
+    const s0 = feed([gameStart("texas_holdem"), actionRequest({ hand_num: 1 }, null)]);
+    expect(s0.myTurn).toBe(true);
+    const s1 = reduceServerMessage(s0, {
+      type: "game_state",
+      data: { match_id: SESSION, state: { hand_num: 1 } },
+    } as unknown as ServerMessage);
+    expect(s1.myTurn).toBe(false);
+  });
+
+  it("closes at game_over", () => {
+    const s0 = feed([gameStart("texas_holdem"), actionRequest({ hand_num: 1 }, null)]);
+    const s1 = feed(
+      [
+        {
+          type: "game_over",
+          data: { match_id: "real", session_id: SESSION, result: { winner: OWNER, is_draw: false }, players: [] },
+        } as unknown as ServerMessage,
+      ],
+      s0,
+    );
+    expect(s1.finished).toBe(true);
+    expect(s1.myTurn).toBe(false);
+  });
+
+  it("opponent events from the polled feed never flip the window", () => {
+    const s0 = feed([
+      gameStart("texas_holdem"),
+      actionRequest({ hand_num: 1 }, [{ type: "new_hand", data: { hand_num: 1 }, seq: 0, ts: "t0" }]),
+    ]);
+    const s1 = mergePolledEvents(s0, SESSION, [
+      { type: "player_action", player: OPP, data: { action: "call", amount: 50 }, seq: 1, ts: "t1" },
+    ]);
+    expect(s1.myTurn).toBe(true); // our action_request is still the open window
   });
 });

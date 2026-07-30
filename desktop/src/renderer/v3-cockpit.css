@@ -256,6 +256,36 @@
   color: var(--color-ink-6);
 }
 
+/* ─── 直播回合条(2026-07-30):bridge 的权威回合状态——我方 action_request 开着
+   = 我方思考中;否则等待其他玩家决策。共享渲染器的座位 acting 标记是事件推导,
+   直播时以这条为准(牌桌标记的 data-turn 校正见 YOUR AGENT 块之后)。 */
+.v3-turn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.v3-turn svg { flex: 0 0 auto; }
+.v3-turn[data-kind="mine"] { color: var(--v3-acc-deep); font-weight: 600; }
+.v3-turn[data-kind="waiting"] { color: var(--v3-t3); }
+/* 等待省略号:轻脉冲三点(刻意区别于「思考中」的 spinner)。 */
+.v3-dots { display: inline-flex; gap: 3px; align-items: center; margin-left: 2px; }
+.v3-dots i {
+  width: 3.5px;
+  height: 3.5px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: v3-waitPulse 1.4s ease-in-out infinite;
+}
+.v3-dots i:nth-child(2) { animation-delay: 0.2s; }
+.v3-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes v3-waitPulse {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 0.9; }
+}
+
 /* stage 外壳交还给画布(去掉旧面板二重边框) */
 .v3-cockpit .aifight-game-canvas .poker-stage {
   background: transparent;
@@ -551,6 +581,47 @@
   white-space: nowrap;
 }
 
+/* ─── 直播回合归属校正(2026-07-30;data-turn 由 CockpitPanel 从 bridge 状态写入) ───
+   共享渲染器的「acting」座位来自纯事件推导:poker/coup 标的是【刚行动的人】
+   (最后一条 player_action 的作者),不是当前决策窗口的持有者——owner 截图实证:
+   Seat 4 显示 TO ACT/thinking… 时其实轮到我方 agent。bridge 通过
+   action_request/final_action 知道真实窗口,直播期间(data-turn 存在)压掉这些
+   误导标记,回合状态由 .v3-turn 条独家表达。dice 推导的是【下一个行动者】
+   (player_action 之间的间隔 = 该对手确实在行动窗口内,证据充分),保留。
+   回放/历史不传 data-turn,视觉与网站完全一致。 */
+.v3-cockpit .aifight-game-canvas[data-turn] .poker-replay-visual .seat.acting,
+.v3-cockpit .aifight-game-canvas[data-turn="mine"] .coup-visual .seat.acting {
+  border-color: var(--v3-hairline);
+  background: var(--bg);
+}
+.v3-cockpit .aifight-game-canvas[data-turn] .poker-replay-visual .seat.acting::after,
+.v3-cockpit .aifight-game-canvas[data-turn="mine"] .coup-visual .seat.acting::after {
+  content: none;
+}
+/* :has(.thinking) 只压「thinking…」文本,不碰真实的 lastAction 文本。 */
+.v3-cockpit .aifight-game-canvas[data-turn] .poker-replay-visual .seat.acting .seat-flag,
+.v3-cockpit .aifight-game-canvas[data-turn] .poker-replay-visual .seat.acting .act-val:has(.thinking),
+.v3-cockpit .aifight-game-canvas[data-turn="mine"] .coup-visual .seat.acting .seat-flag {
+  visibility: hidden;
+}
+.v3-cockpit .aifight-game-canvas[data-turn] .poker-replay-visual .seat.acting .commit {
+  background: var(--v3-ink);
+  color: var(--bg);
+}
+/* 轮到我方(data-turn="mine"):给我方座位打上与 acting 相同的思考高亮。
+   逐座枚举与上方 YOUR AGENT 徽章同一写法(poker 的 SeatCard 带 data-seat)。 */
+.v3-cockpit .aifight-game-canvas[data-turn="mine"][data-owner-seat="0"] .seat[data-seat="0"],
+.v3-cockpit .aifight-game-canvas[data-turn="mine"][data-owner-seat="1"] .seat[data-seat="1"],
+.v3-cockpit .aifight-game-canvas[data-turn="mine"][data-owner-seat="2"] .seat[data-seat="2"],
+.v3-cockpit .aifight-game-canvas[data-turn="mine"][data-owner-seat="3"] .seat[data-seat="3"],
+.v3-cockpit .aifight-game-canvas[data-turn="mine"][data-owner-seat="4"] .seat[data-seat="4"],
+.v3-cockpit .aifight-game-canvas[data-turn="mine"][data-owner-seat="5"] .seat[data-seat="5"],
+.v3-cockpit .aifight-game-canvas[data-turn="mine"][data-owner-seat="6"] .seat[data-seat="6"],
+.v3-cockpit .aifight-game-canvas[data-turn="mine"][data-owner-seat="7"] .seat[data-seat="7"] {
+  border-color: var(--v3-acc);
+  background: var(--v3-acc-tint);
+}
+
 /* ═══ ③ 推理流面板(design:.trace — 橘方块 + mono 标题 + mono 流) ═══ */
 .v3-trace {
   display: flex;
@@ -677,6 +748,30 @@
 
 .v3-tr-err { color: var(--color-err); font-size: 10.5px; align-items: flex-start; }
 .v3-tr-warn { color: var(--color-warn); font-size: 10.5px; align-items: flex-start; }
+
+/* ─── 决策分组(2026-07-30):一组 = 决策 → 思考 → 结果;组间分隔线 + 加大间距,
+   不再让上一组的结果挤进下一组的标题。 */
+.v3-tr-group { display: flex; flex-direction: column; gap: 6px; }
+.v3-tr-group + .v3-tr-group {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--v3-hairline);
+}
+/* 决策标题行卡片化(整个面板的核心锚点):橘边 + 淡橘底,从思考卡里跳出来。 */
+.v3-tr-row.v3-tr-decision {
+  padding: 7px 10px;
+  border: 1px solid var(--v3-acc);
+  border-radius: 9px;
+  background: var(--v3-acc-tint);
+}
+/* 卡片化后,inset 橙条会叠在圆角边框上——current 组改用深橘边框表达。 */
+.v3-tr-row.v3-tr-decision.v3-tr-cur {
+  box-shadow: none;
+  border-color: var(--v3-acc-deep);
+}
+/* 等待其他玩家决策占位(2026-07-30):静态沙漏 + 省略号脉冲(.v3-dots),
+   刻意不用「思考中」的 spinner + 秒数。 */
+.v3-tr-waiting { color: var(--v3-t3); }
 
 /* ═══ ④ 自己手牌条(design:.own — 大牌面 + 状态 + mono meta) ═══ */
 .v3-own {

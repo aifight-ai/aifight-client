@@ -25,6 +25,8 @@ describe("normalizeAgentProfile", () => {
       draws: 2,
       winRate: 0.594,
       rating: 1574,
+      trueRating: null, // no ratings[] rows in this payload
+      rd: null,
       rank: 2,
       leaderboardEligible: true,
     });
@@ -73,5 +75,61 @@ describe("normalizeAgentProfile", () => {
     });
     expect(Number.isFinite(out.stats?.winRate)).toBe(true);
     expect(out.stats?.winRate).toBeCloseTo(4 / 10);
+  });
+
+  // beta.35: the KPI headline shows the conservative aggregate (Rating − 2·RD)
+  // and read low. The true rating + RD derive from the profile's public
+  // ratings[] with the leaderboard's own weighting + coverage bonus.
+  describe("trueRating / rd from ratings[]", () => {
+    const summary = { total_games: 30, aggregate_rating: 1355.9, leaderboard_min_games: 5 };
+
+    it("single eligible game: raw rating, no coverage bonus", () => {
+      const out = normalizeAgentProfile({
+        agent: { name: "a" },
+        summary,
+        ratings: [{ game: "coup", rating: 1500, deviation: 60, games_played: 10, rated_games_played: 10 }],
+      });
+      expect(out.stats?.trueRating).toBe(1500);
+      expect(out.stats?.rd).toBe(60);
+    });
+
+    it("two eligible games: games-weighted average × 1.05 coverage bonus", () => {
+      const out = normalizeAgentProfile({
+        agent: { name: "a" },
+        summary,
+        ratings: [
+          { game: "coup", rating: 1600, deviation: 50, games_played: 10, rated_games_played: 10 },
+          { game: "texas_holdem", rating: 1400, deviation: 70, games_played: 20, rated_games_played: 20 },
+        ],
+      });
+      // (1600·10 + 1400·20) / 30 = 1466.67; × 1.05 = 1540.
+      expect(out.stats?.trueRating).toBeCloseTo(1540, 5);
+      // (50·10 + 70·20) / 30 = 63.33.
+      expect(out.stats?.rd).toBeCloseTo(63.333, 2);
+    });
+
+    it("games below the leaderboard sample floor don't count", () => {
+      const out = normalizeAgentProfile({
+        agent: { name: "a" },
+        summary,
+        ratings: [
+          { game: "coup", rating: 1500, deviation: 60, games_played: 10, rated_games_played: 10 },
+          { game: "liars_dice", rating: 900, deviation: 200, games_played: 4, rated_games_played: 4 },
+        ],
+      });
+      expect(out.stats?.trueRating).toBe(1500);
+      expect(out.stats?.rd).toBe(60);
+    });
+
+    it("no qualifying rows (or no ratings block) → nulls, headline keeps the aggregate", () => {
+      const thin = normalizeAgentProfile({
+        agent: { name: "a" },
+        summary,
+        ratings: [{ game: "coup", rating: 1500, deviation: 60, games_played: 3, rated_games_played: 3 }],
+      });
+      expect(thin.stats?.trueRating).toBeNull();
+      expect(thin.stats?.rd).toBeNull();
+      expect(thin.stats?.rating).toBe(1355.9);
+    });
   });
 });

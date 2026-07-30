@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Brain, ArrowRight, AlertTriangle, Loader2 } from "lucide-react";
+import { Brain, ArrowRight, AlertTriangle, Loader2, Hourglass } from "lucide-react";
 
 import type { TraceAction } from "../../shared/ipc";
 import type { StampedTrace } from "../liveStore";
@@ -70,9 +70,9 @@ function TraceRow({
           )}
           <div className="v3-tr-label v3-tr-label--dim">{t("cockpit.modelOutput")}</div>
           <div className="v3-tr-output">{trace.raw.preview}</div>
-          <div className="v3-tr-meta">
-            {trace.raw.bytes}B · sha {trace.raw.sha256}
-          </div>
+          {/* Owner ruling 2026-07-30: no content hash on screen — the 64-char
+              hex overflowed the card and carried no in-app meaning. */}
+          <div className="v3-tr-meta">{trace.raw.bytes}B</div>
         </div>
       );
     case "final_action":
@@ -115,6 +115,7 @@ export function ReasoningTracePanel({
   emptyHint,
   onJumpToStep,
   transportStep,
+  waitingForOthers,
 }: {
   traces: readonly StampedTrace[];
   badge: TraceBadge;
@@ -130,6 +131,14 @@ export function ReasoningTracePanel({
    * anchor the trailing group regardless of step (standalone use).
    */
   transportStep?: number;
+  /**
+   * Live turn authority (2026-07-30): true while the last decision group is
+   * settled and no action_request of ours is open — the stream is quiet because
+   * OPPONENTS are deciding. Renders a static "waiting" placeholder (hourglass +
+   * soft ellipsis; NO spinner/elapsed — those belong to the thinking state).
+   * Our next decision_request replaces it with the thinking placeholder.
+   */
+  waitingForOthers?: boolean;
 }) {
   const { t } = useTranslation();
   const endRef = useRef<HTMLDivElement>(null);
@@ -148,6 +157,18 @@ export function ReasoningTracePanel({
   // highlight must not bleed into a later group the transport hasn't reached
   // (possible in live, where the trace stream is never filtered).
   const nextDecisionIdx = traces.findIndex((tr, i) => i > anchorIdx && tr.type === "decision_request");
+
+  // Decision-group structure (2026-07-30): a new group opens at each
+  // decision_request and runs until the next one, so the stream reads as
+  // "decision → thinking → outcome" blocks with a visible separator between
+  // them, instead of one flat row soup where a settled outcome bled into the
+  // next decision's header. Traces before the first decision_request (rare)
+  // form a preamble group.
+  const groups: { tr: StampedTrace; i: number }[][] = [];
+  traces.forEach((tr, i) => {
+    if (tr.type === "decision_request" || groups.length === 0) groups.push([]);
+    groups[groups.length - 1].push({ tr, i });
+  });
 
   // F4: a trailing decision group with no outcome row yet IS the agent still
   // thinking (decision_request is emitted before the LLM call). Render a
@@ -217,14 +238,18 @@ export function ReasoningTracePanel({
         {traces.length === 0 ? (
           <div className="v3-tr-empty">{emptyHint ?? t("cockpit.noTraces")}</div>
         ) : (
-          traces.map((tr, i) => (
-            <TraceRow
-              key={i}
-              trace={tr}
-              current={anchorIdx !== -1 && i >= anchorIdx && (nextDecisionIdx === -1 || i < nextDecisionIdx)}
-              anchorRef={i === anchorIdx ? anchorRef : undefined}
-              onJumpToStep={onJumpToStep}
-            />
+          groups.map((g, gi) => (
+            <div className="v3-tr-group" key={gi}>
+              {g.map(({ tr, i }) => (
+                <TraceRow
+                  key={i}
+                  trace={tr}
+                  current={anchorIdx !== -1 && i >= anchorIdx && (nextDecisionIdx === -1 || i < nextDecisionIdx)}
+                  anchorRef={i === anchorIdx ? anchorRef : undefined}
+                  onJumpToStep={onJumpToStep}
+                />
+              ))}
+            </div>
           ))
         )}
         {thinkingIdx !== -1 && (
@@ -236,6 +261,20 @@ export function ReasoningTracePanel({
                   ? t("cockpit.thinking")
                   : t("cockpit.thinkingFor", { s: thinkingElapsedSec })}
               </b>
+            </span>
+          </div>
+        )}
+        {/* Waiting placeholder: last group settled, no open action_request of
+            ours — opponents are deciding. Static (hourglass + soft ellipsis),
+            deliberately NOT the thinking placeholder's spinner + elapsed. */}
+        {waitingForOthers === true && thinkingIdx === -1 && traces.length > 0 && (
+          <div className="v3-tr-row v3-tr-waiting">
+            <Hourglass size={13} className="shrink-0" />
+            <span>{t("cockpit.waitingOthers")}</span>
+            <span className="v3-dots" aria-hidden>
+              <i />
+              <i />
+              <i />
             </span>
           </div>
         )}
