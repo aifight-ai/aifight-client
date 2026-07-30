@@ -1,11 +1,11 @@
-import { isSafeAutoUpdatePhase, performBridgePackageUpdate } from "../../bridge/auto-update";
+import { isPinnableVersion, isSafeAutoUpdatePhase, performBridgePackageUpdate } from "../../bridge/auto-update";
 import { readBridgeConfig } from "../../bridge/config";
 import {
   BridgeServiceError,
   restartBridgeService,
   statusBridgeService,
 } from "../../bridge/service";
-import { checkBridgeUpdate } from "../../bridge/update-check";
+import { checkBridgeUpdate, type BridgeUpdateCheck } from "../../bridge/update-check";
 import { RUNTIME_VERSION } from "../../index";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, expectArity, makeClient } from "../shared";
@@ -52,8 +52,11 @@ export async function runBridgeUpdate(
 
   if (!args.jsonMode) {
     env.stdout(`${update.message}\n`);
-    if (update.policy !== undefined) {
-      env.stdout(`Latest: ${update.policy.latestVersion}\n`);
+    // The resolved "latest" (npm registry first, server policy as fallback) —
+    // not the server policy's own latest_version field, which can lag npm.
+    const latest = update.latestVersion ?? update.policy?.latestVersion;
+    if (latest !== undefined) {
+      env.stdout(`Latest: ${latest}\n`);
       env.stdout(`Update package: ${UPDATE_PACKAGE}\n`);
     }
   }
@@ -73,7 +76,7 @@ export async function runBridgeUpdate(
 
   // The npm install itself is always safe: a running Bridge already has its code
   // in memory and keeps playing. Only the RESTART below can interrupt a match.
-  await runNpmUpdate(env, args.jsonMode);
+  await runNpmUpdate(env, args.jsonMode, update);
   const service = await restartInstalledService(env, args.jsonMode, args.flags.force === true);
 
   if (args.jsonMode) {
@@ -94,17 +97,28 @@ function updateBaseUrl(): string {
   }
 }
 
-async function runNpmUpdate(env: HandlerEnv, jsonMode: boolean): Promise<void> {
+async function runNpmUpdate(env: HandlerEnv, jsonMode: boolean, update: BridgeUpdateCheck): Promise<void> {
+  // Pin the exact version the npm registry named when we have it. In the
+  // degraded server-only arm (registry unreachable) the user explicitly asked
+  // for "update", so the bare package — npm's own latest dist-tag — is the
+  // honest fallback for this manual, attended path.
+  const pin = update.latestSource === "npm" && isPinnableVersion(update.latestVersion)
+    ? update.latestVersion
+    : undefined;
+  const target = pin !== undefined ? `${UPDATE_PACKAGE}@${pin}` : UPDATE_PACKAGE;
   if (!jsonMode) {
-    env.stdout(`Updating AIFight CLI: npm install -g ${UPDATE_PACKAGE}\n`);
+    env.stdout(`Updating AIFight CLI: npm install -g ${target}\n`);
   }
   try {
-    await performBridgePackageUpdate({ execFile: env.bridgeService?.execFile });
+    await performBridgePackageUpdate({
+      execFile: env.bridgeService?.execFile,
+      ...(pin !== undefined ? { version: pin } : {}),
+    });
   } catch (cause) {
     throw new CommandError(
       "update_failed",
       `npm update failed: ${firstErrorLine(cause)}`,
-      { hint: `Run manually: npm install -g ${UPDATE_PACKAGE}` },
+      { hint: `Run manually: npm install -g ${target}` },
     );
   }
   if (!jsonMode) {

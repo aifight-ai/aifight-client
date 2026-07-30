@@ -1,17 +1,27 @@
 // F4 "thinking" placeholder: a trailing decision_request with no outcome row
 // yet means the agent's LLM call is still in flight (decision_request is
-// emitted BEFORE the call) — the panel renders a spinner + elapsed seconds in
-// the decision group's own card style, and the result trace replaces it.
+// emitted BEFORE the call) — the event log renders a spinner + elapsed seconds
+// at the end of that embedded decision group, and the result trace replaces it.
 // Replay badge is exempt: a stored session is complete, so a spinner there
 // would spin forever over a settled decision. SSR technique as traceSync.
+// (Moved off the retired ReasoningTracePanel onto EventLogPanel in D11.)
 
 import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import type { MatchEvent } from "@aifight/api-types";
 import "./i18n";
-import { ReasoningTracePanel, type TraceBadge } from "./views/ReasoningTracePanel";
+import { EventLogPanel } from "./views/EventLogPanel";
+import type { TraceBadge } from "./views/ReasoningTracePanel";
 import type { StampedTrace } from "./liveStore";
+
+const players = [{ agent_id: "a0", agent_name: "Claude Opus", player_id: "p0", position: 0 }];
+
+const events: MatchEvent[] = [
+  { seq: 0, type: "action", data: { action: "income" }, created_at: "", player_id: "p0" },
+  { seq: 1, type: "action", data: { action: "tax", claimed_role: "Duke" }, created_at: "", player_id: "p0" },
+];
 
 const decision = (extra: Partial<StampedTrace> = {}): StampedTrace =>
   ({
@@ -41,10 +51,23 @@ const failure: StampedTrace = {
 } as unknown as StampedTrace;
 
 function render(traces: readonly StampedTrace[], badge: TraceBadge) {
-  return renderToStaticMarkup(createElement(ReasoningTracePanel, { traces, badge }));
+  return renderToStaticMarkup(
+    createElement(EventLogPanel, {
+      game: "coup",
+      events,
+      traces,
+      players,
+      ownerPlayerId: "p0",
+      badge,
+      isLive: badge !== "replay",
+      transportStep: events.length,
+      following: true,
+      onJumpToStep: () => {},
+    }),
+  );
 }
 
-describe("F4 — thinking placeholder", () => {
+describe("F4 — thinking placeholder (embedded in the event log)", () => {
   it("shows while the trailing decision has no outcome (live badge)", () => {
     const markup = render([decision()], "live");
     expect(markup).toContain("Thinking…");
@@ -83,7 +106,7 @@ describe("F4 — thinking placeholder", () => {
   });
 
   it("an earlier settled group + in-flight decision shows exactly one placeholder", () => {
-    const markup = render([decision(), finalAction, decision({ step: 3 })], "live");
+    const markup = render([decision(), finalAction, decision({ step: 2 })], "live");
     expect(markup.match(/v3-tr-pending/g)).toHaveLength(1);
   });
 });

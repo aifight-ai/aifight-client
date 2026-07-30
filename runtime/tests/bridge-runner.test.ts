@@ -16,7 +16,7 @@ import { createMockRuntimeProvider } from "../src/bridge/provider";
 import { LocalMatchSessionStore } from "../src/session/local-match-session-store";
 import { WSClientMismatchError, WSHandshakeError } from "../src/wsclient/errors";
 import { serializeClientMessage } from "../src/wsclient/frame-handler";
-import type { BridgeConfig } from "../src/bridge/config";
+import { writeBridgeConfig, type BridgeConfig } from "../src/bridge/config";
 import type { MsgActionRequest, MsgGameOver, MsgGameStart } from "../src/protocol/types";
 import type { ServerMessageEnvelope } from "../src/wsclient/frame-handler";
 import type {
@@ -384,6 +384,103 @@ describe("BridgeRunner", () => {
     await flushEffects();
 
     expect(joins()).toBe(1);
+
+    await runner.stop();
+  });
+
+  // `aifight pause` writes matchingPaused into bridge.json while the bridge is
+  // running. The runner reads the flag FRESH at every connect edge — a
+  // snapshot frozen at start() would keep re-joining on every reconnect and
+  // silently undo the pause until the next restart.
+  function writePausedDiskConfig(paused: boolean): void {
+    // The on-disk shape must pass readBridgeConfig's validation (the test's
+    // in-memory bridgeConfig() deliberately would not: its wsUrl host does
+    // not match its baseUrl). Only the flag matters to the runner.
+    writeBridgeConfig({
+      version: 1,
+      baseUrl: "https://aifight.ai",
+      wsUrl: "wss://aifight.ai/api/ws",
+      agentId: "agent-1",
+      agentName: "alpha",
+      apiKey: "sk-local-agent-key",
+      runtimeType: "mock",
+      runtimeLocalUrl: "mock://local",
+      runtimeModel: "mock",
+      ...(paused ? { matchingPaused: true } : {}),
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    });
+  }
+
+  it("skips the connect-edge auto-join when matching is paused on disk", async () => {
+    writePausedDiskConfig(true);
+    const client = new FakeReconnectClient();
+    const connect = vi.fn(async (_opts: ReconnectingWSClientOptions) => client);
+    const logs: Array<{ code: string; message: string }> = [];
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      // No flag in the startup snapshot — the disk value must still win.
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      autoJoinGame: "liars_dice",
+      autoJoinMode: "ranked",
+      connect,
+      onLog: (event) => logs.push(event),
+      sessionStore: false,
+    });
+
+    await runner.start();
+    await flushEffects();
+
+    expect(client.sent.filter((m) => m.type === "join_queue")).toHaveLength(0);
+    expect(logs.some((e) => e.code === "bridge.auto_join_paused")).toBe(true);
+
+    await runner.stop();
+  });
+
+  it("stops re-joining on reconnect once paused mid-run, and resumes when the flag clears", async () => {
+    const client = new FakeReconnectClient();
+    const connect = vi.fn(async (_opts: ReconnectingWSClientOptions) => client);
+    const logs: Array<{ code: string; message: string }> = [];
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      autoJoinGame: "liars_dice",
+      autoJoinMode: "ranked",
+      connect,
+      onLog: (event) => logs.push(event),
+      sessionStore: false,
+    });
+    await runner.start();
+    const joins = () => client.sent.filter((m) => m.type === "join_queue").length;
+    await flushEffects();
+    expect(joins()).toBe(1); // launch join — nothing paused yet
+
+    const fire = () => {
+      for (const h of [...client.stateHandlers]) h(client.snapshot());
+    };
+    const reconnect = async () => {
+      client.state = "backoff";
+      fire();
+      client.state = "connected";
+      fire();
+      await flushEffects();
+    };
+
+    // Pause lands on disk mid-run (what `aifight pause` does): the next
+    // reconnect edge must NOT re-join, though the runner started unpaused.
+    writePausedDiskConfig(true);
+    await reconnect();
+    expect(joins()).toBe(1);
+    expect(logs.some((e) => e.code === "bridge.auto_join_paused")).toBe(true);
+    expect(logs.some((e) => e.code === "bridge.queue_rejoined")).toBe(false);
+
+    // `aifight resume` clears the flag: the following edge re-joins again,
+    // still without any restart.
+    writePausedDiskConfig(false);
+    await reconnect();
+    expect(joins()).toBe(2);
+    expect(logs.some((e) => e.code === "bridge.queue_rejoined")).toBe(true);
 
     await runner.stop();
   });

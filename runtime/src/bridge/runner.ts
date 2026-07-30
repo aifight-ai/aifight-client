@@ -443,14 +443,22 @@ export class BridgeRunner {
     void this.#warnIfTermsPending();
     if (this.#opts.autoJoinGame) {
       const oneShot = this.#opts.autoJoinOneShot === true;
-      agent.joinQueue(this.#opts.autoJoinGame, this.#opts.autoJoinMode, { oneShot });
-      this.#log(
-        "info",
-        "bridge.queue_joined",
-        oneShot
-          ? `Joined ${this.#opts.autoJoinGame} for one manual match`
-          : `Joined ${this.#opts.autoJoinGame} for daily automatic matching`,
-      );
+      if (this.#matchingPaused()) {
+        this.#log(
+          "info",
+          "bridge.auto_join_paused",
+          "Automatic matching is paused — staying out of the queue (`aifight resume` re-enables it).",
+        );
+      } else {
+        agent.joinQueue(this.#opts.autoJoinGame, this.#opts.autoJoinMode, { oneShot });
+        this.#log(
+          "info",
+          "bridge.queue_joined",
+          oneShot
+            ? `Joined ${this.#opts.autoJoinGame} for one manual match`
+            : `Joined ${this.#opts.autoJoinGame} for daily automatic matching`,
+        );
+      }
       if (!oneShot) {
         // 连接审计 #2 (2026-07-28): the server drops this agent from every
         // queue the moment its socket dies (hub.OnQueueLeave), and the FSM now
@@ -465,6 +473,14 @@ export class BridgeRunner {
           const prev = last;
           last = snap.state;
           if (snap.state !== "connected" || prev === null || prev === "connected") return;
+          if (this.#matchingPaused()) {
+            this.#log(
+              "info",
+              "bridge.auto_join_paused",
+              "Reconnected while automatic matching is paused — not re-joining the queue.",
+            );
+            return;
+          }
           try {
             agent.joinQueue(this.#opts.autoJoinGame!, this.#opts.autoJoinMode, { oneShot: false });
             this.#log(
@@ -662,6 +678,23 @@ export class BridgeRunner {
 
   #log(level: BridgeRunnerLogEvent["level"], code: string, message: string): void {
     this.#opts.onLog?.({ level, code, message });
+  }
+
+  /**
+   * The pause flag, read FRESH from disk at every connect edge. `aifight
+   * pause` writes bridge.json while this bridge is running; a snapshot frozen
+   * at construction would keep re-joining on every reconnect until a restart,
+   * silently undoing the pause (the same reason refreshApiKey re-reads). When
+   * the file is unreadable, fall back to the config the runner started with —
+   * a half-written config must never flip a running bridge into paused, and a
+   * missing one just means "not paused".
+   */
+  #matchingPaused(): boolean {
+    try {
+      return readBridgeConfig().matchingPaused === true;
+    } catch {
+      return this.#opts.config.matchingPaused === true;
+    }
   }
 
   /** R13-F08: re-read the bridge config after a 401 reconnect failure so a

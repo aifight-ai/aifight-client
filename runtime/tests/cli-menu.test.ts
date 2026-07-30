@@ -3,8 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { writeBridgeConfig } from "../src/bridge/config";
+import { readBridgeConfig, writeBridgeConfig } from "../src/bridge/config";
+import { createAnsi } from "../src/cli/ansi";
 import { runInteractiveMenu, type MenuDeps } from "../src/cli/commands/menu";
+import { renderMenuFrame, type MenuFrame } from "../src/cli/commands/menu-frame";
 import { CommandError } from "../src/cli/shared";
 import type { HandlerEnv } from "../src/cli/shared";
 
@@ -58,37 +60,72 @@ interface Harness {
   readonly deps: MenuDeps;
   readonly out: () => string;
   readonly dispatched: Array<{ cmd: string; positional: string[] }>;
+  /** Every frame the injected chooser was offered (one per loop iteration). */
+  readonly frames: MenuFrame[];
   helpShown: boolean;
 }
 
-/** Build a menu harness whose prompt() returns the given answers in order, then
- *  "q" forever.
+/** Build a menu harness whose chooser/prompt consume the given answers in
+ *  order (menu picks AND item-argument answers interleave in one script),
+ *  then "q" forever.
  *
  *  The fallback used to be "" — but the panel treats a blank line as "you just
  *  pressed Enter", reprints the menu and loops. Once a script ran out, that was
  *  an infinite loop that grew until the vitest worker was killed (found
  *  2026-07-29, when an item stopped consuming an answer on an empty home).
- *  "q" is the honest stop: out of script means done. */
+ *  "q" is the honest stop: out of script means done.
+ *
+ *  The injected chooser mirrors the production wiring: it renders the frame
+ *  through the SAME renderer the arrow-key chooser uses (plain — no ANSI in
+ *  tests), so the text assertions below see exactly what a terminal would
+ *  show. `linePrompt: true` drops the chooser to exercise the numbered
+ *  line-prompt fallback instead. */
 function harness(
   answers: string[],
-  opts?: { configured?: boolean; throwOn?: string; throwError?: Error; claim?: MenuDeps["claim"] },
+  opts?: {
+    configured?: boolean;
+    throwOn?: string;
+    throwError?: Error;
+    claim?: MenuDeps["claim"];
+    matchingPaused?: () => boolean;
+    onDispatch?: (cmd: string) => void;
+    linePrompt?: boolean;
+  },
 ): Harness {
   const chunks: string[] = [];
   const dispatched: Array<{ cmd: string; positional: string[] }> = [];
+  const frames: MenuFrame[] = [];
   const env = {
     stdout: (s: string) => chunks.push(s),
     stderr: (s: string) => chunks.push(s),
   } as unknown as HandlerEnv;
+  const plain = createAnsi({ enabled: false });
   let i = 0;
   const h: Harness = {
     out: () => chunks.join(""),
     dispatched,
+    frames,
     helpShown: false,
     deps: {
       env,
-      prompt: () => Promise.resolve(answers[i++] ?? "q"),
+      // The real promptLine writes the question to stdout before reading —
+      // mirror that so prompt text is part of the captured output.
+      prompt: (question: string) => {
+        chunks.push(question);
+        return Promise.resolve(answers[i++] ?? "q");
+      },
+      ...(opts?.linePrompt === true
+        ? {}
+        : {
+            choose: (frame: MenuFrame) => {
+              frames.push(frame);
+              chunks.push(`\n${renderMenuFrame(frame, -1, plain).join("\n")}\n\n`);
+              return Promise.resolve(answers[i++] ?? "q");
+            },
+          }),
       dispatch: (cmd, positional) => {
         dispatched.push({ cmd, positional });
+        opts?.onDispatch?.(cmd);
         if (opts?.throwOn === cmd) throw opts.throwError ?? new Error(`boom in ${cmd}`);
         return Promise.resolve(0);
       },
@@ -96,6 +133,7 @@ function harness(
         h.helpShown = true;
       },
       configured: opts?.configured ?? true,
+      ...(opts?.matchingPaused !== undefined ? { matchingPaused: opts.matchingPaused } : {}),
       ...(opts?.claim !== undefined ? { claim: opts.claim } : {}),
     },
   };
@@ -366,5 +404,131 @@ describe("one menu, two doors", () => {
 
     const offers = h.out().match(/service restart|next time it starts/g) ?? [];
     expect(offers.length, "the owner's complaint was being told three times in a row").toBe(1);
+  });
+});
+
+// Item 14 is the CLI twin of the desktop app's pause switch (owner gap
+// 2026-07-30: the app persists a pause; the CLI only had "daily cap 0").
+// Appended last so the existing 13 keys never move; its label AND its
+// dispatch follow the live flag in bridge.json.
+describe("pause/resume matching item", () => {
+  const livePaused = (): boolean => {
+    try {
+      return readBridgeConfig().matchingPaused === true;
+    } catch {
+      return false;
+    }
+  };
+
+  it("shows 'Pause matching' as item 14 when not paused, and dispatches pause", async () => {
+    seedBridge();
+    const h = harness(["14", "q"], { matchingPaused: livePaused });
+    await runInteractiveMenu(h.deps);
+    expect(h.out()).toContain("14) Pause matching");
+    expect(h.out()).not.toContain("Resume matching");
+    expect(h.dispatched).toEqual([{ cmd: "pause", positional: [] }]);
+  });
+
+  it("shows 'Resume matching' and dispatches resume while paused", async () => {
+    seedBridge({ matchingPaused: true });
+    const h = harness(["14", "q"], { matchingPaused: livePaused });
+    await runInteractiveMenu(h.deps);
+    expect(h.out()).toContain("14) Resume matching");
+    expect(h.out()).not.toContain("Pause matching");
+    expect(h.dispatched).toEqual([{ cmd: "resume", positional: [] }]);
+  });
+
+  it("flips the label on the repaint right after the command rewrote the flag", async () => {
+    seedBridge();
+    const h = harness(["14", "q"], {
+      matchingPaused: livePaused,
+      // Stand in for `aifight pause`: the real command rewrites bridge.json.
+      onDispatch: (cmd) => {
+        if (cmd === "pause") {
+          writeBridgeConfig({ ...readBridgeConfig(), matchingPaused: true });
+        }
+      },
+    });
+    await runInteractiveMenu(h.deps);
+    const text = h.out();
+    expect(text).toContain("14) Pause matching"); // first paint
+    expect(text).toContain("14) Resume matching"); // repaint after the write
+  });
+});
+
+// The frame is what the chooser (arrow-key UI) is handed each loop iteration.
+// These pin its shape so the interactive presentation cannot quietly lose the
+// Quit row or stale a dynamic label.
+describe("menu frame handed to the chooser", () => {
+  it("offers Quit as the last selectable row, after all 14 actions", async () => {
+    const h = harness(["q"]);
+    await runInteractiveMenu(h.deps);
+    expect(h.frames).toHaveLength(1);
+    const choices = h.frames[0]!.choices;
+    expect(choices).toHaveLength(15);
+    expect(choices[14]).toEqual({ key: "q", label: "Quit" });
+    expect(choices.map((c) => c.key)).toContain("14");
+  });
+
+  it("carries the NOT CLAIMED banner in the frame, not just in text", async () => {
+    const h = harness(["q"], {
+      claim: { pending: true, url: "https://aifight.ai/claim/abc123", agentName: "PokerMind" },
+    });
+    await runInteractiveMenu(h.deps);
+    const banner = h.frames[0]!.banner.join("\n");
+    expect(banner).toContain("NOT CLAIMED");
+    expect(banner).toContain("https://aifight.ai/claim/abc123");
+  });
+
+  it("re-evaluates the dynamic pause/resume label on every frame", async () => {
+    seedBridge();
+    const paused = (): boolean => {
+      try {
+        return readBridgeConfig().matchingPaused === true;
+      } catch {
+        return false;
+      }
+    };
+    const h = harness(["14", "q"], {
+      matchingPaused: paused,
+      onDispatch: (cmd) => {
+        if (cmd === "pause") writeBridgeConfig({ ...readBridgeConfig(), matchingPaused: true });
+      },
+    });
+    await runInteractiveMenu(h.deps);
+    expect(h.frames).toHaveLength(2);
+    const labelOf = (f: (typeof h.frames)[number]) =>
+      f.choices.find((c) => c.key === "14")!.label;
+    expect(labelOf(h.frames[0]!)).toContain("Pause matching");
+    expect(labelOf(h.frames[1]!)).toContain("Resume matching");
+  });
+});
+
+// The chooser-less presentation: print the frame, read a number. main.ts only
+// opens the panel on a TTY and always wires the arrow-key chooser, so this
+// path is test-only — but it must keep working, because it is how these tests
+// (and any future non-raw host) drive the panel.
+describe("line-prompt fallback (no chooser wired)", () => {
+  it("picks by number and quits on q", async () => {
+    const h = harness(["1", "q"], { linePrompt: true });
+    const code = await runInteractiveMenu(h.deps);
+    expect(code).toBe(0);
+    expect(h.dispatched).toEqual([{ cmd: "status", positional: [] }]);
+    expect(h.out()).toContain("Pick an action (number, or q to quit): ");
+    expect(h.out()).toContain("what would you like to do?");
+  });
+
+  it("an unknown number re-prompts without dispatching", async () => {
+    const h = harness(["zzz", "q"], { linePrompt: true });
+    await runInteractiveMenu(h.deps);
+    expect(h.dispatched).toEqual([]);
+    expect(h.out()).toContain("Unknown choice");
+  });
+
+  it("0 still quits", async () => {
+    const h = harness(["0"], { linePrompt: true });
+    const code = await runInteractiveMenu(h.deps);
+    expect(code).toBe(0);
+    expect(h.dispatched).toEqual([]);
   });
 });

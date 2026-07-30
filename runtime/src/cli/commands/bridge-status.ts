@@ -51,6 +51,7 @@ export async function runBridgeStatus(
       update,
       platformAgentStatus,
       config: redacted,
+      matchingPaused: config.matchingPaused === true,
       claimUrl: unclaimedClaimUrl(platformAgentStatus, config) ?? null,
     }) + "\n");
     return 0;
@@ -89,6 +90,12 @@ export async function runBridgeStatus(
   }
   env.stdout(`Runtime: ${runtimeLabel(redacted.runtimeType)} at ${redacted.runtimeLocalUrl}\n`);
   env.stdout(`Automatic ranked matches: ${formatDaily(redacted.autoDailyLimit)}\n`);
+  // The pause flag survives restarts, so say it out loud when set — a paused
+  // agent looks "configured and online" everywhere else, which is exactly the
+  // confusion that made the desktop show this state prominently too.
+  if (config.matchingPaused === true) {
+    env.stdout("Matching: paused (aifight resume to re-enable)\n");
+  }
   env.stdout(`Games: ${redacted.autoGames?.join(", ") ?? "texas_holdem, liars_dice, coup"}\n`);
   env.stdout(`AIFight WebSocket: ${redacted.wsUrl}\n`);
   env.stdout("No secrets are shown here.\n");

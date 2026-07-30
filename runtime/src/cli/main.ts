@@ -33,6 +33,7 @@ import { runDoctor } from "./commands/doctor";
 import { runSetup } from "./commands/setup";
 import { runBridgeConnect } from "./commands/bridge-connect";
 import { runBridgeStart } from "./commands/bridge-start";
+import { runBridgePause, runBridgeResume } from "./commands/bridge-pause";
 import { runBridgeRun } from "./commands/bridge-run";
 import { runBridgeStatus } from "./commands/bridge-status";
 import { runBridgeUpdate } from "./commands/bridge-update";
@@ -53,6 +54,7 @@ import { runRecord } from "./commands/record";
 import { runReview } from "./commands/review";
 import { resolveClaimState } from "./commands/claim-state";
 import { runInteractiveMenu } from "./commands/menu";
+import { createMenuChooser } from "./commands/menu-select";
 import { createOnboardIO } from "./commands/onboard-io";
 import { readBridgeConfig } from "../bridge/config";
 import type { BridgeServiceDeps } from "../bridge/service";
@@ -64,7 +66,7 @@ const KNOWN_COMMANDS: readonly string[] = [
   "version", "doctor", "setup", "connect", "start", "run", "status",
   "update", "service", "sessions", "strategy", "uninstall", "set", "rename",
   "challenge", "accept", "config", "stats", "prices", "record", "review",
-  "accept-terms", "telegram",
+  "accept-terms", "telegram", "pause", "resume",
 ];
 
 // ── Public entry ─────────────────────────────────────────────────────
@@ -217,9 +219,25 @@ export async function run(
     return runInteractiveMenu({
       env: panelEnv,
       prompt: createOnboardIO(env).promptLine,
+      // The arrow-key chooser (colors + ↑/↓ + Enter, number keys still run
+      // directly). Both doors to this panel are gated on stdin+stdout TTY —
+      // here and in config.ts — so the raw-mode chooser is always usable and
+      // the menu's line-prompt fallback stays test-only.
+      choose: createMenuChooser(panelEnv),
       dispatch: (c, positional) => dispatch(c, { positional, flags: {}, jsonMode: false }, panelEnv),
       showHelp: () => env.stdout(globalUsage() + "\n"),
       configured,
+      // Read fresh on every render/dispatch: item 14 (Pause/Resume matching)
+      // flips this flag, and the panel must show the new state on the next
+      // repaint without being rebuilt. Unreadable config = "not paused" — the
+      // panel already survived the configured check above.
+      matchingPaused: () => {
+        try {
+          return readBridgeConfig().matchingPaused === true;
+        } catch {
+          return false;
+        }
+      },
       ...(claim !== undefined ? { claim } : {}),
     });
   };
@@ -283,6 +301,10 @@ async function dispatch(
       return runBridgeConnect(subArgs, env);
     case "start":
       return runBridgeStart(subArgs, env);
+    case "pause":
+      return runBridgePause(subArgs, env);
+    case "resume":
+      return runBridgeResume(subArgs, env);
     case "run":
       return runBridgeRun(subArgs, env);
     case "status":
@@ -357,6 +379,8 @@ function globalUsage(): string {
     "",
     "Play:",
     "  aifight start [game] [N]          Request manual ranked match(es)",
+    "  aifight pause                     Pause automatic matching (leaves the queue; persists until resume)",
+    "  aifight resume                    Resume automatic matching",
     "  aifight status                    Show local config with secrets redacted (--live: realtime state)",
     "  aifight record                    Show your public competitive record: ratings, rank, recent matches",
     "  aifight challenge <game>          Create a one-use friendly challenge URL",
@@ -475,6 +499,23 @@ function commandUsage(positional: readonly string[]): string | undefined {
         "  If no game is given, AIFight uses your configured game preference or picks a supported game.",
         "  N must be between 1 and 20.",
         `  supported games: ${SUPPORTED_GAMES.join(", ")}`,
+      ].join("\n");
+    case "pause":
+      return [
+        "Usage: aifight pause [--json]",
+        "  Pause automatic matching: leave the current queue and stop the agent from",
+        "  re-joining after a match ends. Saved on this machine, so it persists across",
+        "  bridge restarts — a running bridge picks it up immediately, no restart needed.",
+        "  Manual matches (`aifight start`) and challenges still work while paused.",
+        "  The daily cap is untouched; resume with `aifight resume`.",
+      ].join("\n");
+    case "resume":
+      return [
+        "Usage: aifight resume [--json]",
+        "  Resume automatic matching after `aifight pause`. If a bridge is running,",
+        "  the agent re-joins the queue right away (same automatic ranked matching as",
+        "  at bridge startup); otherwise it resumes the next time the bridge runs.",
+        "  A daily cap of 0 (manual only) still wins — set one with `aifight set daily <N>`.",
       ].join("\n");
     case "run":
       return [

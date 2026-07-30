@@ -1,5 +1,6 @@
 // D8 — the shared cockpit surface: board (website renderer) + "your agent"
-// private strip + reasoning-trace panel + a replay/live transport. Both the live
+// private strip + the full event log (D11: every player's moves, with the own
+// agent's reasoning embedded inline) + a replay/live transport. Both the live
 // Watch view and the History replay render through this one component, so a past
 // match looks exactly like a live one.
 //
@@ -20,7 +21,8 @@ import { GameStateVisual } from "@aifight/ui";
 import type { MatchDetail, MatchEvent } from "@aifight/api-types";
 import type { Game, OwnerPrivate } from "../liveMatch";
 import type { StampedTrace } from "../liveStore";
-import { ReasoningTracePanel, type TraceBadge } from "./ReasoningTracePanel";
+import { EventLogPanel } from "./EventLogPanel";
+import type { TraceBadge } from "./ReasoningTracePanel";
 import { OwnHandStrip } from "./OwnHandStrip";
 import { TruncationBanner } from "./TruncationBanner";
 import { DecisionErrorBanner } from "./DecisionErrorBanner";
@@ -34,7 +36,7 @@ export interface CockpitPanelProps {
   readonly traces: readonly StampedTrace[];
   /** Transport mode: live = follow-the-tip (Radio button); replay = play/restart. */
   readonly isLive: boolean;
-  /** Reasoning panel badge: live / demo / replay. */
+  /** Event-log panel badge: live / demo / replay. */
   readonly badge: TraceBadge;
   /** Bottom note under the board. */
   readonly note: string;
@@ -47,7 +49,7 @@ export interface CockpitPanelProps {
    * board then renders exactly as the shared renderer derives it.
    */
   readonly turnState?: "mine" | "waiting";
-  /** Empty-state text for the reasoning panel. */
+  /** Empty-state text for the event-log panel (e.g. live waiting for first decision). */
   readonly emptyTraceHint?: string;
   /** Left side of the control row (game switcher / live status / session label). */
   readonly headerLeft: ReactNode;
@@ -159,17 +161,6 @@ export function CockpitPanel(props: CockpitPanelProps) {
 
   const visible = events.slice(0, step);
   const atEnd = step >= events.length;
-
-  // Replay/demo: the reasoning panel tracks the transport — a decision's trace
-  // appears only once the board has reached the step it was taken at, exactly
-  // like the live stream builds up. Without this, a replay parked mid-match
-  // already showed EVERY later decision on the right while the board sat
-  // earlier (board/panel desync; also spoils the run-out when stepping
-  // through). Unstamped traces (older stored sessions) stay always-visible.
-  // Live keeps the full stream visible — arrival order IS the live experience —
-  // but the panel's "current" anchor still follows the transport (transportStep,
-  // F3), so scrubbing back mid-live re-anchors to the decision of THAT step.
-  const shownTraces = isLive ? traces : traces.filter((tr) => tr.step === undefined || tr.step <= step);
 
   // v3: which seat is "your agent" — derived from the same props the board
   // already gets (no new data). The canvas carries it as data-owner-seat so the
@@ -347,7 +338,7 @@ export function CockpitPanel(props: CockpitPanelProps) {
           <p className="v3-board-note">{note}</p>
         </div>
         {/* fill=false (History detail, document flow): without a bounded height
-            the trace panel renders EVERY trace and the page grows without end
+            the log panel renders EVERY row and the page grows without end
             (owner report 2026-07-28) — cap it so the panel scrolls internally,
             sticky beside the board on wide layouts. fill mode keeps the
             viewport-driven height it always had. */}
@@ -358,13 +349,24 @@ export function CockpitPanel(props: CockpitPanelProps) {
               : "h-[420px] xl:sticky xl:top-4 xl:h-[calc(100vh-8rem)] xl:w-[340px] xl:shrink-0"
           }
         >
-          <ReasoningTracePanel
-            traces={shownTraces}
+          {/* D11: the full match event log with the owner's reasoning embedded
+              inline (replaces the own-agent-only reasoning stream). Transport
+              semantics (replay cutoff / live follow / current anchor) live
+              inside the panel; step/following come straight from this
+              component's transport state. */}
+          <EventLogPanel
+            game={game}
+            events={events}
+            traces={traces}
+            players={match.players}
+            ownerPlayerId={ownerPlayerId}
             badge={badge}
-            emptyHint={emptyTraceHint}
-            onJumpToStep={stepTo}
+            isLive={isLive}
             transportStep={step}
+            following={following}
+            onJumpToStep={stepTo}
             waitingForOthers={isLive && turnState === "waiting"}
+            emptyHint={emptyTraceHint}
           />
         </div>
       </div>

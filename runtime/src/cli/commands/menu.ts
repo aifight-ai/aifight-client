@@ -22,19 +22,33 @@
 
 import type { HandlerEnv } from "../shared.js";
 import { CommandError, SUPPORTED_GAMES, UsageError } from "../shared.js";
+import { createAnsi } from "../ansi.js";
 import { applyPendingBridgeRestart, withDeferredApply } from "./apply-settings.js";
 import { MAX_MANUAL_MATCHES } from "./bridge-start.js";
+import { renderMenuFrame, type MenuFrame } from "./menu-frame.js";
 
 export interface MenuDeps {
   readonly env: HandlerEnv;
   /** Read one line of input (main wires createOnboardIO(env).promptLine). */
   readonly prompt: (question: string) => Promise<string>;
+  /** The chooser: given the freshly-built frame, resolve the key of the row
+   *  the user picked ("1".."14" or "q"). main.ts wires the arrow-key chooser
+   *  (menu-select.ts) — the panel only ever opens on a TTY, so that is the
+   *  production path. When absent the panel falls back to printing the frame
+   *  and reading a number line-by-line (today's tests, and any future host
+   *  that opens the panel without raw-mode stdin). */
+  readonly choose?: (frame: MenuFrame) => Promise<string>;
   /** Run one CLI command by name with positional args (no flags, non-JSON). */
   readonly dispatch: (cmd: string, positional: string[]) => Promise<number>;
   /** Print the full grouped command help. */
   readonly showHelp: () => void;
   /** Whether a local bridge identity already exists (first-run vs returning). */
   readonly configured: boolean;
+  /** Live read of the pause flag (bridge.json), consulted at every render and
+   *  by the Pause/Resume item itself — the label must flip right after the
+   *  dispatched command rewrote the config, without rebuilding the panel.
+   *  Optional so tests and non-configured hosts can omit it (= not paused). */
+  readonly matchingPaused?: () => boolean;
   /** Local view of the claim handshake. The claim URL is scrubbed from
    *  bridge.json once the platform reports the agent claimed, so "still on
    *  file" is a reliable offline signal for "not claimed yet" — no network
@@ -44,7 +58,9 @@ export interface MenuDeps {
 
 interface MenuItem {
   readonly key: string;
-  readonly label: string;
+  /** Static for almost every item; a function for the ones whose wording
+   *  depends on live state (Pause vs Resume matching). */
+  readonly label: string | ((deps: MenuDeps) => string);
   readonly run: (deps: MenuDeps) => Promise<void>;
 }
 
@@ -173,24 +189,56 @@ const ITEMS: readonly MenuItem[] = [
     label: "Show current config — what this machine is set to",
     run: ({ dispatch }) => dispatch("config", ["show"]).then(() => undefined),
   },
+  {
+    // The CLI twin of the desktop app's pause switch (owner gap 2026-07-30:
+    // the app persists a pause, the CLI only had the "daily cap 0" workaround).
+    // Appended LAST so the existing 13 keys keep their numbers. The label and
+    // the dispatched command both follow the live flag, so the item flips to
+    // "Resume" on the repaint right after pausing.
+    key: "14",
+    label: (deps) =>
+      deps.matchingPaused?.() === true
+        ? "Resume matching — let your agent auto-join matches again"
+        : "Pause matching — stop auto-joining new matches (manual ones still work)",
+    run: (deps) =>
+      deps.dispatch(deps.matchingPaused?.() === true ? "resume" : "pause", []).then(() => undefined),
+  },
 ];
 
-function menuText(deps: MenuDeps): string {
-  const lines = [""];
+function buildFrame(deps: MenuDeps): MenuFrame {
+  const banner: string[] = [];
   // An unclaimed agent cannot play at all, and nothing in the panel used to say
   // so — the owner finished a whole VPS setup and never saw a reminder
   // (2026-07-29). Lead with it, every time round the loop, until it is done.
   if (deps.claim?.pending === true) {
     const who = deps.claim.agentName !== undefined ? ` (${deps.claim.agentName})` : "";
-    lines.push(`  ⚠ NOT CLAIMED${who} — this agent cannot play until you claim it.`);
-    if (deps.claim.url !== undefined) lines.push(`    ${deps.claim.url}`);
-    lines.push("");
+    banner.push(`⚠ NOT CLAIMED${who} — this agent cannot play until you claim it.`);
+    if (deps.claim.url !== undefined) banner.push(deps.claim.url);
   }
-  lines.push("AIFight — what would you like to do?", "");
-  for (const item of ITEMS) lines.push(`  ${item.key.padStart(2)}) ${item.label}`);
-  lines.push("   q) Quit");
-  lines.push("");
-  return lines.join("\n");
+  return {
+    title: "AIFight — what would you like to do?",
+    banner,
+    choices: [
+      // Labels are re-evaluated on every build: item 14's wording follows the
+      // live pause flag, and the frame built right after the command rewrote
+      // it must already say "Resume".
+      ...ITEMS.map((item) => ({
+        key: item.key,
+        label: typeof item.label === "function" ? item.label(deps) : item.label,
+      })),
+      // A selectable Quit row, so pure arrow-key usage can exit too.
+      { key: "q", label: "Quit" },
+    ],
+  };
+}
+
+/** The chooser-less presentation: print the frame once, read a number. Only
+ *  reachable when the panel was opened without a wired chooser — main.ts
+ *  gates the panel to TTYs and always wires the arrow-key one, so in
+ *  practice this path lives in tests. */
+async function lineChoice(deps: MenuDeps, frame: MenuFrame): Promise<string> {
+  deps.env.stdout(`\n${renderMenuFrame(frame, -1, createAnsi({ enabled: false })).join("\n")}\n\n`);
+  return (await deps.prompt("Pick an action (number, or q to quit): ")).trim().toLowerCase();
 }
 
 /**
@@ -215,8 +263,10 @@ export async function runInteractiveMenu(deps: MenuDeps): Promise<number> {
 
   const byKey = new Map(ITEMS.map((i) => [i.key, i]));
   for (;;) {
-    env.stdout(menuText(deps));
-    const choice = (await prompt("Pick an action (number, or q to quit): ")).trim().toLowerCase();
+    const frame = buildFrame(deps);
+    const choice = deps.choose !== undefined
+      ? (await deps.choose(frame)).trim().toLowerCase()
+      : await lineChoice(deps, frame);
     if (choice === "q" || choice === "quit" || choice === "0") {
       // Several items write bridge.json, which a running bridge only re-reads on
       // restart. Offer that ONCE, here. The owner's words for being asked after

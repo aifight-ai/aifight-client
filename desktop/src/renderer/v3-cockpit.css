@@ -674,17 +674,6 @@
 .v3-tr-badge[data-kind="replay"] { color: var(--v3-acc-deep); }
 .v3-tr-badge[data-kind="replay"] i { background: var(--v3-acc); }
 
-.v3-tr-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 11px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--v3-t3);
-}
 .v3-tr-empty { padding: 32px 8px; text-align: center; font-size: 11.5px; color: var(--v3-t3); }
 
 .v3-tr-row { display: flex; align-items: center; gap: 8px; padding: 0 2px; }
@@ -772,6 +761,82 @@
 /* 等待其他玩家决策占位(2026-07-30):静态沙漏 + 省略号脉冲(.v3-dots),
    刻意不用「思考中」的 spinner + 秒数。 */
 .v3-tr-waiting { color: var(--v3-t3); }
+
+/* ═══ ③b 事件日志(D11):完整对局流(所有玩家动作+金额+结果),自己 agent 的
+   推理组内嵌在对应步位置。mono 紧凑行式,对齐网站回放页右栏气质。 ═══ */
+.v3-el-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 9px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 11px;
+  color: var(--v3-t2);
+}
+.v3-el-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--v3-t2);
+  cursor: pointer;
+}
+.v3-el-row:hover { background: var(--v3-warm); }
+.v3-el-ln {
+  flex: 0 0 auto;
+  min-width: 24px;
+  color: var(--v3-t3);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+.v3-el-name { flex: 0 0 auto; font-weight: 600; }
+/* 自己的座位:不用渐变色,保持座舱的「你」品牌色待遇。 */
+.v3-el-you { color: var(--v3-acc-deep); }
+.v3-el-text { min-width: 0; word-break: break-word; }
+/* 当前步行(走带停在哪一步):与 v3-tr-cur 同一语言的左侧细橙条。 */
+.v3-el-cur { box-shadow: inset 2px 0 0 var(--v3-acc); background: var(--v3-acc-tint); }
+/* 阶段分隔行(第 N 手/第 N 轮开始):上细线 + 小号大写,弱化。 */
+.v3-el-row--phase {
+  margin-top: 5px;
+  padding-top: 6px;
+  border-top: 1px solid var(--v3-hairline);
+  border-radius: 0;
+  color: var(--v3-t3);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.v3-el-row--phase:hover { background: transparent; }
+/* 信息行(公共牌/放行等):弱化一档。 */
+.v3-el-row--info { color: var(--v3-t3); }
+/* 结果行(手/轮/对局胜负、出局):淡橘底强调,胜负在日志里一眼可见。 */
+.v3-el-row--result {
+  margin-top: 3px;
+  margin-bottom: 3px;
+  padding: 4px 6px;
+  background: var(--v3-acc-tint);
+  color: var(--v3-ink);
+  font-weight: 600;
+}
+/* 内嵌推理组:左橙条 + 缩进,读作「走到这一步时,你的 agent 这样想」。 */
+.v3-el-trace {
+  margin: 4px 0 4px 2px;
+  padding: 2px 0 2px 8px;
+  border-left: 2px solid var(--v3-acc);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 
 /* ═══ ④ 自己手牌条(design:.own — 大牌面 + 状态 + mono meta) ═══ */
 .v3-own {

@@ -328,6 +328,11 @@ describe("bridge-first CLI command surface", () => {
     const fetchImpl: typeof fetch = async (input, init) => {
       const url = String(input);
       if (url.endsWith("/api/bridge/version")) return versionPolicyResp();
+      // The CLI now also asks the npm registry for its latest version — answer
+      // it like the version endpoint so only the join call is recorded below.
+      if (url.startsWith("https://registry.npmjs.org/")) {
+        return jsonResp({ version: "0.1.0-alpha.5" });
+      }
       calls.push({
         url,
         bodyText: typeof init?.body === "string" ? init.body : "",
@@ -641,8 +646,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-beta.37",
-          latest_version: "0.1.0-beta.37",
+          recommended_version: "0.1.0-beta.38",
+          latest_version: "0.1.0-beta.38",
           update_command: "npm install -g @aifight/aifight",
         });
       }
@@ -681,8 +686,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-beta.37",
-          latest_version: "0.1.0-beta.37",
+          recommended_version: "0.1.0-beta.38",
+          latest_version: "0.1.0-beta.38",
           update_command: "npm install -g @aifight/aifight",
         });
       }

@@ -16,6 +16,24 @@ function versionPolicyResp(recommendedVersion = "99.0.0-alpha.1"): Response {
   }), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
+/** Route the two version-check endpoints: the server policy and the npm
+ *  registry latest. `npmVersion` undefined = registry unreachable (the
+ *  server-policy fallback arm). */
+function updateFetch(npmVersion?: string): typeof fetch {
+  return (async (input: unknown) => {
+    const url = String(input);
+    if (url.includes("/api/bridge/version")) return versionPolicyResp();
+    if (url.startsWith("https://registry.npmjs.org/")) {
+      if (npmVersion === undefined) throw new Error("registry unreachable");
+      return new Response(JSON.stringify({ version: npmVersion }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  }) as unknown as typeof fetch;
+}
+
 function snapshot(phase: string): AgentInstanceSnapshot {
   return {
     name: "alpha",
@@ -36,7 +54,7 @@ describe("bridge idle auto update", () => {
     const restarts: string[] = [];
     const result = await runBridgeAutoUpdateCheck({
       baseUrl: "https://aifight.ai",
-      fetchImpl: (async () => versionPolicyResp()) as unknown as typeof fetch,
+      fetchImpl: updateFetch("99.0.0-alpha.1"),
       snapshot: () => snapshot("connected"),
       execFile: async (file, args) => {
         calls.push({ file, args });
@@ -46,19 +64,58 @@ describe("bridge idle auto update", () => {
     });
 
     expect(result.status).toBe("updated");
-    // R13-F04: the unattended install pins the exact recommended version rather
-    // than pulling the bare `latest` dist-tag.
+    // R13-F04: the unattended install pins the exact resolved latest version
+    // rather than pulling the bare `latest` dist-tag.
     expect(calls.map((c) => [c.file, ...c.args].join(" "))).toEqual([
       "npm install -g @aifight/aifight@99.0.0-alpha.1",
     ]);
     expect(restarts).toEqual(["restart"]);
   });
 
+  it("pins the npm registry latest, not the server recommended version", async () => {
+    // Owner decision 2026-07-30: "latest" is whatever npm says; the server
+    // policy only supplies the floor (and the fallback when npm is down).
+    const calls: Array<{ file: string; args: readonly string[] }> = [];
+    const result = await runBridgeAutoUpdateCheck({
+      baseUrl: "https://aifight.ai",
+      // Server recommends 99.0.0-alpha.1, but npm already has 99.0.0-alpha.9.
+      fetchImpl: updateFetch("99.0.0-alpha.9"),
+      snapshot: () => snapshot("connected"),
+      execFile: async (file, args) => {
+        calls.push({ file, args });
+        return { stdout: "ok\n", stderr: "" };
+      },
+    });
+
+    expect(result.status).toBe("updated");
+    expect(calls.map((c) => [c.file, ...c.args].join(" "))).toEqual([
+      "npm install -g @aifight/aifight@99.0.0-alpha.9",
+    ]);
+  });
+
+  it("falls back to the server recommended version when the registry is unreachable", async () => {
+    const calls: Array<{ file: string; args: readonly string[] }> = [];
+    const result = await runBridgeAutoUpdateCheck({
+      baseUrl: "https://aifight.ai",
+      fetchImpl: updateFetch(undefined),
+      snapshot: () => snapshot("connected"),
+      execFile: async (file, args) => {
+        calls.push({ file, args });
+        return { stdout: "ok\n", stderr: "" };
+      },
+    });
+
+    expect(result.status).toBe("updated");
+    expect(calls.map((c) => [c.file, ...c.args].join(" "))).toEqual([
+      "npm install -g @aifight/aifight@99.0.0-alpha.1",
+    ]);
+  });
+
   it("defers updates while an agent is in a match or deciding", async () => {
     const calls: Array<{ file: string; args: readonly string[] }> = [];
     const result = await runBridgeAutoUpdateCheck({
       baseUrl: "https://aifight.ai",
-      fetchImpl: (async () => versionPolicyResp()) as unknown as typeof fetch,
+      fetchImpl: updateFetch("99.0.0-alpha.1"),
       snapshot: () => snapshot("deciding"),
       execFile: async (file, args) => {
         calls.push({ file, args });
@@ -94,7 +151,7 @@ describe("bridge idle auto update", () => {
       baseUrl: "https://aifight.ai",
       initialDelayMs: 100,
       intervalMs: 1_000,
-      fetchImpl: (async () => versionPolicyResp()) as unknown as typeof fetch,
+      fetchImpl: updateFetch("99.0.0-alpha.1"),
       snapshot: () => snapshot("connected"),
       execFile: async (file, args) => {
         calls.push({ file, args });

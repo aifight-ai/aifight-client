@@ -68,8 +68,11 @@ function installedServiceDeps(root: string, calls: string[][]) {
   };
 }
 
-/** Answers the version check (so an update is pending) and the agents probe. */
-function fakeFetch(phase: string | null): typeof fetch {
+/** Answers the version check (so an update is pending) and the agents probe.
+ *  `npmVersion` controls the npm registry arm: a string = registry answers
+ *  with that latest (the manual update then pins it exactly); "fail" =
+ *  registry unreachable (the degraded server-only arm → unpinned install). */
+function fakeFetch(phase: string | null, npmVersion: string | "fail"): typeof fetch {
   return (async (input: unknown) => {
     const url = String(input);
     if (url.includes("/api/bridge/version")) {
@@ -82,6 +85,13 @@ function fakeFetch(phase: string | null): typeof fetch {
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
+    if (url.startsWith("https://registry.npmjs.org/")) {
+      if (npmVersion === "fail") throw new Error("registry unreachable");
+      return new Response(JSON.stringify({ version: npmVersion }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
     if (url.includes("/v1/agents")) {
       return new Response(
         JSON.stringify({ agents: [{ name: "a", state: phase === null ? null : { phase } }] }),
@@ -92,11 +102,11 @@ function fakeFetch(phase: string | null): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
-function makeEnv(out: string[], deps: ReturnType<typeof installedServiceDeps>, phase: string | null): HandlerEnv {
+function makeEnv(out: string[], deps: ReturnType<typeof installedServiceDeps>, phase: string | null, npmVersion: string | "fail"): HandlerEnv {
   return {
     stdout: (s) => out.push(s),
     stderr: (s) => out.push(s),
-    fetchImpl: fakeFetch(phase),
+    fetchImpl: fakeFetch(phase, npmVersion),
     bridgeService: deps,
   };
 }
@@ -110,7 +120,7 @@ describe("aifight update — match-in-progress guard", () => {
     const out: string[] = [];
     const deps = installedServiceDeps(home, calls);
 
-    const rc = await runBridgeUpdate(ARGS, makeEnv(out, deps, "in_match"));
+    const rc = await runBridgeUpdate(ARGS, makeEnv(out, deps, "in_match", "9.9.9"));
 
     expect(rc).toBe(0);
     const text = out.join("");
@@ -122,18 +132,36 @@ describe("aifight update — match-in-progress guard", () => {
     expect(calls.some((c) => c.includes("bootout") || c.includes("bootstrap"))).toBe(false);
   });
 
-  it("restarts normally when the agent is idle", async () => {
+  it("restarts normally when the agent is idle, pinning the npm registry latest", async () => {
     const home = freshHomeWithControlFiles();
     const calls: string[][] = [];
     const out: string[] = [];
     const deps = installedServiceDeps(home, calls);
 
-    const rc = await runBridgeUpdate(ARGS, makeEnv(out, deps, "connected"));
+    const rc = await runBridgeUpdate(ARGS, makeEnv(out, deps, "connected", "9.9.9"));
 
     expect(rc).toBe(0);
     const text = out.join("");
     expect(text).not.toContain("A match is in progress");
     expect(text).toContain("aifight.service restarted.");
+    // The registry answered, so the manual update installs that EXACT version
+    // (owner decision 2026-07-30: the CLI asks npm for the latest, not the server).
+    expect(calls.some((c) => c.join(" ") === "npm install -g @aifight/aifight@9.9.9")).toBe(true);
+  });
+
+  it("installs unpinned when the registry is unreachable (degraded server-only arm)", async () => {
+    const home = freshHomeWithControlFiles();
+    const calls: string[][] = [];
+    const out: string[] = [];
+    const deps = installedServiceDeps(home, calls);
+
+    const rc = await runBridgeUpdate(ARGS, makeEnv(out, deps, "connected", "fail"));
+
+    expect(rc).toBe(0);
+    expect(out.join("")).toContain("aifight.service restarted.");
+    // No exact version from npm → the user-initiated update falls back to
+    // npm's own latest dist-tag.
+    expect(calls.some((c) => c.join(" ") === "npm install -g @aifight/aifight")).toBe(true);
   });
 
   it("--force restarts even mid-match", async () => {
@@ -144,7 +172,7 @@ describe("aifight update — match-in-progress guard", () => {
 
     const rc = await runBridgeUpdate(
       { ...ARGS, flags: { yes: true, force: true } },
-      makeEnv(out, deps, "in_match"),
+      makeEnv(out, deps, "in_match", "9.9.9"),
     );
 
     expect(rc).toBe(0);
@@ -161,7 +189,7 @@ describe("aifight update — match-in-progress guard", () => {
     const out: string[] = [];
     const deps = installedServiceDeps(home, calls);
 
-    const rc = await runBridgeUpdate(ARGS, makeEnv(out, deps, null));
+    const rc = await runBridgeUpdate(ARGS, makeEnv(out, deps, null, "9.9.9"));
 
     expect(rc).toBe(0);
     expect(out.join("")).toContain("aifight.service restarted.");

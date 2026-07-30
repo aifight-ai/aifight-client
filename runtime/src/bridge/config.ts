@@ -61,6 +61,14 @@ export interface BridgeConfig {
   readonly illegalRetryCount?: number;
   readonly autoDailyLimit?: number;
   readonly autoGames?: readonly string[];
+  /**
+   * `aifight pause` sets this; `aifight resume` clears it. When true the
+   * bridge does not join the matchmaking queue by itself — neither the
+   * connect-edge auto-join nor the reconnect re-join (the runner reads this
+   * flag fresh at every connect edge, so a running CLI bridge honors a pause
+   * without a restart). Manual matches and challenges are unaffected.
+   */
+  readonly matchingPaused?: boolean;
   /** Telegram bot token. Flat on purpose: ENCRYPTED_FIELDS works on top-level
    *  field names, so this gets encryption-at-rest, redaction and old-secret
    *  release for free. */
@@ -590,6 +598,7 @@ function isBridgeConfig(value: unknown): value is BridgeConfig {
         v.illegalRetryCount <= 2)) &&
     (v.autoDailyLimit === undefined || (typeof v.autoDailyLimit === "number" && Number.isInteger(v.autoDailyLimit) && v.autoDailyLimit >= 0)) &&
     (v.autoGames === undefined || (Array.isArray(v.autoGames) && v.autoGames.every((g) => typeof g === "string"))) &&
+    (v.matchingPaused === undefined || typeof v.matchingPaused === "boolean") &&
     // On disk this is the "enc:" reference, in memory the plaintext token —
     // both are strings, so one check covers pre- and post-decrypt validation.
     (v.telegramBotToken === undefined || typeof v.telegramBotToken === "string") &&

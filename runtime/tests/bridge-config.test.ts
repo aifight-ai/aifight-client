@@ -69,6 +69,15 @@ describe("bridge config", () => {
     expect(readBridgeConfig()).toEqual(cfg);
   });
 
+  it("round-trips the matchingPaused flag (validator must let it through)", () => {
+    useTempHome();
+    writeBridgeConfig({ ...config(), matchingPaused: true });
+    expect(readBridgeConfig().matchingPaused).toBe(true);
+    // Absent and false are the same state; a hand-cleared file stays valid.
+    writeBridgeConfig(config());
+    expect(readBridgeConfig().matchingPaused).toBeUndefined();
+  });
+
   it("redacts platform secrets for status output", () => {
     const redacted = redactBridgeConfig(config());
 
