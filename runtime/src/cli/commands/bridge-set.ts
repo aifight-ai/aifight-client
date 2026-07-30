@@ -6,6 +6,12 @@ import {
   dailyCapNeedsConfirm,
   syncDailyPolicy,
 } from "../../bridge/daily-policy";
+import {
+  DECLARED_MODEL_MAX_CHARS,
+  declaredModelOriginLabel,
+  resolveEffectiveDeclaredModel,
+  syncDeclaredModel,
+} from "../../bridge/declared-model";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, SUPPORTED_GAMES, UsageError, expectArity, isSupportedGame } from "../shared";
 import { applyPendingBridgeRestart } from "./apply-settings";
@@ -38,6 +44,9 @@ function readSetBridgeConfig(): BridgeConfig {
 const USAGE = [
   "usage: aifight set daily <N> [--yes]",
   "       aifight set game <game1,game2>",
+  "       aifight set declared-model <name...>",
+  '       aifight set declared-model ""      (clear the custom name)',
+  "       aifight set declared-model --clear",
   `supported games: ${SUPPORTED_GAMES.join(", ")}`,
   "0 = manual matches only; max 100; caps above 10 ask for confirmation (--yes skips)",
 ].join("\n");
@@ -46,11 +55,14 @@ export async function runBridgeSet(
   args: HandlerArgs,
   env: HandlerEnv,
 ): Promise<number> {
-  expectArity(args, 2, 2, USAGE);
   const kind = args.positional[0]!;
+  // declared-model takes a free-form (possibly multi-word) name or --clear, so
+  // it owns its arity instead of the fixed 2-arg shape daily/game share.
+  if (kind === "declared-model") return setDeclaredModel(args, env);
+  expectArity(args, 2, 2, USAGE);
   if (kind === "daily") return setDaily(args.positional[1]!, args, env);
   if (kind === "game") return setGames(args.positional[1]!, args, env);
-  throw new UsageError(`unknown set target '${kind}'`, "available: daily | game");
+  throw new UsageError(`unknown set target '${kind}'`, "available: daily | game | declared-model");
 }
 
 async function setDaily(raw: string, args: HandlerArgs, env: HandlerEnv): Promise<number> {
@@ -206,5 +218,91 @@ async function setGames(raw: string, args: HandlerArgs, env: HandlerEnv): Promis
   }
   env.stdout(`Automatic match games set to: ${unique.join(", ")}\n`);
   await applyPendingBridgeRestart(env);
+  return 0;
+}
+
+// ─── declared-model ──────────────────────────────────────────────────
+//
+// The PUBLIC model label the leaderboard and agent profile show. Without a
+// pin the label is derived from the active agent profile's configured LLM
+// model (then "direct"); `aifight set declared-model <name>` pins a custom
+// display name instead. After every write the EFFECTIVE label is pushed to
+// the platform right away (best-effort: a failure warns and retries at the
+// next bridge start — the local bridge.json stays the source of truth).
+
+/** Client-side mirror of the platform rule (trimmed, 1..100 chars, no control
+ *  characters) so a bad name fails fast locally instead of after a PATCH. */
+function declaredModelValidationError(name: string): string | undefined {
+  if (name.length === 0) return "the declared model name must not be empty";
+  if (name.length > DECLARED_MODEL_MAX_CHARS) {
+    return `the declared model name must be at most ${DECLARED_MODEL_MAX_CHARS} characters (got ${name.length})`;
+  }
+  for (const ch of name) {
+    if (ch < " ") return "the declared model name must not contain control characters";
+  }
+  return undefined;
+}
+
+async function setDeclaredModel(args: HandlerArgs, env: HandlerEnv): Promise<number> {
+  const clearFlag = args.flags["clear"] === true;
+  // The name may contain spaces: every positional after the target joins into
+  // it (`aifight set declared-model My Custom Bot`). `set declared-model ""`
+  // is the documented empty-string form of --clear; BARE `set declared-model`
+  // (no argument at all) is a usage error, not a clear.
+  if (!clearFlag && args.positional.length < 2) {
+    throw new UsageError("missing the model name to declare (or pass --clear)", USAGE);
+  }
+  const raw = args.positional.slice(1).join(" ").trim();
+  if (clearFlag && raw !== "") {
+    throw new UsageError("pass a name OR --clear, not both", USAGE);
+  }
+  const clearing = clearFlag || raw === "";
+  if (!clearing) {
+    const problem = declaredModelValidationError(raw);
+    if (problem !== undefined) throw new UsageError(problem, USAGE);
+  }
+
+  const config = readSetBridgeConfig();
+  const updatedAt = new Date().toISOString();
+  let updated: BridgeConfig;
+  if (clearing) {
+    const { declaredModel: _dropped, ...rest } = config;
+    updated = { ...rest, updatedAt };
+  } else {
+    updated = { ...config, declaredModel: raw, updatedAt };
+  }
+  writeBridgeConfig(updated);
+
+  // Push the EFFECTIVE label: after a pin that's the name itself; after a
+  // clear it falls back to the profile-derived model (or "direct").
+  const result = await syncDeclaredModel(updated, env.fetchImpl ?? globalThis.fetch);
+  const effective = resolveEffectiveDeclaredModel(updated);
+  const label = `${effective.value} (${declaredModelOriginLabel(effective.origin)})`;
+
+  if (args.jsonMode) {
+    env.stdout(
+      JSON.stringify({
+        status: "ok",
+        declaredModel: clearing ? null : raw,
+        effective: { value: effective.value, origin: effective.origin },
+        platformSynced: result.ok,
+        ...(result.ok ? {} : { syncError: result.error }),
+      }) + "\n",
+    );
+    return 0;
+  }
+  if (clearing) {
+    env.stdout("Declared model custom name cleared.\n");
+  } else {
+    env.stdout(`Declared model set to "${raw}". This name is PUBLIC on the leaderboard and your agent profile.\n`);
+  }
+  if (result.ok) {
+    env.stdout(`Leaderboard now shows: ${label}\n`);
+  } else {
+    env.stdout(`The leaderboard will show: ${label}\n`);
+    env.stderr(
+      `warning: could not sync the declared model to the platform (${result.error}) — it retries at the next \`aifight run\`/\`aifight start\`.\n`,
+    );
+  }
   return 0;
 }

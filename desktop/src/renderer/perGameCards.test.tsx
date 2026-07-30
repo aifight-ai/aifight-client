@@ -45,7 +45,7 @@ describe("PerGameCards", () => {
     expect(markup).toContain("1801");
     expect(markup).toContain("Perf");
     expect(markup).toContain("1758");
-    expect(markup).toContain("Streak");
+    expect(markup).toContain("Best streak");
     // hover tooltips explain each metric
     expect(markup).toContain("Peak rating");
   });
@@ -61,7 +61,7 @@ describe("PerGameCards", () => {
     expect(markup).toContain("5-4-1");
     // no secondary detail labels
     expect(markup).not.toContain("Peak");
-    expect(markup).not.toContain("Streak");
+    expect(markup).not.toContain("Best streak");
   });
 
   it("renders the empty state when there are no rated games", () => {

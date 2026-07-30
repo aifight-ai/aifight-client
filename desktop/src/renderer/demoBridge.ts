@@ -28,6 +28,9 @@ let STATUS: BridgeStatus = {
     directAgentSlug: "default",
     autoDailyLimit: 2,
     autoGames: ["texas_holdem", "liars_dice", "coup"],
+    // No declaredModel pin in the demo — the hero shows the profile-model
+    // fallback, exactly like a real unpinned agent.
+    profileModel: "claude-opus-5",
   },
   // 连接审计 #12/#8 — demo the queue-truth pill ("in queue (Texas Hold'em)") and
   // give the conn field a connected snapshot so the StatusPill code path runs.
@@ -335,6 +338,16 @@ export function installDemoBridge(): void {
     setAgentName: (patch) => {
       demoPolicy = { ...demoPolicy, name: patch.name };
       return Promise.resolve({ ok: true, name: patch.name, publicNo: demoPolicy.publicNo });
+    },
+    // Demo: the pin round-trips through the status push like the real host does.
+    setDeclaredModel: (patch) => {
+      const pinned = patch.declaredModel.trim();
+      const cfg = { ...STATUS.config! };
+      if (pinned !== "") cfg.declaredModel = pinned;
+      else delete cfg.declaredModel;
+      STATUS = { ...STATUS, config: cfg };
+      for (const fn of statusListeners) fn(STATUS);
+      return Promise.resolve({ ok: true, effective: pinned !== "" ? pinned : (cfg.profileModel ?? "direct") });
     },
     setAgentAvatar: () => Promise.resolve({ ok: true }),
     clearAgentAvatar: () => Promise.resolve({ ok: true }),

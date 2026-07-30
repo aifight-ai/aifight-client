@@ -18,6 +18,9 @@
 // under Electron without a rebuild), plus the runtime's daemon/runtime-files-write
 // (node builtins only — see the single-instance guard below) and — since 审查
 // P1-2 — bridge/update-check (import-free; the version-policy gate in start()).
+// Since the declared-model feature (2026-07-30) it also includes ./config-host
+// (activeProfileModelSync), whose own header guarantees native-module-free
+// imports — the same guarantee main/ipc.ts already relies on by loading it.
 // Reading the shared config on launch still never opens a connection; it
 // touches the OS keychain only to decrypt the stored credentials.
 
@@ -62,6 +65,7 @@ import type {
   BridgeStatus,
   ChallengeInfo,
   ConnectionHealth,
+  DeclaredModelResult,
   EventsData,
   HexagonData,
   LeaderboardData,
@@ -76,6 +80,8 @@ import { fetchParticipantEvents } from "./match-events";
 import { normalizeEvents } from "./events";
 import { normalizeAgentProfile } from "./agentProfile";
 import { normalizeChallenges } from "./challenges";
+import { activeProfileModelSync } from "./config-host";
+import { DECLARED_MODEL_MAX_LEN } from "../shared/ipc";
 import {
   FALLBACK_LIVE_GAMES,
   parseGamesResponse,
@@ -89,6 +95,33 @@ import {
  * desktop→runtime boundary cast and widens when the runtime's signatures do.
  */
 export type Game = "texas_holdem" | "liars_dice" | "coup";
+
+/** Trim a declared-model pin to its storable form: ""/absent → null (unpinned).
+ *  Over-length input is rejected rather than truncated — a silently cut name on
+ *  the PUBLIC leaderboard would not be what the user typed. (bridge.json's
+ *  `declaredModel` field + its write-time trim/strip live in the runtime's
+ *  bridge/config; this is the renderer-facing validation half.) */
+export function sanitizeDeclaredModel(
+  raw: unknown,
+): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (typeof raw !== "string") return { ok: false, error: "declaredModel must be a string" };
+  const trimmed = raw.trim();
+  if (trimmed === "") return { ok: true, value: null };
+  if (trimmed.length > DECLARED_MODEL_MAX_LEN) {
+    return { ok: false, error: `declaredModel must be ${DECLARED_MODEL_MAX_LEN} characters or fewer` };
+  }
+  return { ok: true, value: trimmed };
+}
+
+/** The leaderboard-facing model name: the pin when set, else the active
+ *  profile's configured model, else "direct" — the same fallback the platform
+ *  shows for a direct-LLM agent with nothing declared. */
+export function effectiveDeclaredModel(pinned: string | null, profileModel: string | null | undefined): string {
+  if (pinned !== null && pinned !== "") return pinned;
+  const local = profileModel?.trim() ?? "";
+  return local !== "" ? local : "direct";
+}
 
 export interface BridgeHostCallbacks {
   readonly onStatus?: (status: BridgeStatus) => void;
@@ -1592,6 +1625,77 @@ export class BridgeHost {
   }
 
   /**
+   * Pin (or clear) the agent's PUBLIC leaderboard model name (declared-model
+   * feature, owner decision 2026-07-30). Persists `declaredModel` to the shared
+   * bridge.json through the runtime's own writer — the same app-owned direct
+   * write path #persistDailyLimitLocally uses (the desktop has no runtime
+   * control-API config write; CLI ops stay read/test-only) — then best-effort
+   * PATCHes /api/agents/me/policy with the EFFECTIVE name
+   * (pin || active profile's model || "direct"), so saving a model config also
+   * refreshes the leaderboard name when unpinned. The PATCH is deliberately
+   * non-blocking: a failure comes back as ok:true + syncError for a dismissible
+   * renderer warning, never as a failed save. Never throws.
+   */
+  async setDeclaredModel(patch: { declaredModel?: unknown }): Promise<DeclaredModelResult> {
+    const clean = sanitizeDeclaredModel(patch?.declaredModel);
+    if (!clean.ok) return { ok: false, error: clean.error };
+    let config: BridgeConfig;
+    try {
+      config = readBridgeConfig();
+    } catch (cause) {
+      return { ok: false, error: describeError(cause) };
+    }
+    const profileModel = activeProfileModelSync(config.directAgentSlug ?? "default");
+    const effective = effectiveDeclaredModel(clean.value, profileModel);
+    // Skip the rewrite when the pin is unchanged — every writeBridgeConfig call
+    // re-encrypts the secret fields (keychain churn), same reasoning as
+    // #persistDailyLimitLocally. (Tolerate a hand-edited untrimmed/empty value:
+    // it reads as unpinned, matching the runtime's write-time trim/strip.)
+    const currentRaw = config.declaredModel?.trim() ?? "";
+    const current = currentRaw === "" ? null : currentRaw;
+    if (current !== clean.value) {
+      const { declaredModel: _oldPin, ...rest } = config;
+      const next: BridgeConfig =
+        clean.value === null
+          ? { ...rest, updatedAt: new Date().toISOString() }
+          : { ...rest, declaredModel: clean.value, updatedAt: new Date().toISOString() };
+      try {
+        writeBridgeConfig(next);
+      } catch (cause) {
+        return { ok: false, error: describeError(cause) };
+      }
+    }
+    const syncError = await this.#pushDeclaredModel(effective);
+    // Re-emit the summary so mounted views (hero model chip, Models form) show
+    // the new pin without waiting for a remount — the same discipline
+    // #persistDailyLimitLocally follows.
+    this.readConfigSummary();
+    return syncError === null ? { ok: true, effective } : { ok: true, effective, syncError };
+  }
+
+  /** Best-effort PATCH of the effective declared model to the platform policy
+   *  endpoint (agent-key auth). Returns null on success, else the failure text. */
+  async #pushDeclaredModel(effective: string): Promise<string | null> {
+    const ep = this.#meEndpoint("/api/agents/me/policy");
+    if (ep === null) return "not configured";
+    try {
+      const res = await fetch(ep.url, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "X-API-Key": ep.apiKey },
+        body: JSON.stringify({ declared_model: effective }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        return `HTTP ${res.status}${t ? ": " + t.slice(0, 200) : ""}`;
+      }
+      return null;
+    } catch (cause) {
+      return describeError(cause);
+    }
+  }
+
+  /**
    * Set the agent's avatar to a built-in preset (or clear it) via PUT
    * /api/agents/me/avatar. The desktop authenticates as the agent (bridge key),
    * so this is the agent-self avatar endpoint, not the owner-cookie one.
@@ -1730,6 +1834,8 @@ function archiveUnreadableBridgeConfig(configPath: string): string {
 
 /** Pick only non-secret fields. Never include apiKey / runtimeLocalToken / claimToken. */
 function toSummary(config: BridgeConfig): BridgeConfigSummary {
+  const declaredModel = config.declaredModel?.trim();
+  const profileModel = activeProfileModelSync(config.directAgentSlug ?? "default");
   return {
     agentId: config.agentId,
     agentName: config.agentName,
@@ -1738,6 +1844,8 @@ function toSummary(config: BridgeConfig): BridgeConfigSummary {
     ...(config.directAgentSlug !== undefined ? { directAgentSlug: config.directAgentSlug } : {}),
     ...(config.autoDailyLimit !== undefined ? { autoDailyLimit: config.autoDailyLimit } : {}),
     ...(config.autoGames !== undefined ? { autoGames: config.autoGames } : {}),
+    ...(declaredModel !== undefined && declaredModel !== "" ? { declaredModel } : {}),
+    ...(profileModel !== null ? { profileModel } : {}),
   };
 }
 

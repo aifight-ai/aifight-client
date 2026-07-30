@@ -56,6 +56,7 @@ const api: AifightBridgeApi = {
   getAgentPolicy: () => ipcRenderer.invoke(IPC.getPolicy),
   setAgentPolicy: (patch: { maxGamesPerDay: number }) => ipcRenderer.invoke(IPC.setPolicy, patch),
   setAgentName: (patch: { name: string }) => ipcRenderer.invoke(IPC.setAgentName, patch),
+  setDeclaredModel: (patch: { declaredModel: string }) => ipcRenderer.invoke(IPC.setDeclaredModel, patch),
   setAgentAvatar: (presetId: string | null) => ipcRenderer.invoke(IPC.avatarSet, presetId),
   clearAgentAvatar: () => ipcRenderer.invoke(IPC.avatarClear),
   uploadAgentAvatar: (bytes: ArrayBuffer, contentType: string) => ipcRenderer.invoke(IPC.avatarUpload, bytes, contentType),

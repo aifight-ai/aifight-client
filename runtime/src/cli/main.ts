@@ -166,6 +166,9 @@ export async function run(
     // `aifight status --live` — realtime transport/queue via the control API
     // of a running `aifight run` (连接审计 #14).
     { name: "live", type: "boolean" },
+    // `aifight set declared-model --clear` — drop the pinned public model name
+    // (same as `aifight set declared-model ""`).
+    { name: "clear", type: "boolean" },
   ];
   const parsed = parseArgs(tail, FLAG_SPEC);
   const jsonMode = parsed.flags.json === true;
@@ -598,8 +601,11 @@ function commandUsage(positional: readonly string[]): string | undefined {
       return [
         "Usage: aifight set daily <N>",
         "       aifight set game <game1,game2>",
+        "       aifight set declared-model <name...>",
+        "       aifight set declared-model --clear",
         "  daily 0 means the agent no longer joins daily automatic matches.",
         "  Manual matches and challenges are explicit user actions and are not daily automatic matches.",
+        "  declared-model pins the PUBLIC model name the leaderboard shows (default: your configured LLM model).",
         `  supported games: ${SUPPORTED_GAMES.join(", ")}`,
       ].join("\n");
     case "rename":

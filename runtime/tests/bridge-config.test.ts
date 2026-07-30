@@ -78,6 +78,25 @@ describe("bridge config", () => {
     expect(readBridgeConfig().matchingPaused).toBeUndefined();
   });
 
+  it("round-trips declaredModel, trims on write, and strips it when empty", () => {
+    useTempHome();
+    // Set: stored trimmed, readable back.
+    writeBridgeConfig({ ...config(), declaredModel: "  claude-opus-4-6  " });
+    expect(readBridgeConfig().declaredModel).toBe("claude-opus-4-6");
+    const disk = JSON.parse(fs.readFileSync(getBridgeConfigPath(), "utf8")) as Record<string, unknown>;
+    expect(disk.declaredModel).toBe("claude-opus-4-6");
+
+    // Absent = not pinned.
+    writeBridgeConfig(config());
+    expect(readBridgeConfig().declaredModel).toBeUndefined();
+
+    // Empty/whitespace-only on write strips the key (never stored as "").
+    writeBridgeConfig({ ...config(), declaredModel: "   " });
+    expect(readBridgeConfig().declaredModel).toBeUndefined();
+    const stripped = JSON.parse(fs.readFileSync(getBridgeConfigPath(), "utf8")) as Record<string, unknown>;
+    expect(stripped).not.toHaveProperty("declaredModel");
+  });
+
   it("redacts platform secrets for status output", () => {
     const redacted = redactBridgeConfig(config());
 

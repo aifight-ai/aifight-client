@@ -27,6 +27,33 @@ export interface BridgeConfigSummary {
   readonly directAgentSlug?: string;
   readonly autoDailyLimit?: number;
   readonly autoGames?: readonly string[];
+  /**
+   * The agent-level PINNED leaderboard display name from bridge.json
+   * (`declaredModel`, owner decision 2026-07-30). Absent = not pinned; the
+   * effective leaderboard name then follows `profileModel`.
+   */
+  readonly declaredModel?: string;
+  /**
+   * The ACTIVE LLM profile's configured model id (agents/<slug>/config.json),
+   * so the renderer can resolve the effective declared model
+   * (declaredModel || profileModel || server-reported) without its own file read.
+   * Absent when no LLM config exists yet.
+   */
+  readonly profileModel?: string;
+}
+
+/** Server contract cap for the declared model name. */
+export const DECLARED_MODEL_MAX_LEN = 100;
+
+/** Result of setDeclaredModel. ok:false = the local pin was NOT persisted;
+ *  ok:true + syncError = persisted, but the best-effort platform PATCH failed
+ *  (the renderer shows a dismissible warning; the save itself still stands). */
+export interface DeclaredModelResult {
+  readonly ok: boolean;
+  readonly error?: string;
+  /** The value sent to the platform (declaredModel || profileModel || "direct"). */
+  readonly effective?: string;
+  readonly syncError?: string;
 }
 
 export interface BridgeStatus {
@@ -759,6 +786,7 @@ export const IPC = {
   getPolicy: "bridge:get-policy",
   setPolicy: "bridge:set-policy",
   setAgentName: "bridge:set-agent-name",
+  setDeclaredModel: "bridge:set-declared-model",
   avatarSet: "avatar:set",
   avatarClear: "avatar:clear",
   avatarUpload: "avatar:upload",
@@ -862,6 +890,11 @@ export interface AifightBridgeApi {
    * Server is the source of truth; returns the reconciled name + numeric public ID.
    * On the rename cooldown it returns ok:false with the server message + nextRenameAllowedAt. */
   setAgentName(patch: { name: string }): Promise<{ ok: boolean; error?: string; name?: string; publicNo?: number; nextRenameAllowedAt?: string }>;
+  /** Pin (or clear, with "") the agent's leaderboard display model name. Persists
+   * `declaredModel` to bridge.json, then best-effort PATCHes the platform with the
+   * EFFECTIVE name (pin || active profile's model || "direct") so the leaderboard
+   * matches. A sync failure comes back as ok:true + syncError — never blocks. */
+  setDeclaredModel(patch: { declaredModel: string }): Promise<DeclaredModelResult>;
   /** Set the agent's avatar to a built-in preset id (or pass null to clear). Bridge-key auth. */
   setAgentAvatar(presetId: string | null): Promise<{ ok: boolean; error?: string }>;
   /** Clear the agent's avatar (preset or upload) back to the deterministic default. */

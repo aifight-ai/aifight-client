@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { CAP_CONFIRM_THRESHOLD, capNeedsConfirm, divisionOf, fmtTimePoint, formatRemaining, formatTokens } from "./views/PlayView";
+import { CAP_CONFIRM_THRESHOLD, capNeedsConfirm, divisionOf, fmtTimePoint, formatRemaining, formatTokens, heroModelLabel } from "./views/PlayView";
 
 describe("capNeedsConfirm", () => {
   it("threshold is 10 (change deliberately, with the CLI mirror)", () => {
@@ -71,5 +71,23 @@ describe("formatRemaining", () => {
   it("past or broken deadlines → 0m (the row drops on the next poll)", () => {
     expect(formatRemaining("2026-07-29T19:00:00.000Z", now)).toBe("0m");
     expect(formatRemaining("not-a-date", now)).toBe("0m");
+  });
+});
+
+describe("heroModelLabel (declared-model fallback chain)", () => {
+  it("the bridge.json pin wins over local profile + server model", () => {
+    expect(heroModelLabel({ declaredModel: "Board Name", profileModel: "claude-opus-5" }, "direct")).toBe("Board Name");
+  });
+  it("unpinned → the active profile's configured model", () => {
+    expect(heroModelLabel({ profileModel: "claude-opus-5" }, "direct")).toBe("claude-opus-5");
+    expect(heroModelLabel({ declaredModel: "  ", profileModel: "claude-opus-5" }, "direct")).toBe("claude-opus-5");
+  });
+  it("nothing local → the server-reported model (pre-sync state)", () => {
+    expect(heroModelLabel({}, "direct")).toBe("direct");
+    expect(heroModelLabel({}, "gpt-5.6")).toBe("gpt-5.6");
+  });
+  it("all sources empty → null (the chip hides)", () => {
+    expect(heroModelLabel({}, null)).toBeNull();
+    expect(heroModelLabel({ declaredModel: "", profileModel: " " }, "")).toBeNull();
   });
 });

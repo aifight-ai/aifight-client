@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { readBridgeConfig, type BridgeConfig } from "../../bridge/config";
+import { syncDeclaredModelAtStartup } from "../../bridge/declared-model";
 import { checkBridgeUpdate } from "../../bridge/update-check";
 import { BridgeServiceError, statusBridgeService } from "../../bridge/service";
 import { RUNTIME_VERSION } from "../../index";
@@ -48,6 +49,13 @@ export async function runBridgeStart(
     env.stdout(`[warn] bridge.update: ${update.message}\n`);
     env.stdout("[warn] update when ready: aifight update --yes\n");
   }
+
+  // Declared model: one best-effort platform sync with config load, so a pin
+  // or a profile-model change made while offline reaches the leaderboard.
+  await syncDeclaredModelAtStartup(config, {
+    fetchImpl: env.fetchImpl ?? globalThis.fetch,
+    warn: (message) => env.stderr(`warning: ${message}\n`),
+  });
 
   try {
     const client = makeClient(env);

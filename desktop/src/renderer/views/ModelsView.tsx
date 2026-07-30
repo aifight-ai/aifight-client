@@ -32,7 +32,10 @@ import {
   setLLMActive,
   setLLMRoute,
   deleteLLMProfile,
+  setDeclaredModel,
+  useBridgeStatus,
 } from "../useBridge";
+import { DECLARED_MODEL_MAX_LEN } from "../../shared/ipc";
 import { localizeServerError } from "../errors";
 import { PageHeader } from "../components/ui";
 import { useLiveGames } from "../liveGames";
@@ -169,6 +172,10 @@ interface FormState {
   family: ProtocolFamily;
   model: string;
   baseURL: string;
+  /** Agent-level leaderboard display-name pin (bridge.json declaredModel), ""
+   *  = unpinned → the leaderboard shows the configured model name. Edited here
+   *  (owner decision 2026-07-30) even though it is not per-profile. */
+  declaredModel: string;
   temperature: string;
   maxTokens: string;
   requestTimeoutSec: string;
@@ -190,6 +197,7 @@ function blankForm(family: ProtocolFamily): FormState {
     family,
     model: "",
     baseURL: "",
+    declaredModel: "",
     temperature: "",
     // AIFight is a reasoning arena, so default to generous output room; unified
     // with the CLI wizard's 32000 default (D16). You pay for tokens used, not the cap.
@@ -222,7 +230,14 @@ export function ModelsView() {
   const [form, setForm] = useState<FormState | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Non-blocking leaderboard-sync warning (declared-model PATCH failed AFTER the
+  // local save succeeded). Dismissible; never blocks the save flow.
+  const [syncWarning, setSyncWarning] = useState<string | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
+  // The agent-level declared-model pin lives in bridge.json, surfaced on the
+  // bridge status — the form prefills it on open (it is not per-profile).
+  const bridgeStatus = useBridgeStatus();
+  const pinnedDeclared = bridgeStatus?.config?.declaredModel ?? "";
   // Per-profile test outcome: ok drives the green/red color; msg keeps the
   // provider's own detail (e.g. "invalid x-api-key") — that detail IS the point
   // of Test, so it isn't collapsed to a generic string.
@@ -248,6 +263,7 @@ export function ModelsView() {
     f.model = familyDef(family).models[0] ?? "";
     f.profileId = family === "openai_chat" ? "" : family;
     f.displayName = familyDef(family).label;
+    f.declaredModel = pinnedDeclared;
     setError(null);
     setForm(f);
   };
@@ -268,6 +284,7 @@ export function ModelsView() {
       family: p.family,
       model: p.model,
       baseURL: p.baseURL ?? "",
+      declaredModel: pinnedDeclared,
       temperature: p.temperature === null ? "" : String(p.temperature),
       maxTokens: String(p.maxTokens),
       requestTimeoutSec: p.requestTimeoutMs !== null ? String(Math.round(p.requestTimeoutMs / 1000)) : "270",
@@ -303,8 +320,15 @@ export function ModelsView() {
         return;
       }
     }
+    // Validate the public display-name pin BEFORE anything persists — an
+    // over-length rejection must not leave the profile saved but the pin lost.
+    if (form.declaredModel.trim().length > DECLARED_MODEL_MAX_LEN) {
+      setError(t("models.declaredTooLong"));
+      return;
+    }
     setSaving(true);
     setError(null);
+    setSyncWarning(null);
     const temp = form.temperature.trim() === "" ? null : Number(form.temperature);
     const input: ProfileInput = {
       profileId: id,
@@ -344,7 +368,21 @@ export function ModelsView() {
         return;
       }
     }
+    // Declared-model pin: persist to bridge.json + best-effort leaderboard sync.
+    // Main resolves the EFFECTIVE name (pin || the just-saved active profile's
+    // model || "direct") and PATCHes the platform, so changing the model field
+    // also refreshes the leaderboard name when the pin is empty. A sync failure
+    // is a dismissible warning — the save itself already stands.
+    const r3 = await setDeclaredModel({ declaredModel: form.declaredModel });
+    if (!r3.ok) {
+      setError(localizeServerError(r3.error, "save"));
+      setSaving(false);
+      return;
+    }
     setSaving(false);
+    if (r3.syncError !== undefined) {
+      setSyncWarning(t("models.declaredSyncWarn", { error: r3.syncError }));
+    }
     setForm(null);
     load();
   };
@@ -407,6 +445,19 @@ export function ModelsView() {
 
       {error !== null && (
         <div className="v3-dv-banner v3-dv-err" data-tone="err">{error}</div>
+      )}
+
+      {syncWarning !== null && (
+        <div className="v3-dv-banner" data-tone="warn">
+          <span className="flex-1">{syncWarning}</span>
+          <button
+            onClick={() => setSyncWarning(null)}
+            title={t("models.dismiss")}
+            className="rounded-md p-0.5 text-[var(--text-faint)] hover:text-[var(--text)]"
+          >
+            <X size={13} />
+          </button>
+        </div>
       )}
 
       <ConfigBrokenBanner view={view} />
@@ -675,6 +726,19 @@ function ProfileForm({ form, setForm, caps, onSave, onCancel, saving, t }: {
         {discoverMsg && <div className="mt-1 text-[11px] leading-snug text-[var(--text-faint)]">{discoverMsg}</div>}
       </Row>
       {hint && <div className="v3-dv-acc -mt-1 pl-0 text-[11px] sm:pl-[124px]">{t("models.detected")}: {hint}</div>}
+      {/* Declared model (owner decision 2026-07-30): the PUBLIC name the
+          leaderboard and profile show for this agent. Agent-level (bridge.json),
+          not per-profile — but it belongs with the model it names, so it lives
+          in this form. Empty = unpinned → show the configured model name. */}
+      <Row label={t("models.declaredLabel")}>
+        <input
+          className={inputCls}
+          value={form.declaredModel}
+          onChange={(e) => up({ declaredModel: e.target.value })}
+          placeholder={t("models.declaredPh")}
+        />
+        <div className="mt-1 text-[11px] leading-snug text-[var(--text-faint)]">{t("models.declaredHint")}</div>
+      </Row>
       <Row label={t("models.baseUrl")}>
         <input className={inputCls} value={form.baseURL} onChange={(e) => up({ baseURL: e.target.value })} placeholder={t(fdef.baseURLPlaceholderKey)} />
       </Row>

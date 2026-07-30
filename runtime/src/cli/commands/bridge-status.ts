@@ -1,6 +1,7 @@
 import { checkPlatformAgentStatus, type PlatformAgentStatus } from "../../account/platform-agent-status";
 import { formatPublicNo } from "../../account/public-no";
 import { dropClaimCredentialsAfterClaim, readBridgeConfig, redactBridgeConfig } from "../../bridge/config";
+import { declaredModelOriginLabel, resolveEffectiveDeclaredModel } from "../../bridge/declared-model";
 import { checkBridgeUpdate } from "../../bridge/update-check";
 import { RUNTIME_VERSION } from "../../index";
 import { ControlClientError } from "../control-client";
@@ -32,6 +33,7 @@ export async function runBridgeStatus(
     return 0;
   }
   const redacted = redactBridgeConfig(config);
+  const declaredModel = resolveEffectiveDeclaredModel(config);
   const update = await checkBridgeUpdate({
     baseUrl: config.baseUrl,
     currentVersion: RUNTIME_VERSION,
@@ -51,6 +53,7 @@ export async function runBridgeStatus(
       update,
       platformAgentStatus,
       config: redacted,
+      declaredModel: { value: declaredModel.value, origin: declaredModel.origin },
       matchingPaused: config.matchingPaused === true,
       claimUrl: unclaimedClaimUrl(platformAgentStatus, config) ?? null,
     }) + "\n");
@@ -89,6 +92,8 @@ export async function runBridgeStatus(
     env.stdout("The update command keeps local credentials and restarts `aifight.service` when it is installed.\n");
   }
   env.stdout(`Runtime: ${runtimeLabel(redacted.runtimeType)} at ${redacted.runtimeLocalUrl}\n`);
+  // What the leaderboard/profile shows as this agent's model, and why.
+  env.stdout(`Declared model: ${declaredModel.value} (${declaredModelOriginLabel(declaredModel.origin)})\n`);
   env.stdout(`Automatic ranked matches: ${formatDaily(redacted.autoDailyLimit)}\n`);
   // The pause flag survives restarts, so say it out loud when set — a paused
   // agent looks "configured and online" everywhere else, which is exactly the

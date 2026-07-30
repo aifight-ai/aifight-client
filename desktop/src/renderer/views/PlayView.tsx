@@ -76,6 +76,24 @@ export function formatTokens(n: number): string {
   return n.toLocaleString();
 }
 
+/**
+ * What the hero's model chip shows — the same name the leaderboard shows
+ * (declared-model feature, owner decision 2026-07-30): the agent-level pin
+ * from bridge.json when set, else the active profile's configured model, else
+ * the server-reported model (e.g. "direct" for a direct-LLM agent that has
+ * never synced). Null → the chip hides.
+ */
+export function heroModelLabel(
+  cfg: { readonly declaredModel?: string; readonly profileModel?: string },
+  serverModel: string | null,
+): string | null {
+  const pinned = cfg.declaredModel?.trim() ?? "";
+  if (pinned !== "") return pinned;
+  const local = cfg.profileModel?.trim() ?? "";
+  if (local !== "") return local;
+  return serverModel !== null && serverModel.trim() !== "" ? serverModel : null;
+}
+
 /** Division ladder — same thresholds as the website's agent profile. */
 export function divisionOf(rating: number | null, totalGames: number): string {
   if (rating === null || totalGames < 5) return "provisional";
@@ -941,7 +959,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   const history = raw?.rating_history ?? [];
   const ratings = raw?.ratings ?? [];
   const achievements = raw?.achievements ?? [];
-  const model = raw?.agent?.model ?? null;
+  const model = heroModelLabel(cfg, raw?.agent?.model ?? null);
   const avatarUrl = raw?.agent?.avatar_url ?? null;
   const avatarPreset = raw?.agent?.avatar_preset ?? null;
   const policyDirty = policy !== null && day !== policy.maxGamesPerDay;

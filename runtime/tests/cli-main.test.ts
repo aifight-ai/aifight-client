@@ -344,6 +344,12 @@ describe("bridge-first CLI command surface", () => {
 
     expect(r.code).toBe(0);
     expect(calls).toEqual([
+      // The declared-model startup sync fires once with config load (best
+      // effort; a mock agent with no pin declares the historical "direct").
+      {
+        url: "https://beta.aifight.ai/api/agents/me/policy",
+        bodyText: JSON.stringify({ declared_model: "direct" }),
+      },
       {
         url: "http://127.0.0.1:40123/v1/agents/alpha/join",
         bodyText: JSON.stringify({ game: "coup", mode: "ranked", one_shot: true, count: 3 }),
@@ -646,8 +652,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-beta.38",
-          latest_version: "0.1.0-beta.38",
+          recommended_version: "0.1.0-beta.39",
+          latest_version: "0.1.0-beta.39",
           update_command: "npm install -g @aifight/aifight",
         });
       }
@@ -686,8 +692,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.1.0-beta.38",
-          latest_version: "0.1.0-beta.38",
+          recommended_version: "0.1.0-beta.39",
+          latest_version: "0.1.0-beta.39",
           update_command: "npm install -g @aifight/aifight",
         });
       }

@@ -21,6 +21,7 @@ import { randomUUID } from "node:crypto";
 import type { HandlerArgs, HandlerEnv } from "../shared.js";
 import { CommandError, UsageError } from "../shared.js";
 import { resolveAgentDir, ensureAgentDir } from "../../profile/profile-loader.js";
+import { syncDeclaredModelAfterProfileEdit } from "../../bridge/declared-model.js";
 import {
   DEFAULT_MAX_TOKENS,
   validateConfig,
@@ -194,7 +195,20 @@ export async function runConfigUpdate(args: HandlerArgs, env: HandlerEnv): Promi
   // D7: re-test only when something connectivity-relevant changed.
   const changed = keySourceGiven || newModel !== current.model || newBaseURL !== current.baseURL;
   const updNotes = [...(settings.notes ?? []), ...(rec.note ? [rec.note] : [])];
-  return finishEdit({ slug, profileId, config, action: "update", setActive, args, env, skipTest: !changed, ...(updNotes.length > 0 ? { notes: updNotes } : {}) });
+  // The leaderboard derives this agent's declared model from the ACTIVE
+  // profile's model — when the edit moved that value, push the new label.
+  // (Headless `config update` and the interactive editor both land here.)
+  const activeModelBefore = existing.profiles[existing.activeProfile]?.model;
+  const code = await finishEdit({ slug, profileId, config, action: "update", setActive, args, env, skipTest: !changed, ...(updNotes.length > 0 ? { notes: updNotes } : {}) });
+  await syncDeclaredModelAfterProfileEdit({
+    slug,
+    modelBefore: activeModelBefore,
+    modelAfter: config.profiles[config.activeProfile]?.model,
+    fetchImpl: env.fetchImpl ?? globalThis.fetch,
+    warn: (message) => env.stderr(`warning: ${message}\n`),
+    ...(args.jsonMode ? {} : { info: (message) => env.stdout(`  ${message}\n`) }),
+  });
+  return code;
 }
 
 /** Extract the editable settings from a stored profile (for update's base). */

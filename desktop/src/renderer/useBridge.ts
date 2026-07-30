@@ -22,6 +22,7 @@ import type {
   DiscoverModelsResult,
   ConfigView,
   ConnectionHealth,
+  DeclaredModelResult,
   EventsData,
   LeaderboardData,
   LeaderboardScope,
@@ -181,6 +182,11 @@ export async function setAgentName(
   const api = window.aifight;
   if (api === undefined) return { ok: false, error: "desktop bridge unavailable" };
   return api.setAgentName(patch);
+}
+export async function setDeclaredModel(patch: { declaredModel: string }): Promise<DeclaredModelResult> {
+  const api = window.aifight;
+  if (api === undefined) return { ok: false, error: "desktop bridge unavailable" };
+  return api.setDeclaredModel(patch);
 }
 
 /** Avatar mutations bound to the desktop bridge-key IPC, shaped for the shared

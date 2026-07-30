@@ -54,6 +54,16 @@ export interface BridgeConfig {
   /** For runtimeType "direct": which agent profile (<aifight-home>/agents/<slug>) drives decisions. Defaults to "default". */
   readonly directAgentSlug?: string;
   /**
+   * Optional pinned DECLARED MODEL — the public model label the leaderboard and
+   * agent profile show for this agent. Absent/empty = not pinned: the label
+   * falls back to the active agent profile's configured LLM model, then to
+   * "direct" (see bridge/declared-model.ts). Trimmed, max 100 chars; written
+   * via `aifight set declared-model <name>` and synced to the platform
+   * (PATCH /api/agents/me/policy {"declared_model"}). PUBLIC — never put
+   * anything sensitive here.
+   */
+  readonly declaredModel?: string;
+  /**
    * How many times an unparseable/illegal model output is retried with
    * corrective feedback before falling back (§3 Phase A). Each retry is one
    * extra model call on the user's own key, so it is capped at 2. Default 1.
@@ -358,6 +368,14 @@ export function writeBridgeConfig(config: BridgeConfig, opts: WriteBridgeConfigO
     // verbatim rather than double-wrapped.
     if (typeof v === "string" && !isEncryptedField(v)) onDisk[field] = encryptField(v);
   }
+  // declaredModel normalization, centralized so every writer gets the same
+  // semantics: store trimmed, and strip the key entirely when the trimmed
+  // value is empty (absent = not pinned — an explicit "" would be dead weight).
+  if (typeof onDisk.declaredModel === "string") {
+    const trimmed = onDisk.declaredModel.trim();
+    if (trimmed === "") delete onDisk.declaredModel;
+    else onDisk.declaredModel = trimmed;
+  }
   // Per-process tmp name: two processes writing bridge.json at once (the desktop
   // bridge + the CLI, e.g. during the keychain→file migration) must not share
   // one fixed `.tmp` path and clobber each other's staging file or race the
@@ -591,6 +609,12 @@ function isBridgeConfig(value: unknown): value is BridgeConfig {
     (v.runtimeLocalToken === undefined || typeof v.runtimeLocalToken === "string") &&
     (v.runtimeModel === undefined || typeof v.runtimeModel === "string") &&
     (v.directAgentSlug === undefined || typeof v.directAgentSlug === "string") &&
+    // Optional convenience label: accept any string within the platform's
+    // 100-char cap (trim/strip happens on write; a hand-edited longer value
+    // must not brick the whole bridge config read — the platform PATCH simply
+    // rejects it and the sync surfaces that as a warning).
+    (v.declaredModel === undefined ||
+      (typeof v.declaredModel === "string" && v.declaredModel.length <= 100)) &&
     (v.illegalRetryCount === undefined ||
       (typeof v.illegalRetryCount === "number" &&
         Number.isInteger(v.illegalRetryCount) &&

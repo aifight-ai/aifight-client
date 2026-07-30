@@ -15,6 +15,7 @@
 // owns only config.json (model routing + provider key refs).
 
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -240,6 +241,27 @@ async function readConfigState(slug: string): Promise<ReadConfigState> {
 async function readConfigOptional(slug: string): Promise<LLMConfig | null> {
   const s = await readConfigState(slug);
   return s.state === "ok" ? s.config : null;
+}
+
+/**
+ * The ACTIVE profile's configured model id, synchronously and read-only — null
+ * when there is no valid config or no active profile. BridgeHost uses this to
+ * resolve the effective declared leaderboard model (declared-model feature,
+ * owner decision 2026-07-30) inside its SYNC status-summary path, so it cannot
+ * go through the async readConfigState. Never throws: a missing/invalid
+ * config.json simply means "no local model answer", same as getConfig's
+ * not-configured branch.
+ */
+export function activeProfileModelSync(slug: string): string | null {
+  try {
+    const raw = readFileSync(path.join(resolveAgentDir(slug), "config.json"), "utf8");
+    const result = validateConfig(JSON.parse(raw));
+    if (!result.ok) return null;
+    const model = result.config.profiles[result.config.activeProfile]?.model;
+    return typeof model === "string" && model.trim() !== "" ? model : null;
+  } catch {
+    return null;
+  }
 }
 
 async function writeConfig(slug: string, config: LLMConfig): Promise<void> {

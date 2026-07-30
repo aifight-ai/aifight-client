@@ -95,6 +95,8 @@ export function registerBridgeIpc(host: BridgeHost): void {
   handle(IPC.setPolicy, (_e, patch: unknown) => host.setAgentPolicy((patch ?? {}) as never));
   // Display-name rename (agent-key PATCH; server enforces cooldown + audit).
   handle(IPC.setAgentName, (_e, patch: unknown) => host.setAgentName((patch ?? {}) as never));
+  // Leaderboard declared-model pin (bridge.json + best-effort platform PATCH).
+  handle(IPC.setDeclaredModel, (_e, patch: unknown) => host.setDeclaredModel((patch ?? {}) as never));
 
   // Avatar (agent-self, bridge-key auth). The renderer sends a preset id or, for
   // an upload, the raw image bytes (ArrayBuffer) + content type.

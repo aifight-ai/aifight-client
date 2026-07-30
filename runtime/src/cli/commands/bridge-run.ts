@@ -20,6 +20,7 @@ import {
   type BridgeRunnerLogEvent,
 } from "../../bridge/runner";
 import { readBridgeConfig, type BridgeConfig } from "../../bridge/config";
+import { syncDeclaredModelAtStartup } from "../../bridge/declared-model";
 import { automaticJoinOptions } from "../../bridge/auto-join";
 import { checkBridgeUpdate } from "../../bridge/update-check";
 import {
@@ -163,6 +164,14 @@ export async function runBridgeWithConfig(opts: {
     env.stdout(`[warn] bridge.update: ${update.message}\n`);
     env.stdout("[warn] update when ready: aifight update --yes\n");
   }
+
+  // Declared model: ONE best-effort platform sync per process start (never on
+  // reconnect), so a pin or a profile-model change made while offline reaches
+  // the leaderboard.
+  await syncDeclaredModelAtStartup(config, {
+    fetchImpl: env.fetchImpl ?? globalThis.fetch,
+    warn: (message) => env.stderr(`warning: ${message}\n`),
+  });
 
   ensureRuntimeHome();
   cleanupStaleTmpFiles();
