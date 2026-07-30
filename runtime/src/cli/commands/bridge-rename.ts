@@ -4,6 +4,7 @@ import { readBridgeConfig, writeBridgeConfig, type BridgeConfig } from "../../br
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError } from "../shared";
 import { applyPendingBridgeRestart, bridgeRestartPending } from "./apply-settings";
+import { promptDefault } from "./onboard-io";
 
 const USAGE = [
   "usage: aifight rename <new name>",
@@ -16,9 +17,23 @@ export async function runBridgeRename(args: HandlerArgs, env: HandlerEnv): Promi
   // The display name may contain spaces, so accept it either as --name or as the
   // joined positional arguments (`aifight rename Dark Knight`).
   const fromFlag = typeof args.flags["name"] === "string" ? (args.flags["name"] as string) : undefined;
-  const name = (fromFlag ?? args.positional.join(" ")).trim();
+  let name = (fromFlag ?? args.positional.join(" ")).trim();
   if (name === "") {
-    throw new UsageError("a new display name is required", USAGE);
+    // Bare `aifight rename` on a terminal: ASK instead of erroring, showing
+    // the current name as the default — Enter keeps it, q/Esc cancels
+    // (3x-ui habit, owner ask 2026-07-30). Scripts keep the usage error.
+    if (
+      fromFlag === undefined &&
+      args.positional.length === 0 &&
+      !args.jsonMode &&
+      process.stdin.isTTY === true
+    ) {
+      const prompted = await promptPublicName(env);
+      if (prompted === undefined) return 0; // kept or cancelled — already said so
+      name = prompted;
+    } else {
+      throw new UsageError("a new display name is required", USAGE);
+    }
   }
 
   const config = readRenameBridgeConfig();
@@ -52,6 +67,34 @@ export async function runBridgeRename(args: HandlerArgs, env: HandlerEnv): Promi
   // here, like every other setting write does.
   await applyPendingBridgeRestart(env, { jsonMode: args.jsonMode });
   return 0;
+}
+
+/** Test seam: bare `aifight rename`'s interactive flow, line reader injected. */
+export async function runRenameInteractive(
+  env: HandlerEnv,
+  readLine: (env: HandlerEnv, question: string) => Promise<string>,
+): Promise<string | undefined> {
+  return promptPublicName(env, readLine);
+}
+
+/** The interactive half of bare `aifight rename`: `Public name [current]: ` —
+ *  Enter keeps the current name, q/Esc cancels; anything else is handed back
+ *  to the normal rename flow. undefined = nothing to change. */
+async function promptPublicName(
+  env: HandlerEnv,
+  readLine?: (env: HandlerEnv, question: string) => Promise<string>,
+): Promise<string | undefined> {
+  const config = readRenameBridgeConfig();
+  const answer = await promptDefault(env, "Public name", config.agentName, readLine);
+  if (answer.kind === "cancel") {
+    env.stdout("No changes made.\n");
+    return undefined;
+  }
+  if (answer.kind === "keep") {
+    env.stdout(`Kept ${config.agentName}.\n`);
+    return undefined;
+  }
+  return answer.value;
 }
 
 /** readBridgeConfig, with the expected local-config failures mapped to a

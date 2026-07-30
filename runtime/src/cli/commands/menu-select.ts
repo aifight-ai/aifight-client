@@ -15,7 +15,7 @@
 
 import type { HandlerEnv } from "../shared.js";
 import { createAnsi, type Ansi } from "../ansi.js";
-import { renderMenuFrame, type MenuFrame } from "./menu-frame.js";
+import { columnLayout, renderMenuFrame, type ColumnLayout, type MenuFrame } from "./menu-frame.js";
 
 /** The slice of process.stdin the chooser needs — an interface so tests can
  *  feed scripted key sequences through a fake. */
@@ -33,7 +33,17 @@ export interface SelectOptions {
   /** How long a lone ambiguous digit ("1", which also prefixes "10".."14")
    *  waits for a second digit before running item 1. Tests shrink it. */
   readonly digitCommitMs?: number;
+  /** One-shot "the frame's data may have changed" signal — today the status
+   *  banner's remote enrichment landing (~1.5s after the panel opens). When
+   *  it resolves, the frame is rebuilt via getFrame and redrawn once, so the
+   *  first paint never waits on the network. */
+  readonly refreshWhen?: Promise<unknown>;
+  readonly getFrame?: () => MenuFrame;
 }
+
+/** The chooser contract menu.ts depends on: the frame to draw first, plus an
+ *  optional one-shot refresh hook (see SelectOptions). */
+export type MenuChoose = (frame: MenuFrame, opts?: Pick<SelectOptions, "refreshWhen" | "getFrame">) => Promise<string>;
 
 const ESC = "\x1b";
 const HIDE_CURSOR = "\x1b[?25l";
@@ -41,8 +51,8 @@ const SHOW_CURSOR = "\x1b[?25h";
 const DEFAULT_DIGIT_COMMIT_MS = 700;
 
 /** Wire the chooser to the real process stdin (main.ts, TTY-gated). */
-export function createMenuChooser(env: HandlerEnv): (frame: MenuFrame) => Promise<string> {
-  return (frame) => selectMenuKey(env, frame, process.stdin as unknown as RawInput);
+export function createMenuChooser(env: HandlerEnv): MenuChoose {
+  return (frame, opts) => selectMenuKey(env, frame, process.stdin as unknown as RawInput, opts);
 }
 
 /**
@@ -59,24 +69,32 @@ export function selectMenuKey(
 ): Promise<string> {
   const ansi = opts.ansi ?? createAnsi();
   const digitCommitMs = opts.digitCommitMs ?? DEFAULT_DIGIT_COMMIT_MS;
-  const choices = frame.choices;
-  const keys = new Set(choices.map((c) => c.key));
+  let currentFrame = frame;
+  let choices = currentFrame.choices;
+  let keys = new Set(choices.map((c) => c.key));
   // -1: a line exactly as wide as the terminal sits in the deferred-wrap
   // corner of some emulators; keep a column of slack so the repaint math
   // (one terminal row per rendered line) always holds.
   const width = (process.stdout.columns ?? 0) > 0 ? process.stdout.columns! - 1 : 0;
+  let layout: ColumnLayout = columnLayout(choices.length, width);
   let selected = 0;
   let drawn = 0;
+  let settled = false;
   let pending = ""; // an escape sequence split across data chunks
   let digits = ""; // buffered numeric shortcut ("1" may still become "10".."14")
   let digitTimer: ReturnType<typeof setTimeout> | null = null;
 
   const draw = (): void => {
+    const twoColumns = layout.columns === 2;
     const lines = [
       "",
-      ...renderMenuFrame(frame, selected, ansi, width),
+      ...renderMenuFrame(currentFrame, selected, ansi, width),
       "",
-      ansi.dim("  ↑/↓ move · Enter select · number runs · q quit"),
+      ansi.dim(
+        twoColumns
+          ? "  ↑/↓ ←/→ move · Enter select · number runs · q quit"
+          : "  ↑/↓ move · Enter select · number runs · q quit",
+      ),
     ];
     let out = drawn > 0 ? `\x1b[${drawn}F` : ""; // back to the first drawn line
     out += lines.map((l) => `\x1b[2K${l}`).join("\n") + "\n";
@@ -99,6 +117,7 @@ export function selectMenuKey(
       stdin.pause();
     };
     const finish = (key: string): void => {
+      settled = true;
       cleanup();
       if (drawn > 0) env.stdout(`\x1b[${drawn}F\x1b[J`); // erase the menu
       env.stdout(SHOW_CURSOR);
@@ -132,6 +151,18 @@ export function selectMenuKey(
       if (digitTimer !== null) clearTimeout(digitTimer);
       digitTimer = setTimeout(commitDigits, digitCommitMs);
     };
+    // ←/→ jump between the two columns, keeping the row when the other
+    // column is that tall (its last row otherwise). ↑/↓ keep their linear
+    // reading-order walk, which the column-major split leaves unchanged.
+    const jumpColumn = (dir: "left" | "right"): void => {
+      resetDigits();
+      const from = dir === "right" ? layout.left : layout.right;
+      const to = dir === "right" ? layout.right : layout.left;
+      const row = from.indexOf(selected);
+      if (row === -1 || to.length === 0) return;
+      selected = to[Math.min(row, to.length - 1)]!;
+      draw();
+    };
     const onData = (data: string): void => {
       const parsed = parseMenuKeys(pending + data);
       pending = parsed.rest;
@@ -140,6 +171,8 @@ export function selectMenuKey(
           resetDigits();
           selected = (selected + (key === "up" ? choices.length - 1 : 1)) % choices.length;
           draw();
+        } else if (key === "left" || key === "right") {
+          jumpColumn(key);
         } else if (key === "enter") {
           finish(choices[selected]!.key);
           return;
@@ -157,14 +190,32 @@ export function selectMenuKey(
     env.stdout(HIDE_CURSOR);
     draw();
     stdin.on("data", onData);
+    // The one-shot refresh (status banner's remote data landing): rebuild the
+    // frame and redraw in place. Guarded so a late resolution after the user
+    // already picked a row cannot repaint over the action's own output.
+    if (opts.refreshWhen !== undefined) {
+      void opts.refreshWhen
+        .then(() => {
+          if (settled) return;
+          if (opts.getFrame !== undefined) {
+            currentFrame = opts.getFrame();
+            choices = currentFrame.choices;
+            keys = new Set(choices.map((c) => c.key));
+            layout = columnLayout(choices.length, width);
+            if (selected >= choices.length) selected = choices.length - 1;
+          }
+          draw();
+        })
+        .catch(() => undefined);
+    }
   });
 }
 
 /**
  * Split a chunk of raw input into key events. Digits come through as their
- * character ("1".."9"); everything semantic is "up" | "down" | "enter" |
- * "quit". `rest` holds an escape sequence the chunk cut in half — it is
- * prepended to the next chunk.
+ * character ("1".."9"); everything semantic is "up" | "down" | "left" |
+ * "right" | "enter" | "quit". `rest` holds an escape sequence the chunk cut
+ * in half — it is prepended to the next chunk.
  */
 function parseMenuKeys(input: string): { keys: string[]; rest: string } {
   const keys: string[] = [];
@@ -184,6 +235,8 @@ function parseMenuKeys(input: string): { keys: string[]; rest: string } {
         if (j === i + 2) {
           if (input[j] === "A") keys.push("up");
           else if (input[j] === "B") keys.push("down");
+          else if (input[j] === "C") keys.push("right");
+          else if (input[j] === "D") keys.push("left");
         }
         i = j + 1;
         continue;
@@ -194,6 +247,8 @@ function parseMenuKeys(input: string): { keys: string[]; rest: string } {
         if (third === undefined) return { keys, rest: input.slice(i) };
         if (third === "A") keys.push("up");
         else if (third === "B") keys.push("down");
+        else if (third === "C") keys.push("right");
+        else if (third === "D") keys.push("left");
         i += 3;
         continue;
       }

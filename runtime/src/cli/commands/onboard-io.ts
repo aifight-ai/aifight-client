@@ -34,6 +34,38 @@ function readYesNo(env: HandlerEnv, question: string, defaultYes: boolean): Prom
   });
 }
 
+/** What the user meant by their answer at a default-bracket prompt. */
+export type DefaultPromptAnswer =
+  | { readonly kind: "value"; readonly value: string }
+  | { readonly kind: "keep" } // bare Enter — keep the shown current value
+  | { readonly kind: "cancel" }; // q / Esc — abort, change nothing
+
+/** Pure interpretation of a default-prompt answer — unit-tested without a TTY. */
+export function resolveDefaultAnswer(raw: string): DefaultPromptAnswer {
+  const trimmed = raw.trim();
+  if (trimmed === "") return { kind: "keep" };
+  // An Esc keypress arrives as the ESC control character (line mode passes it
+  // through); q is the printable cancel. Both mean "change nothing".
+  if (trimmed === "q" || trimmed === "Q" || trimmed.includes("\x1b")) return { kind: "cancel" };
+  return { kind: "value", value: trimmed };
+}
+
+/**
+ * The 3x-ui prompting habit the owner asked for (2026-07-30): every prompt
+ * shows its CURRENT value as a default — `Question [current]: ` — Enter
+ * keeps it, q/Esc cancels, anything else becomes the new value. Shared so
+ * every present and future prompt behaves the same way. The readLine seam
+ * lets tests drive it without a real stdin.
+ */
+export async function promptDefault(
+  env: HandlerEnv,
+  question: string,
+  current: string,
+  readLine: (env: HandlerEnv, question: string) => Promise<string> = readLineVisible,
+): Promise<DefaultPromptAnswer> {
+  return resolveDefaultAnswer(await readLine(env, `${question} [${current}]: `));
+}
+
 // Masked secret input. Uses raw mode so the key is never echoed to the
 // terminal or scrollback. Falls back to a plain read when raw mode is
 // unavailable (the caller only invokes this on a TTY).

@@ -16,6 +16,7 @@ export interface Ansi {
   readonly dim: (s: string) => string;
   readonly inverse: (s: string) => string;
   readonly cyan: (s: string) => string;
+  readonly green: (s: string) => string;
   readonly yellow: (s: string) => string;
 }
 
@@ -45,6 +46,7 @@ export function createAnsi(gate: AnsiGate = {}): Ansi {
     dim: wrap(enabled, "2", "22"),
     inverse: wrap(enabled, "7", "27"),
     cyan: wrap(enabled, "36", "39"),
+    green: wrap(enabled, "32", "39"),
     yellow: wrap(enabled, "33", "39"),
   };
 }
@@ -54,4 +56,14 @@ function detectColor(gate: AnsiGate): boolean {
   const isTTY = gate.isTTY ?? process.stdout.isTTY === true;
   const noColor = env.NO_COLOR !== undefined && env.NO_COLOR !== "";
   return isTTY && !noColor && env.TERM !== "dumb";
+}
+
+// SGR sequences only — enough for everything createAnsi emits. Width math
+// (the status box, the two-column menu) must measure VISIBLE columns, so a
+// styled line goes through this before `.length` is taken.
+const SGR_PATTERN = /\x1b\[[0-9;]*m/g;
+
+/** Remove SGR color/style sequences so the result's length is the visible width. */
+export function stripAnsi(s: string): string {
+  return s.replace(SGR_PATTERN, "");
 }

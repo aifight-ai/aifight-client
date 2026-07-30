@@ -26,6 +26,8 @@ import { createAnsi } from "../ansi.js";
 import { applyPendingBridgeRestart, withDeferredApply } from "./apply-settings.js";
 import { MAX_MANUAL_MATCHES } from "./bridge-start.js";
 import { renderMenuFrame, type MenuFrame } from "./menu-frame.js";
+import type { MenuStatusBoxProvider } from "./menu-status.js";
+import type { MenuChoose } from "./menu-select.js";
 
 export interface MenuDeps {
   readonly env: HandlerEnv;
@@ -36,8 +38,9 @@ export interface MenuDeps {
    *  (menu-select.ts) — the panel only ever opens on a TTY, so that is the
    *  production path. When absent the panel falls back to printing the frame
    *  and reading a number line-by-line (today's tests, and any future host
-   *  that opens the panel without raw-mode stdin). */
-  readonly choose?: (frame: MenuFrame) => Promise<string>;
+   *  that opens the panel without raw-mode stdin). The optional second
+   *  argument carries the status banner's one-shot refresh hook. */
+  readonly choose?: MenuChoose;
   /** Run one CLI command by name with positional args (no flags, non-JSON). */
   readonly dispatch: (cmd: string, positional: string[]) => Promise<number>;
   /** Print the full grouped command help. */
@@ -54,6 +57,12 @@ export interface MenuDeps {
    *  file" is a reliable offline signal for "not claimed yet" — no network
    *  call just to draw the panel. */
   readonly claim?: { readonly pending: boolean; readonly url?: string; readonly agentName?: string };
+  /** The boxed status banner above the menu (3x-ui style, owner ask
+   *  2026-07-30). Absent = no box (first run, or tests that don't care
+   *  about the banner). The provider owns the local snapshot and the
+   *  one-shot remote enrichment; the panel just re-asks it for lines on
+   *  every build. */
+  readonly statusBox?: MenuStatusBoxProvider;
 }
 
 interface MenuItem {
@@ -229,6 +238,12 @@ function buildFrame(deps: MenuDeps): MenuFrame {
       // A selectable Quit row, so pure arrow-key usage can exit too.
       { key: "q", label: "Quit" },
     ],
+    // The status box re-composes from the provider's live data on every
+    // build: the first build is local-only, the one the chooser's refresh
+    // hook triggers right after carries the remote answers.
+    ...(deps.statusBox !== undefined
+      ? { statusBox: { title: deps.statusBox.title, lines: deps.statusBox.lines() } }
+      : {}),
   };
 }
 
@@ -264,9 +279,19 @@ export async function runInteractiveMenu(deps: MenuDeps): Promise<number> {
   const byKey = new Map(ITEMS.map((i) => [i.key, i]));
   for (;;) {
     const frame = buildFrame(deps);
-    const choice = deps.choose !== undefined
-      ? (await deps.choose(frame)).trim().toLowerCase()
-      : await lineChoice(deps, frame);
+    let choice: string;
+    if (deps.choose !== undefined) {
+      // While the status banner's one-shot remote refresh is still in flight,
+      // hand the chooser a hook so it can repaint the box the moment the
+      // answers land — the first paint never waits on the network.
+      const refreshWhen = deps.statusBox?.refreshed?.();
+      choice = (await deps.choose(
+        frame,
+        refreshWhen !== undefined ? { refreshWhen, getFrame: () => buildFrame(deps) } : undefined,
+      )).trim().toLowerCase();
+    } else {
+      choice = await lineChoice(deps, frame);
+    }
     if (choice === "q" || choice === "quit" || choice === "0") {
       // Several items write bridge.json, which a running bridge only re-reads on
       // restart. Offer that ONCE, here. The owner's words for being asked after

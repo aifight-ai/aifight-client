@@ -208,3 +208,159 @@ describe("ansi color gate", () => {
     expect(createAnsi({ isTTY: true, env: { TERM: "dumb" } }).enabled).toBe(false);
   });
 });
+
+// ── Two-column navigation (2026-07-30, 3x-ui style) ─────────────────────
+//
+// The chooser switches to the two-column layout at ≥72 columns; ←/→ jump
+// between the columns while ↑/↓ keep their reading-order walk (down the left
+// column, then down the right one). process.stdout.columns is stubbed — the
+// chooser reads the real terminal width.
+
+function withColumns<T>(columns: number, fn: () => T): T {
+  const prev = Object.getOwnPropertyDescriptor(process.stdout, "columns");
+  Object.defineProperty(process.stdout, "columns", { value: columns, configurable: true, writable: true });
+  try {
+    return fn();
+  } finally {
+    if (prev !== undefined) Object.defineProperty(process.stdout, "columns", prev);
+  }
+}
+
+describe("two-column navigation", () => {
+  it("→ jumps from the left column to the same row of the right column", async () => {
+    await withColumns(100, async () => {
+      const stdin = fakeStdin();
+      const { env } = makeEnv();
+      const picked = selectMenuKey(env, frame(), stdin, { ansi: PLAIN });
+      stdin.press("\x1b[C"); // → : row 0 left ("1") → row 0 right ("8")
+      stdin.press("\r");
+      await expect(picked).resolves.toBe("8");
+    });
+  });
+
+  it("← jumps back, and clamps to the left column's last row from Quit", async () => {
+    await withColumns(100, async () => {
+      const stdin = fakeStdin();
+      const { env } = makeEnv();
+      const picked = selectMenuKey(env, frame(), stdin, { ansi: PLAIN });
+      // Quit is the right column's 8th row; ← has no left row 8, so it lands
+      // on the left column's last row (item 7).
+      stdin.press("\x1b[A"); // ↑ wraps to the last row = Quit
+      stdin.press("\x1b[D"); // ←
+      stdin.press("\r");
+      await expect(picked).resolves.toBe("7");
+    });
+  });
+
+  it("↑/↓ keep the reading-order walk across the column boundary", async () => {
+    await withColumns(100, async () => {
+      const stdin = fakeStdin();
+      const { env } = makeEnv();
+      const picked = selectMenuKey(env, frame(), stdin, { ansi: PLAIN });
+      // 7 × ↓ from item 1 walks past the left column's bottom (7) onto the
+      // right column's top (8) — the column-major reading order.
+      for (let i = 0; i < 7; i += 1) stdin.press("\x1b[B");
+      stdin.press("\r");
+      await expect(picked).resolves.toBe("8");
+    });
+  });
+
+  it("SS3 arrow variants (application mode) work too", async () => {
+    await withColumns(100, async () => {
+      const stdin = fakeStdin();
+      const { env } = makeEnv();
+      const picked = selectMenuKey(env, frame(), stdin, { ansi: PLAIN });
+      stdin.press("\x1bOC"); // → via SS3
+      stdin.press("\r");
+      await expect(picked).resolves.toBe("8");
+    });
+  });
+
+  it("←/→ are no-ops in single-column mode (narrow terminal)", async () => {
+    await withColumns(60, async () => {
+      const stdin = fakeStdin();
+      const { env } = makeEnv();
+      const picked = selectMenuKey(env, frame(), stdin, { ansi: PLAIN });
+      stdin.press("\x1b[C"); // → ignored: one column only
+      stdin.press("\r");
+      await expect(picked).resolves.toBe("1");
+    });
+  });
+
+  it("the hint line mentions ←/→ only in two-column mode", async () => {
+    await withColumns(100, async () => {
+      const stdin = fakeStdin();
+      const { env, out } = makeEnv();
+      const picked = selectMenuKey(env, frame(), stdin, { ansi: PLAIN });
+      stdin.press("q");
+      await picked;
+      expect(out()).toContain("↑/↓ ←/→ move · Enter select · number runs · q quit");
+    });
+    await withColumns(60, async () => {
+      const stdin = fakeStdin();
+      const { env, out } = makeEnv();
+      const picked = selectMenuKey(env, frame(), stdin, { ansi: PLAIN });
+      stdin.press("q");
+      await picked;
+      expect(out()).toContain("↑/↓ move · Enter select · number runs · q quit");
+      expect(out()).not.toContain("←/→");
+    });
+  });
+
+  it("digits still run rows directly in two-column mode", async () => {
+    await withColumns(100, async () => {
+      const stdin = fakeStdin();
+      const { env } = makeEnv();
+      const picked = selectMenuKey(env, frame(), stdin, { ansi: PLAIN, digitCommitMs: 5 });
+      stdin.press("1");
+      stdin.press("2");
+      await expect(picked).resolves.toBe("12");
+    });
+  });
+});
+
+// The status banner's remote answers land ~1.5s after the panel's first
+// paint; the chooser repaints the frame in place when the one-shot hook
+// resolves instead of making the first paint wait on the network.
+describe("refresh repaint", () => {
+  it("redraws with the rebuilt frame when the refresh hook resolves", async () => {
+    let resolveRefresh!: () => void;
+    const refreshWhen = new Promise<void>((res) => {
+      resolveRefresh = res;
+    });
+    const stdin = fakeStdin();
+    const { env, out } = makeEnv();
+    const picked = selectMenuKey(env, frame(), stdin, {
+      ansi: PLAIN,
+      refreshWhen,
+      getFrame: () => frame({ title: "AIFight — refreshed title" }),
+    });
+    expect(out()).toContain("what would you like to do?");
+    resolveRefresh();
+    // Let the .then callback run, then quit.
+    await new Promise((res) => setImmediate(res));
+    expect(out()).toContain("AIFight — refreshed title");
+    stdin.press("q");
+    await expect(picked).resolves.toBe("q");
+  });
+
+  it("a late refresh after the pick does not repaint over the action's output", async () => {
+    let resolveRefresh!: () => void;
+    const refreshWhen = new Promise<void>((res) => {
+      resolveRefresh = res;
+    });
+    const stdin = fakeStdin();
+    const { env, out } = makeEnv();
+    const picked = selectMenuKey(env, frame(), stdin, {
+      ansi: PLAIN,
+      refreshWhen,
+      getFrame: () => frame({ title: "AIFight — refreshed title" }),
+    });
+    stdin.press("q");
+    await expect(picked).resolves.toBe("q");
+    const before = out();
+    resolveRefresh();
+    await new Promise((res) => setImmediate(res));
+    expect(out()).toBe(before); // nothing drawn after the pick
+  });
+});

@@ -62,6 +62,8 @@ interface Harness {
   readonly dispatched: Array<{ cmd: string; positional: string[] }>;
   /** Every frame the injected chooser was offered (one per loop iteration). */
   readonly frames: MenuFrame[];
+  /** The optional second argument each chooser call received (refresh hook). */
+  readonly chooseOpts: Array<{ refreshWhen?: Promise<unknown>; getFrame?: () => MenuFrame } | undefined>;
   helpShown: boolean;
 }
 
@@ -90,11 +92,13 @@ function harness(
     matchingPaused?: () => boolean;
     onDispatch?: (cmd: string) => void;
     linePrompt?: boolean;
+    statusBox?: MenuDeps["statusBox"];
   },
 ): Harness {
   const chunks: string[] = [];
   const dispatched: Array<{ cmd: string; positional: string[] }> = [];
   const frames: MenuFrame[] = [];
+  const chooseOpts: Harness["chooseOpts"] = [];
   const env = {
     stdout: (s: string) => chunks.push(s),
     stderr: (s: string) => chunks.push(s),
@@ -105,6 +109,7 @@ function harness(
     out: () => chunks.join(""),
     dispatched,
     frames,
+    chooseOpts,
     helpShown: false,
     deps: {
       env,
@@ -117,8 +122,9 @@ function harness(
       ...(opts?.linePrompt === true
         ? {}
         : {
-            choose: (frame: MenuFrame) => {
+            choose: (frame: MenuFrame, chooseOpt?: { refreshWhen?: Promise<unknown>; getFrame?: () => MenuFrame }) => {
               frames.push(frame);
+              chooseOpts.push(chooseOpt);
               chunks.push(`\n${renderMenuFrame(frame, -1, plain).join("\n")}\n\n`);
               return Promise.resolve(answers[i++] ?? "q");
             },
@@ -135,6 +141,7 @@ function harness(
       configured: opts?.configured ?? true,
       ...(opts?.matchingPaused !== undefined ? { matchingPaused: opts.matchingPaused } : {}),
       ...(opts?.claim !== undefined ? { claim: opts.claim } : {}),
+      ...(opts?.statusBox !== undefined ? { statusBox: opts.statusBox } : {}),
     },
   };
   return h;
@@ -530,5 +537,68 @@ describe("line-prompt fallback (no chooser wired)", () => {
     const code = await runInteractiveMenu(h.deps);
     expect(code).toBe(0);
     expect(h.dispatched).toEqual([]);
+  });
+});
+
+// The boxed status banner (owner ask 2026-07-30, 3x-ui style): the panel
+// carries the provider's box into every frame it builds, and hands the
+// chooser the one-shot refresh hook while the remote answers are still in
+// flight — so the first paint is local-only and the repaint lands the
+// enrichment. The provider itself is covered in cli-menu-status.test.ts.
+describe("status banner in the panel", () => {
+  function fakeProvider(opts: { pending: boolean }): NonNullable<MenuDeps["statusBox"]> {
+    let lines = [
+      [{ text: "Phantom Maverick", style: "bold" as const }, { text: " · " }, { text: "✓ claimed", style: "green" as const }],
+    ];
+    return {
+      title: "AIFight · v0.1.0-beta.39",
+      lines: () => lines,
+      refreshed: () => (opts.pending ? Promise.resolve().then(() => {
+        lines = [[{ text: "Phantom Maverick", style: "bold" as const }, { text: " · enriched" }]];
+      }) : undefined),
+    };
+  }
+
+  it("carries the provider's box into the frame handed to the chooser", async () => {
+    const h = harness(["q"], { statusBox: fakeProvider({ pending: false }) });
+    await runInteractiveMenu(h.deps);
+    expect(h.frames).toHaveLength(1);
+    const box = h.frames[0]!.statusBox;
+    expect(box).toBeDefined();
+    expect(box!.title).toBe("AIFight · v0.1.0-beta.39");
+    expect(box!.lines[0]!.map((s) => s.text).join("")).toContain("Phantom Maverick");
+    // And the renderer drew it (plain ASCII frame in tests).
+    expect(h.out()).toContain("+- AIFight · v0.1.0-beta.39");
+  });
+
+  it("hands the chooser the refresh hook while the remote answers are pending", async () => {
+    const h = harness(["q"], { statusBox: fakeProvider({ pending: true }) });
+    await runInteractiveMenu(h.deps);
+    expect(h.chooseOpts).toHaveLength(1);
+    expect(h.chooseOpts[0]?.refreshWhen).toBeDefined();
+    expect(typeof h.chooseOpts[0]?.getFrame).toBe("function");
+  });
+
+  it("passes no hook once the provider has settled", async () => {
+    const h = harness(["q"], { statusBox: fakeProvider({ pending: false }) });
+    await runInteractiveMenu(h.deps);
+    expect(h.chooseOpts[0]).toBeUndefined();
+  });
+
+  it("no provider → no box, and the panel renders exactly as before", async () => {
+    const h = harness(["q"]);
+    await runInteractiveMenu(h.deps);
+    expect(h.frames[0]!.statusBox).toBeUndefined();
+    expect(h.out()).not.toContain("+- AIFight · v");
+    expect(h.chooseOpts[0]).toBeUndefined();
+  });
+
+  it("the getFrame hook rebuilds from the provider's (possibly enriched) lines", async () => {
+    const provider = fakeProvider({ pending: true });
+    const h = harness(["q"], { statusBox: provider });
+    await runInteractiveMenu(h.deps);
+    await provider.refreshed(); // let the fake's enrichment land
+    const enriched = h.chooseOpts[0]!.getFrame!();
+    expect(enriched.statusBox!.lines[0]!.map((s) => s.text).join("")).toContain("enriched");
   });
 });

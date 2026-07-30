@@ -15,7 +15,7 @@ import {
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, SUPPORTED_GAMES, UsageError, expectArity, isSupportedGame } from "../shared";
 import { applyPendingBridgeRestart } from "./apply-settings";
-import { createOnboardIO } from "./onboard-io";
+import { createOnboardIO, promptDefault } from "./onboard-io";
 
 // Re-exported for the CLI surfaces that already import them from here.
 export { DAILY_CAP_CONFIRM_THRESHOLD, SETUP_WIZARD_CAP_MAX, dailyCapNeedsConfirm };
@@ -59,10 +59,86 @@ export async function runBridgeSet(
   // declared-model takes a free-form (possibly multi-word) name or --clear, so
   // it owns its arity instead of the fixed 2-arg shape daily/game share.
   if (kind === "declared-model") return setDeclaredModel(args, env);
+  // Bare `aifight set daily` / `aifight set game` on a terminal: ASK instead of
+  // erroring, showing the current value as the default (3x-ui habit — Enter
+  // keeps it, owner ask 2026-07-30). Scripts (non-TTY / --json) keep the
+  // usage error below, so automation is untouched.
+  if (
+    (kind === "daily" || kind === "game") &&
+    args.positional.length === 1 &&
+    args.jsonMode !== true &&
+    process.stdin.isTTY === true
+  ) {
+    return kind === "daily" ? promptDailyCap(args, env) : promptGames(args, env);
+  }
   expectArity(args, 2, 2, USAGE);
   if (kind === "daily") return setDaily(args.positional[1]!, args, env);
   if (kind === "game") return setGames(args.positional[1]!, args, env);
   throw new UsageError(`unknown set target '${kind}'`, "available: daily | game | declared-model");
+}
+
+/** A line reader shaped like onboard-io's readLineVisible — injectable so the
+ *  interactive paths are testable without a real stdin. */
+export type SetReadLine = (env: HandlerEnv, question: string) => Promise<string>;
+
+/** Test seam: bare `aifight set daily`'s interactive flow, line reader injected. */
+export async function runSetDailyInteractive(
+  args: HandlerArgs,
+  env: HandlerEnv,
+  readLine: SetReadLine,
+): Promise<number> {
+  return promptDailyCap(args, env, readLine);
+}
+
+/** Test seam: bare `aifight set game`'s interactive flow, line reader injected. */
+export async function runSetGamesInteractive(
+  args: HandlerArgs,
+  env: HandlerEnv,
+  readLine: SetReadLine,
+): Promise<number> {
+  return promptGames(args, env, readLine);
+}
+
+/** The interactive half of bare `aifight set daily`: prompt with the current
+ *  cap as the default, then delegate the actual write to setDaily (which owns
+ *  validation, the >threshold confirmation, and the platform sync). */
+async function promptDailyCap(args: HandlerArgs, env: HandlerEnv, readLine?: SetReadLine): Promise<number> {
+  const config = readSetBridgeConfig();
+  const shown = config.autoDailyLimit === undefined ? "server default" : String(config.autoDailyLimit);
+  const answer = await promptDefault(env, `Daily cap (0-${SETUP_WIZARD_CAP_MAX}, 0 = off)`, shown, readLine);
+  if (answer.kind === "cancel") {
+    env.stdout("No changes made.\n");
+    return 0;
+  }
+  if (answer.kind === "keep") {
+    env.stdout(`Kept ${shown}.\n`);
+    return 0;
+  }
+  // Same forgiveness as the config hub's prompt: a bad number is explained,
+  // not a usage-error exit — nothing is written either way.
+  if (!/^\d+$/.test(answer.value) || Number.parseInt(answer.value, 10) > SETUP_WIZARD_CAP_MAX) {
+    env.stdout(`  Enter a whole number between 0 and ${SETUP_WIZARD_CAP_MAX}.\n`);
+    return 0;
+  }
+  return setDaily(answer.value, args, env);
+}
+
+/** The interactive half of bare `aifight set game`: prompt with the current
+ *  list as the default, then delegate to setGames (validation + write). */
+async function promptGames(args: HandlerArgs, env: HandlerEnv, readLine?: SetReadLine): Promise<number> {
+  const config = readSetBridgeConfig();
+  const current = config.autoGames;
+  const shown = current === undefined || current.length === 0 ? "all games" : current.join(",");
+  const answer = await promptDefault(env, `Games to auto-play, comma-separated (options: ${SUPPORTED_GAMES.join(", ")})`, shown, readLine);
+  if (answer.kind === "cancel") {
+    env.stdout("No changes made.\n");
+    return 0;
+  }
+  if (answer.kind === "keep") {
+    env.stdout(`Kept ${shown}.\n`);
+    return 0;
+  }
+  return setGames(answer.value, args, env);
 }
 
 async function setDaily(raw: string, args: HandlerArgs, env: HandlerEnv): Promise<number> {

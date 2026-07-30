@@ -26,6 +26,8 @@ import {
   type HandlerEnv,
 } from "./shared";
 import { jsonErrorEnvelope } from "./format";
+import { createAnsi } from "./ansi";
+import { renderGlobalHelp, styleSubcommandUsage } from "./help";
 import type { HelloResult } from "../index";
 
 import { runVersion } from "./commands/version";
@@ -55,14 +57,16 @@ import { runReview } from "./commands/review";
 import { resolveClaimState } from "./commands/claim-state";
 import { runInteractiveMenu } from "./commands/menu";
 import { createMenuChooser } from "./commands/menu-select";
+import { createMenuStatusBox } from "./commands/menu-status";
 import { createOnboardIO } from "./commands/onboard-io";
 import { readBridgeConfig } from "../bridge/config";
 import type { BridgeServiceDeps } from "../bridge/service";
 import { suggestClosest, CONFIG_EXAMPLES } from "./commands/config-shared";
 
 // Every top-level command name, for the did-you-mean suggester (D14). Keep in
-// sync with the dispatch switch below.
-const KNOWN_COMMANDS: readonly string[] = [
+// sync with the dispatch switch below. Exported so the help tests can assert
+// the styled help covers every one of them.
+export const KNOWN_COMMANDS: readonly string[] = [
   "version", "doctor", "setup", "connect", "start", "run", "status",
   "update", "service", "sessions", "strategy", "uninstall", "set", "rename",
   "challenge", "accept", "config", "stats", "prices", "record", "review",
@@ -219,6 +223,10 @@ export async function run(
     // all, so the banner is worth one short request (offline-safe — see
     // claim-state.ts).
     const claim = configured ? await resolveClaimState(env.fetchImpl) : undefined;
+    // The boxed status banner (3x-ui style). It reads the local config
+    // synchronously and kicks off its own one-shot remote refresh — the
+    // panel's first paint never waits on it. Absent on first run.
+    const statusBox = configured ? createMenuStatusBox({ fetchImpl: env.fetchImpl }) : undefined;
     return runInteractiveMenu({
       env: panelEnv,
       prompt: createOnboardIO(env).promptLine,
@@ -228,7 +236,7 @@ export async function run(
       // the menu's line-prompt fallback stays test-only.
       choose: createMenuChooser(panelEnv),
       dispatch: (c, positional) => dispatch(c, { positional, flags: {}, jsonMode: false }, panelEnv),
-      showHelp: () => env.stdout(globalUsage() + "\n"),
+      showHelp: () => env.stdout(renderGlobalHelp(createAnsi()) + "\n"),
       configured,
       // Read fresh on every render/dispatch: item 14 (Pause/Resume matching)
       // flips this flag, and the panel must show the new state on the next
@@ -242,6 +250,7 @@ export async function run(
         }
       },
       ...(claim !== undefined ? { claim } : {}),
+      ...(statusBox !== undefined ? { statusBox } : {}),
     });
   };
   const panelEnv: HandlerEnv = { ...env, openMainPanel };
@@ -358,79 +367,16 @@ async function dispatch(
 }
 
 // ── Help ─────────────────────────────────────────────────────────────
-
-function globalUsage(): string {
-  return [
-    "aifight — AIFight CLI",
-    "",
-    "Play hidden-information strategy games on AIFight with your own LLM.",
-    "Direct-LLM: paste an LLM API key into local config and play. Run it on a VPS",
-    "to stay online without keeping a computer on.",
-    "",
-    "Quickstart (direct-LLM):",
-    "  npm install -g @aifight/aifight",
-    "  aifight setup                Guided: create your agent, connect & test your LLM, go online, claim",
-    "  # follow the printed claim URL to verify your email — then your agent is live",
-    "",
-    "Tip: run `aifight` with no command in a terminal for an interactive menu.",
-    "",
-    "First run (set up this machine):",
-    "  aifight setup                     Guided setup: create your agent, connect & test your LLM, claim",
-    "  aifight config                    Set up & test your LLM, daily matches, claim, style (interactive)",
-    "  aifight config add <profile> …    Headless: configure an LLM with flags (see `aifight config --help`)",
-    "  aifight connect <PAIRING_CODE>    Authorize this machine for an existing claimed agent",
-    "",
-    "Play:",
-    "  aifight start [game] [N]          Request manual ranked match(es)",
-    "  aifight pause                     Pause automatic matching (leaves the queue; persists until resume)",
-    "  aifight resume                    Resume automatic matching",
-    "  aifight status                    Show local config with secrets redacted (--live: realtime state)",
-    "  aifight record                    Show your public competitive record: ratings, rank, recent matches",
-    "  aifight challenge <game>          Create a one-use friendly challenge URL",
-    "  aifight accept <url_or_token>     Accept a received challenge URL",
-    "",
-    "Tune your agent (adjust any time):",
-    "  aifight rename <name>             Change your agent's public display name",
-    "  aifight accept-terms              Review & accept updated Terms/Privacy (keeps your agent active)",
-    "  aifight set daily <N>             Set daily automatic match preference",
-    "  aifight set game <game1,game2>    Set automatic match game preference",
-    "  aifight strategy <command>        Show/init/validate local strategy files",
-    "  aifight review <id>               Post-match self-review of a local session (uses your LLM key)",
-    "  aifight stats                     Local token usage + estimated cost (this month by default)",
-    "  aifight prices <command>          Set per-model token prices used by `aifight stats` (local only)",
-    "  aifight telegram <command>        Phone notifications & remote control via your own Telegram bot",
-    "",
-    "Manage this machine:",
-    "  aifight service <command>         Install or manage aifight.service (persistent / VPS)",
-    "  aifight sessions <command>        Inspect local match session records",
-    "  aifight update                    Update the CLI package, then restart the service unless a match is in progress",
-    "  aifight uninstall                 Remove local AIFight setup from this machine",
-    "  aifight doctor                    Troubleshoot local setup",
-    "  aifight version                   Print version",
-    "",
-    "Global flags:",
-    "  --json          Emit machine-readable JSON instead of human text",
-    "  --version, -v   Print version",
-    "  --help, -h      Print this help (or per-command help when after a command)",
-    "  --env <NAME>             config set-key only: read the LLM API key from an environment variable",
-    "  --file <PATH>            config set-key only: read the LLM API key from a 0600 key file",
-    "  --profile <name>         config only: target a specific LLM profile",
-    "  --name <name>            setup only: set the agent's initial display name (else one is suggested)",
-    "  --auto                   setup only: non-interactive register + service + status (no prompts)",
-    "  --approved-local-setup   setup only: skip repeated local prompts after user-approved Agent setup",
-    "  --yes                    update only: run npm update without an interactive confirmation",
-    "  --replace-local-identity connect only: approve replacing existing local bridge credentials",
-    "",
-    `Supported games for manual matches: ${SUPPORTED_GAMES.join(", ")}`,
-    "Challenge games in this release: texas_holdem, liars_dice, coup",
-  ].join("\n");
-}
+//
+// The styled grouped help lives in help.ts (one data source renders both the
+// colored TTY version and the plain piped/--json one). `aifight <cmd> --help`
+// keeps its static per-command usage table below, with a light color pass.
 
 function printGlobalHelp(env: HandlerEnv, jsonMode: boolean): number {
   if (jsonMode) {
-    env.stdout(JSON.stringify({ help: globalUsage() }) + "\n");
+    env.stdout(JSON.stringify({ help: renderGlobalHelp(createAnsi({ enabled: false })) }) + "\n");
   } else {
-    env.stdout(globalUsage() + "\n");
+    env.stdout(renderGlobalHelp(createAnsi()) + "\n");
   }
   return 0;
 }
@@ -713,7 +659,7 @@ function printSubcommandHelp(
   if (jsonMode) {
     env.stdout(JSON.stringify({ help: usage }) + "\n");
   } else {
-    env.stdout(usage + "\n");
+    env.stdout(styleSubcommandUsage(usage, createAnsi()) + "\n");
   }
   return 0;
 }
