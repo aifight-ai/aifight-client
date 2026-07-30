@@ -289,7 +289,7 @@ const en = {
       },
       stats: {
         games: "Games", winRate: "Win rate", rating: "Rating", rank: "Rank",
-        trueRatingSub: "True Rating {{rating}} ± {{rd}} (games-weighted) · headline is the conservative leaderboard score",
+        trueRatingSub: "Rating {{rating}} ± {{rd}}\nRating−2×RD",
         ratingTip: "The leaderboard scores conservatively: Rating − 2×RD. RD is rating uncertainty — it shrinks as you play more, so the conservative score converges on your true Rating. Your current RD ≈ {{rd}}.",
       },
       actions: { title: "Play" },
@@ -1028,7 +1028,7 @@ const zh = {
       },
       stats: {
         games: "总对局", winRate: "胜率", rating: "积分", rank: "排名",
-        trueRatingSub: "真实 Rating {{rating}} ± {{rd}}（按对局加权）· 主数字为榜单保守积分（每游戏 Rating−2×RD）",
+        trueRatingSub: "Rating {{rating}} ± {{rd}}\nRating−2×RD",
         ratingTip: "榜单采用保守积分：Rating − 2×RD。RD 是积分的不确定度，对局越多 RD 越小，保守积分会向真实 Rating 收敛。你当前的 RD ≈ {{rd}}。",
       },
       actions: { title: "对战" },

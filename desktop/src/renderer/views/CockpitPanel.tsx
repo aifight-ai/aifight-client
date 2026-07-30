@@ -146,8 +146,12 @@ export function CockpitPanel(props: CockpitPanelProps) {
     setStep((s) => (s >= prev ? events.length : s));
   }, [events.length, isLive]);
 
-  // Replay: timed auto-advance during playback, paced by the speed dial
-  // (base 1100ms/step — the same cadence the website's replay page uses at 1×).
+  // Replay: timed auto-advance during playback, paced by the speed dial.
+  // Base = CATCHUP_STEP_MS (1× = 3s/step, the same watchable cadence as live
+  // catch-up; 0.5× = 6s, 2× = 1.5s, 3× = 1s). Owner ruling 2026-07-30: the old
+  // 1100ms/step (inherited from the website replay) read as "1 frame a second"
+  // and rushed the reasoning rows — the app slows down so the log is readable;
+  // the website replay keeps its own 1.1s cadence.
   useEffect(() => {
     if (isLive || !playing) return;
     const len = events.length;
@@ -155,7 +159,7 @@ export function CockpitPanel(props: CockpitPanelProps) {
       setPlaying(false);
       return;
     }
-    const id = window.setTimeout(() => setStep((s) => Math.min(s + 1, len)), 1100 / speed);
+    const id = window.setTimeout(() => setStep((s) => Math.min(s + 1, len)), catchUpStepMs(speed));
     return () => window.clearTimeout(id);
   }, [isLive, playing, step, events.length, speed]);
 
