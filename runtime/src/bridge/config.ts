@@ -360,8 +360,19 @@ export interface WriteBridgeConfigOptions {
 }
 
 export function writeBridgeConfig(config: BridgeConfig, opts: WriteBridgeConfigOptions = {}): void {
+  writeBridgeConfigToPath(getBridgeConfigPath(), config, opts);
+}
+
+/** The writeBridgeConfig pipeline against an explicit path — the identity
+ *  store (bridge/identities.ts) reuses it so identity files get the same
+ *  encryption-at-rest, atomic tmp+rename write, 0600 perms, and stale-secret
+ *  release as bridge.json itself. Callers own their directory existing. */
+export function writeBridgeConfigToPath(
+  filePath: string,
+  config: BridgeConfig,
+  opts: WriteBridgeConfigOptions = {},
+): void {
   ensureRuntimeHome();
-  const filePath = getBridgeConfigPath();
   // Every encrypt mints a fresh keychain entry, so collect the previous refs
   // first and release whichever are not carried over once the new file lands
   // — otherwise each save would leak one entry.
@@ -432,7 +443,14 @@ function statMtime(filePath: string): Date | undefined {
 }
 
 export function readBridgeConfig(): BridgeConfig {
-  const filePath = getBridgeConfigPath();
+  return readBridgeConfigFromPath(getBridgeConfigPath());
+}
+
+/** The readBridgeConfig pipeline against an explicit path — validation,
+ *  decryption, lazy plaintext/keychain migration included (a migration rewrite
+ *  lands back at the SAME path with preserveMtime). Used by the identity
+ *  store; bridge.json itself goes through readBridgeConfig above. */
+export function readBridgeConfigFromPath(filePath: string): BridgeConfig {
   let raw: string;
   try {
     raw = fs.readFileSync(filePath, "utf8");
@@ -518,7 +536,7 @@ export function readBridgeConfig(): BridgeConfig {
   // must not read as "settings changed since the bridge started".
   if (anyPlaintext || anyKeychainFormat) {
     try {
-      writeBridgeConfig(config, { preserveMtime: true });
+      writeBridgeConfigToPath(filePath, config, { preserveMtime: true });
     } catch {
       // Keep the existing file; the next read retries the migration.
     }

@@ -3,9 +3,13 @@ import { renameAgent, AgentActionError } from "../../bridge/agent-actions";
 import { readBridgeConfig, writeBridgeConfig, type BridgeConfig } from "../../bridge/config";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError } from "../shared";
+import { createAnsi } from "../ansi";
 import { resolveLocale, t } from "../i18n";
 import { applyPendingBridgeRestart, bridgeRestartPending } from "./apply-settings";
 import { promptDefault } from "./onboard-io";
+
+/** The platform's display-name ceiling (2–50 chars per the rename USAGE). */
+const RENAME_MAX_CHARS = 50;
 
 const USAGE = [
   "usage: aifight rename <new name>",
@@ -80,23 +84,31 @@ export async function runRenameInteractive(
 
 /** The interactive half of bare `aifight rename`: `Public name [current]: ` —
  *  Enter keeps the current name, q/Esc cancels; anything else is handed back
- *  to the normal rename flow. undefined = nothing to change. */
+ *  to the normal rename flow. undefined = nothing to change. Fool-proof (V3):
+ *  past the 50-char ceiling is a yellow inline message and the prompt RE-ASKS
+ *  (the current name stays in the bracket) instead of failing after the fact. */
 async function promptPublicName(
   env: HandlerEnv,
   readLine?: (env: HandlerEnv, question: string) => Promise<string>,
 ): Promise<string | undefined> {
   const loc = env.locale?.() ?? resolveLocale();
   const config = readRenameBridgeConfig();
-  const answer = await promptDefault(env, t(loc, "prompt.rename.question"), config.agentName, readLine);
-  if (answer.kind === "cancel") {
-    env.stdout(`${t(loc, "prompt.cancel")}\n`);
-    return undefined;
+  for (;;) {
+    const answer = await promptDefault(env, t(loc, "prompt.rename.question"), config.agentName, readLine);
+    if (answer.kind === "cancel") {
+      env.stdout(`${t(loc, "prompt.cancel")}\n`);
+      return undefined;
+    }
+    if (answer.kind === "keep") {
+      env.stdout(`${t(loc, "prompt.keep", { value: config.agentName })}\n`);
+      return undefined;
+    }
+    if (answer.value.length > RENAME_MAX_CHARS) {
+      env.stdout(`${createAnsi().yellow(t(loc, "prompt.rename.too_long", { max: RENAME_MAX_CHARS }))}\n`);
+      continue;
+    }
+    return answer.value;
   }
-  if (answer.kind === "keep") {
-    env.stdout(`${t(loc, "prompt.keep", { value: config.agentName })}\n`);
-    return undefined;
-  }
-  return answer.value;
 }
 
 /** readBridgeConfig, with the expected local-config failures mapped to a

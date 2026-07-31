@@ -93,6 +93,7 @@ function harness(
     matchingPaused?: () => boolean;
     dailyCap?: () => number | undefined;
     autoGames?: () => readonly string[];
+    serviceInstalled?: boolean;
     onDispatch?: (cmd: string) => void;
     linePrompt?: boolean;
     statusBox?: MenuDeps["statusBox"];
@@ -146,6 +147,7 @@ function harness(
       ...(opts?.matchingPaused !== undefined ? { matchingPaused: opts.matchingPaused } : {}),
       ...(opts?.dailyCap !== undefined ? { dailyCap: opts.dailyCap } : {}),
       ...(opts?.autoGames !== undefined ? { autoGames: opts.autoGames } : {}),
+      ...(opts?.serviceInstalled !== undefined ? { serviceInstalled: opts.serviceInstalled } : {}),
       ...(opts?.claim !== undefined ? { claim: opts.claim } : {}),
       ...(opts?.statusBox !== undefined ? { statusBox: opts.statusBox } : {}),
     },
@@ -154,19 +156,41 @@ function harness(
 }
 
 describe("interactive menu", () => {
-  it("first run (unconfigured) + yes → dispatches setup", async () => {
-    const h = harness(["y"], { configured: false });
+  it("first run (unconfigured) runs the guided setup inline — no prompt gate (V3)", async () => {
+    const h = harness([], { configured: false });
     const code = await runInteractiveMenu(h.deps);
     expect(code).toBe(0);
     expect(h.dispatched).toEqual([{ cmd: "setup", positional: [] }]);
   });
 
-  it("first run (unconfigured) + no → no dispatch, points to setup", async () => {
-    const h = harness(["n"], { configured: false });
+  it("first run: a setup that left no identity exits with the next-step hints (en+zh)", async () => {
+    const h = harness([], { configured: false });
     const code = await runInteractiveMenu(h.deps);
     expect(code).toBe(0);
-    expect(h.dispatched).toEqual([]);
-    expect(h.out()).toContain("aifight setup");
+    expect(h.out()).toContain("starting the guided setup");
+    expect(h.out()).toContain("run `aifight setup` any time");
+    // No panel was drawn — there is nothing to show without an identity.
+    expect(h.frames).toEqual([]);
+
+    const hz = harness([], { configured: false, locale: () => "zh" as const });
+    await runInteractiveMenu(hz.deps);
+    expect(hz.out()).toContain("开始向导式初始化");
+    expect(hz.out()).toContain("随时运行 aifight setup 继续");
+  });
+
+  it("first run: a successful setup continues straight into the panel", async () => {
+    const h = harness(["q"], {
+      configured: false,
+      onDispatch: (cmd) => {
+        if (cmd === "setup") seedBridge(); // the real setup leaves bridge.json behind
+      },
+    });
+    const code = await runInteractiveMenu(h.deps);
+    expect(code).toBe(0);
+    expect(h.dispatched).toEqual([{ cmd: "setup", positional: [] }]);
+    expect(h.out()).toContain("Setup complete");
+    // ...and the panel loop ran: one frame was offered to the chooser.
+    expect(h.frames.length).toBeGreaterThan(0);
   });
 
   it("picks status then quits", async () => {
@@ -183,7 +207,7 @@ describe("interactive menu", () => {
   });
 
   it("rename prompts for a name and dispatches it joined", async () => {
-    const h = harness(["9", "Dark Knight", "q"]);
+    const h = harness(["10", "Dark Knight", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "rename", positional: ["Dark Knight"] }]);
   });
@@ -216,14 +240,14 @@ describe("interactive menu", () => {
   });
 
   it("update dispatches the update command", async () => {
-    const h = harness(["12", "q"]);
+    const h = harness(["13", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "update", positional: [] }]);
     expect(h.helpShown).toBe(false);
   });
 
-  it("telegram is item 10 (not 0, which quits) and dispatches bare", async () => {
-    const h = harness(["10", "q"]);
+  it("telegram is item 11 (not 0, which quits) and dispatches bare", async () => {
+    const h = harness(["11", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "telegram", positional: [] }]);
   });
@@ -235,15 +259,15 @@ describe("interactive menu", () => {
     expect(h.dispatched).toEqual([]);
   });
 
-  it("help (item 15) calls showHelp", async () => {
-    const h = harness(["15", "q"]);
+  it("help (item 16) calls showHelp", async () => {
+    const h = harness(["16", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.helpShown).toBe(true);
     expect(h.dispatched).toEqual([]);
   });
 
-  it("config (item 13) shows the current settings", async () => {
-    const h = harness(["13", "q"]);
+  it("config (item 14) shows the current settings", async () => {
+    const h = harness(["14", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "config", positional: ["show"] }]);
   });
@@ -348,7 +372,7 @@ describe("claim reminder", () => {
   });
 
   it("the claim item hands back the link", async () => {
-    const h = harness(["11", "q"], { claim: PENDING });
+    const h = harness(["12", "q"], { claim: PENDING });
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([]); // purely local — no command to run
     expect(h.out()).toContain("https://aifight.ai/claim/abc123");
@@ -361,7 +385,7 @@ describe("claim reminder", () => {
   });
 
   it("a claimed agent picking the claim item is pointed at the Dashboard", async () => {
-    const h = harness(["11", "q"], { claim: { pending: false } });
+    const h = harness(["12", "q"], { claim: { pending: false } });
     await runInteractiveMenu(h.deps);
     expect(h.out()).toContain("already claimed");
     expect(h.out()).toContain("/dashboard");
@@ -372,6 +396,33 @@ describe("claim reminder", () => {
     await runInteractiveMenu(h.deps);
     expect(h.out()).not.toContain("NOT CLAIMED");
     expect(h.out()).toContain("what would you like to do?");
+  });
+});
+
+// V3 ③: configured but no aifight.service — the bridge dies when the window
+// closes. One gentle yellow banner line per repaint, no nag dialogs.
+describe("service-not-installed hint", () => {
+  it("adds the banner line when the service is not installed", async () => {
+    const h = harness(["q"], { serviceInstalled: false });
+    await runInteractiveMenu(h.deps);
+    expect(h.frames[0]?.banner.some((l) => l.includes("service not installed"))).toBe(true);
+    expect(h.out()).toContain("aifight service install");
+  });
+
+  it("stays away when the service is installed, or its state is unknown", async () => {
+    const installed = harness(["q"], { serviceInstalled: true });
+    await runInteractiveMenu(installed.deps);
+    expect(installed.frames[0]?.banner.some((l) => l.includes("service not installed"))).toBe(false);
+
+    const unknown = harness(["q"]); // dep omitted = probe failed
+    await runInteractiveMenu(unknown.deps);
+    expect(unknown.frames[0]?.banner.some((l) => l.includes("service not installed"))).toBe(false);
+  });
+
+  it("is translated (zh)", async () => {
+    const h = harness(["q"], { serviceInstalled: false, locale: () => "zh" as const });
+    await runInteractiveMenu(h.deps);
+    expect(h.frames[0]?.banner.some((l) => l.includes("未安装 service"))).toBe(true);
   });
 });
 
@@ -417,18 +468,51 @@ describe("one menu, two doors", () => {
     expect(h.dispatched).toEqual([{ cmd: "config", positional: ["llm"] }]);
   });
 
-  it("offers the bridge restart once on the way out, not per edit", async () => {
+  it("offers the bridge restart once on the way out, not per edit (LLM config writes)", async () => {
     seedBridge({ autoGames: ["coup"] });
     const dir = process.env.AIFIGHT_RUNTIME_HOME!;
     fs.writeFileSync(path.join(dir, "port"), "45995", { mode: 0o644 });
-    const old = new Date("2020-01-01T00:00:00Z");
-    fs.utimesSync(path.join(dir, "port"), old, old);
+    const started = new Date("2020-01-02T00:00:00Z");
+    fs.utimesSync(path.join(dir, "port"), started, started);
+    // bridge.json OLDER than the port — nothing pending from the seed itself;
+    // only the LLM write below may arm the offer.
+    const before = new Date("2020-01-01T00:00:00Z");
+    fs.utimesSync(path.join(dir, "bridge.json"), before, before);
+    // Two LLM-profile writes back to back (what the item-5 wizard does): the
+    // ONLY class that still arms the offer after V3 — daily cap / games /
+    // pause / locale / declared-model are all live without a restart now.
+    const profileDir = path.join(process.env.AIFIGHT_HOME!, "agents", "default");
+    fs.mkdirSync(profileDir, { recursive: true });
+    const llmConfig = path.join(profileDir, "config.json");
+    fs.writeFileSync(llmConfig, "{}");
+    fs.writeFileSync(llmConfig, "{}\n");
 
-    const h = harness(["7", "texas_holdem", "7", "coup,liars_dice", "q"]);
+    const h = harness(["q"]);
     await runInteractiveMenu(h.deps);
 
     const offers = h.out().match(/service restart|next time it starts/g) ?? [];
     expect(offers.length, "the owner's complaint was being told three times in a row").toBe(1);
+  });
+
+  it("daily/games edits no longer arm the restart offer at all (V3 connect-edge)", async () => {
+    // Isolate from the LLM-write test above (they share the file's AIFIGHT_HOME).
+    fs.rmSync(path.join(process.env.AIFIGHT_HOME!, "agents"), { recursive: true, force: true });
+    seedBridge({ autoGames: ["coup"] });
+    const dir = process.env.AIFIGHT_RUNTIME_HOME!;
+    fs.writeFileSync(path.join(dir, "port"), "45995", { mode: 0o644 });
+    const started = new Date("2020-01-02T00:00:00Z");
+    fs.utimesSync(path.join(dir, "port"), started, started);
+    // bridge.json older than the port: any offer after the games edit can only
+    // come from THAT write — and V3 says there must be none.
+    const before = new Date("2020-01-01T00:00:00Z");
+    fs.utimesSync(path.join(dir, "bridge.json"), before, before);
+
+    const h = harness(["7", "texas_holdem", "q"]);
+    await runInteractiveMenu(h.deps);
+
+    expect(h.out()).toContain("Automatic match games set to: texas_holdem");
+    const offers = h.out().match(/service restart|next time it starts/g) ?? [];
+    expect(offers.length).toBe(0);
   });
 });
 
@@ -531,7 +615,7 @@ describe("live hints (V2)", () => {
     const h = harness(["q"]);
     await runInteractiveMenu(h.deps);
     const frame = h.frames[0]!;
-    const update = frame.choices.find((c) => c.key === "12")!;
+    const update = frame.choices.find((c) => c.key === "13")!;
     expect(update.main).toBe("Update");
     expect(update.hint).toBe("check & update");
     expect(update.hintTone ?? "dim").toBe("dim");
@@ -546,10 +630,10 @@ describe("live hints (V2)", () => {
     };
     const h = harness(["q"], { statusBox: provider });
     await runInteractiveMenu(h.deps);
-    const update = h.frames[0]!.choices.find((c) => c.key === "12")!;
+    const update = h.frames[0]!.choices.find((c) => c.key === "13")!;
     expect(update.hint).toBe("↑ 0.1.0-beta.41 available");
     expect(update.hintTone).toBe("yellow");
-    expect(h.out()).toContain("12) Update — ↑ 0.1.0-beta.41 available");
+    expect(h.out()).toContain("13) Update — ↑ 0.1.0-beta.41 available");
   });
 });
 
@@ -557,33 +641,34 @@ describe("live hints (V2)", () => {
 // These pin its shape so the interactive presentation cannot quietly lose the
 // Quit row or stale a dynamic label.
 describe("menu frame handed to the chooser", () => {
-  it("offers Quit as the last selectable row, after all 15 actions", async () => {
+  it("offers Quit as the last selectable row, after all 16 actions", async () => {
     const h = harness(["q"]);
     await runInteractiveMenu(h.deps);
     expect(h.frames).toHaveLength(1);
     const choices = h.frames[0]!.choices;
-    expect(choices).toHaveLength(16);
-    expect(choices[15]).toEqual({ key: "q", main: "Quit" });
+    expect(choices).toHaveLength(17);
+    expect(choices[16]).toEqual({ key: "q", main: "Quit" });
     expect(choices.map((c) => c.key)).toEqual([
-      "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "q",
+      "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "q",
     ]);
   });
 
-  it("carries the V2 order and the two-tone main/hint split", async () => {
+  it("carries the final V3 order (Profile at 9) and the two-tone main/hint split", async () => {
     seedBridge();
     const h = harness(["q"], { dailyCap: () => 5, autoGames: () => ["coup"] });
     await runInteractiveMenu(h.deps);
     const mains = h.frames[0]!.choices.map((c) => c.main);
     expect(mains).toEqual([
       "Play", "Pause", "Status", "Record", "LLM", "Daily cap", "Games",
-      "Strategy", "Rename", "Telegram", "Claim", "Update", "Config", "Language", "Help", "Quit",
+      "Strategy", "Profile", "Rename", "Telegram", "Claim", "Update", "Config", "Language", "Help", "Quit",
     ]);
     const byKey = new Map(h.frames[0]!.choices.map((c) => [c.key, c]));
     expect(byKey.get("1")).toMatchObject({ main: "Play", hint: "request a ranked match" });
     expect(byKey.get("6")).toMatchObject({ main: "Daily cap", hint: "auto matches [5/day]" });
     expect(byKey.get("7")).toMatchObject({ main: "Games", hint: "auto-play [1 selected]" });
-    expect(byKey.get("14")).toMatchObject({ main: "Language", hint: "switch to 中文" });
-    expect(byKey.get("15")).toMatchObject({ main: "Help", hint: "full command list" });
+    expect(byKey.get("9")).toMatchObject({ main: "Profile", hint: "switch agent identity" });
+    expect(byKey.get("15")).toMatchObject({ main: "Language", hint: "switch to 中文" });
+    expect(byKey.get("16")).toMatchObject({ main: "Help", hint: "full command list" });
   });
 
   it("carries the NOT CLAIMED banner in the frame, not just in text", async () => {

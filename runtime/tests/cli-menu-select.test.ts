@@ -48,14 +48,14 @@ function makeEnv(): { env: HandlerEnv; out: () => string } {
   return { env, out: () => chunks.join("") };
 }
 
-/** The real panel's shape: 15 numbered actions + the Quit row (V2 + the
- *  Language item, 2026-07-31). */
+/** The real panel's shape: 16 numbered actions + the Quit row (V3 final
+ *  layout — Profile inserted at 9, 2026-07-31). */
 function frame(over: Partial<MenuFrame> = {}): MenuFrame {
   return {
     title: "AIFight — what would you like to do?",
     banner: [],
     choices: [
-      ...Array.from({ length: 15 }, (_, i) => ({
+      ...Array.from({ length: 16 }, (_, i) => ({
         key: String(i + 1),
         main: `Action ${i + 1}`,
         hint: `does thing ${i + 1}`,
@@ -299,6 +299,23 @@ describe("two-column navigation", () => {
       const { env } = makeEnv();
       const picked = selectMenuKey(env, frame(), stdin, { ansi: PLAIN });
       stdin.press("\x1b[C"); // → ignored: one column only
+      stdin.press("\r");
+      await expect(picked).resolves.toBe("1");
+    });
+  });
+
+  it("singleColumn: true renders one row per choice even on a wide terminal (V3 submenu)", async () => {
+    await withColumns(100, async () => {
+      const stdin = fakeStdin();
+      const { env, out } = makeEnv();
+      const picked = selectMenuKey(env, frame(), stdin, { ansi: PLAIN, singleColumn: true });
+      await Promise.resolve(); // first paint
+      const row1 = out().split("\n").find((l) => l.includes("1) Action 1"))!;
+      // Two-column mode would put "9) Action 9" on the same line; the forced
+      // layout (the profile submenu's) must not — and → is a no-op there.
+      expect(row1).not.toContain("9)");
+      expect(out().split("\n").filter((l) => l.includes(") Action ")).length).toBe(16);
+      stdin.press("\x1b[C"); // → ignored
       stdin.press("\r");
       await expect(picked).resolves.toBe("1");
     });

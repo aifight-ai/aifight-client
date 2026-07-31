@@ -16,8 +16,9 @@
 //
 // Because the running bridge picks the flag up by itself and the control API
 // syncs the live queue immediately, neither command needs a bridge restart —
-// that is why they never print a restart hint (unlike `aifight set daily`,
-// whose value the bridge reads only at startup).
+// that is why they never print a restart hint. The daily cap and game list
+// learned the same connect-edge re-read in V3 (runner #autoJoinDecision), so
+// `aifight set daily` / `aifight set game` no longer need one either.
 
 import { pickAutomaticGame } from "../../bridge/auto-join";
 import { readBridgeConfig, writeBridgeConfig, type BridgeConfig } from "../../bridge/config";
@@ -61,11 +62,14 @@ export async function runBridgePause(
     await leaveViaPlatform(config, env);
   }
 
-  // NOT preserveMtime: this flag changes what a running bridge does, so the
-  // write is not behavior-neutral — and when an OLDER bridge (without the
-  // connect-edge pause check) is the one running, the mtime bump is exactly
-  // what lets the menu offer the restart that version genuinely needs.
-  writeBridgeConfig({ ...config, matchingPaused: true, updatedAt: new Date().toISOString() });
+  // preserveMtime (V3 重启精确化): a running bridge reads this flag fresh at
+  // every connect edge and the control-plane leave above already synced the
+  // live queue, so the change is live RIGHT NOW — it must not read as
+  // "restart pending" to the menu's once-at-the-end offer.
+  writeBridgeConfig(
+    { ...config, matchingPaused: true, updatedAt: new Date().toISOString() },
+    { preserveMtime: true },
+  );
 
   if (args.jsonMode) {
     env.stdout(JSON.stringify({
@@ -106,9 +110,11 @@ export async function runBridgeResume(
   // Clear the flag first so the pause is lifted even when the re-join below
   // cannot be delivered (bridge down, control hiccup) — the flag is the
   // persistent state; the join is best-effort on top of it.
+  // preserveMtime (V3 重启精确化): the running bridge re-reads the flag at
+  // every connect edge, so this is live already — no restart pending.
   const { matchingPaused: _dropped, ...rest } = config;
   const cleared: BridgeConfig = { ...rest, updatedAt: new Date().toISOString() };
-  writeBridgeConfig(cleared);
+  writeBridgeConfig(cleared, { preserveMtime: true });
 
   // Mirror the startup auto-join (automaticJoinOptions): a random pick from
   // the configured games, ranked, NOT one-shot. A daily cap of 0 means

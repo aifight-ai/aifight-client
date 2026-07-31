@@ -41,6 +41,7 @@ const KNOWN_CONFIG_SUBS: readonly string[] = [
 ];
 import { runBridgeSet, SETUP_WIZARD_CAP_MAX } from "./bridge-set.js";
 import { readBridgeConfig } from "../../bridge/config.js";
+import { createAnsi } from "../ansi.js";
 import { resolveAgentDir } from "../../profile/profile-loader.js";
 import { resolveModelCapabilities } from "../../llm/capabilities/validate-capabilities.js";
 import { validateConfig, type LLMConfig, type SecretRef as ConfigSecretRef } from "../../profile/config-schema.js";
@@ -409,17 +410,26 @@ export async function configureDailyInteractive(io: PromptOnlyIO, env: HandlerEn
     return;
   }
   const shown = current === undefined ? "server default" : String(current);
-  const raw = (await io.promptLine(`  Automatic ranked matches per day [keep ${shown}, 0-${SETUP_WIZARD_CAP_MAX}, 0 = off]: `)).trim();
-  if (raw === "") {
-    env.stdout(`  Kept ${shown}.\n`);
+  // Fool-proof (V3): an invalid answer is explained and the prompt RE-ASKS —
+  // the current value stays in the bracket; Enter keeps it, q/Esc cancels.
+  for (;;) {
+    const raw = (await io.promptLine(`  Automatic ranked matches per day [keep ${shown}, 0-${SETUP_WIZARD_CAP_MAX}, 0 = off]: `)).trim();
+    if (raw === "") {
+      env.stdout(`  Kept ${shown}.\n`);
+      return;
+    }
+    if (raw === "q" || raw === "Q" || raw.includes("\x1b")) {
+      env.stdout("  No changes made.\n");
+      return;
+    }
+    if (!/^\d+$/.test(raw) || Number.parseInt(raw, 10) > SETUP_WIZARD_CAP_MAX) {
+      env.stdout(`${createAnsi().yellow(`  Enter a whole number between 0 and ${SETUP_WIZARD_CAP_MAX}.`)}\n`);
+      continue;
+    }
+    // Delegate to `set daily`: it owns the >10 confirmation and the platform sync.
+    await runBridgeSet({ positional: ["daily", raw], flags: {}, jsonMode: false }, env);
     return;
   }
-  if (!/^\d+$/.test(raw) || Number.parseInt(raw, 10) > SETUP_WIZARD_CAP_MAX) {
-    env.stdout(`  Enter a whole number between 0 and ${SETUP_WIZARD_CAP_MAX}.\n`);
-    return;
-  }
-  // Delegate to `set daily`: it owns the >10 confirmation and the platform sync.
-  await runBridgeSet({ positional: ["daily", raw], flags: {}, jsonMode: false }, env);
 }
 
 export async function configureGamesInteractive(io: PromptOnlyIO, env: HandlerEnv): Promise<void> {

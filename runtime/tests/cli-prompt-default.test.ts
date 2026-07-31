@@ -171,6 +171,34 @@ describe("bare `aifight set daily` (interactive)", () => {
     expect(out()).toContain("Enter a whole number");
   });
 
+  it("an invalid number RE-ASKS (current value still in the bracket), then accepts", async () => {
+    seedBridge({ autoDailyLimit: 2 });
+    const { env, out } = makeEnv();
+    const asked: string[] = [];
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ policy: { max_games_per_day: 7, auto_requeue: true } }), { status: 200 })) as typeof fetch;
+    const code = await runSetDailyInteractive(args, { ...env, fetchImpl }, reader(["lots", "150", "7"], asked));
+    expect(code).toBe(0);
+    // All three prompts kept the current value in the bracket — no error-out.
+    expect(asked).toEqual([
+      "Daily cap (0-100, 0 = off) [2]: ",
+      "Daily cap (0-100, 0 = off) [2]: ",
+      "Daily cap (0-100, 0 = off) [2]: ",
+    ]);
+    expect(out().match(/Enter a whole number/g)).toHaveLength(2);
+    expect(readBridgeConfig().autoDailyLimit).toBe(7);
+  });
+
+  it("an invalid number then q cancels, changing nothing", async () => {
+    seedBridge({ autoDailyLimit: 2 });
+    const { env, out } = makeEnv();
+    const code = await runSetDailyInteractive(args, env, reader(["lots", "q"], []));
+    expect(code).toBe(0);
+    expect(readBridgeConfig().autoDailyLimit).toBe(2);
+    expect(out()).toContain("Enter a whole number");
+    expect(out()).toContain("No changes made.");
+  });
+
   it("shows 'server default' when no cap was ever set", async () => {
     seedBridge();
     writeBridgeConfig((() => {
@@ -187,33 +215,51 @@ describe("bare `aifight set daily` (interactive)", () => {
 describe("bare `aifight set game` (interactive)", () => {
   const args: HandlerArgs = { positional: ["game"], flags: {}, jsonMode: false };
 
-  it("asks with the current games as the default; a comma list sets them", async () => {
+  it("the picker is offered the current selection; its picks are written", async () => {
     seedBridge({ autoGames: ["coup"] });
     const { env, out } = makeEnv();
-    const asked: string[] = [];
-    const code = await runSetGamesInteractive(args, env, reader(["texas_holdem, coup"], asked));
+    let offered: readonly string[] = [];
+    const code = await runSetGamesInteractive(args, env, (_e, current) => {
+      offered = current;
+      return Promise.resolve(["texas_holdem", "coup"]);
+    });
     expect(code).toBe(0);
-    expect(asked[0]).toContain("[coup]: ");
+    expect(offered).toEqual(["coup"]);
     expect(readBridgeConfig().autoGames).toEqual(["texas_holdem", "coup"]);
     expect(out()).toContain("Automatic match games set to: texas_holdem, coup");
   });
 
-  it("Enter keeps the current games", async () => {
-    seedBridge({ autoGames: ["coup"] });
-    const { env, out } = makeEnv();
-    const code = await runSetGamesInteractive(args, env, reader([""], []));
-    expect(code).toBe(0);
-    expect(readBridgeConfig().autoGames).toEqual(["coup"]);
-    expect(out()).toContain("Kept coup.");
+  it("an unset preference pre-checks ALL supported games", async () => {
+    seedBridge();
+    writeBridgeConfig((() => {
+      const { autoGames: _dropped, ...rest } = readBridgeConfig();
+      return rest;
+    })() as never);
+    const { env } = makeEnv();
+    let offered: readonly string[] = [];
+    await runSetGamesInteractive(args, env, (_e, current) => {
+      offered = current;
+      return Promise.resolve(null);
+    });
+    expect(offered).toEqual(["texas_holdem", "liars_dice", "coup"]);
   });
 
-  it("Esc cancels without changes", async () => {
+  it("cancelling the picker changes nothing", async () => {
     seedBridge({ autoGames: ["coup"] });
     const { env, out } = makeEnv();
-    const code = await runSetGamesInteractive(args, env, reader(["\x1b"], []));
+    const code = await runSetGamesInteractive(args, env, () => Promise.resolve(null));
     expect(code).toBe(0);
     expect(readBridgeConfig().autoGames).toEqual(["coup"]);
     expect(out()).toContain("No changes made.");
+  });
+
+  it("an empty selection (a picker bypassing the checkbox guard) is refused without writing", async () => {
+    seedBridge({ autoGames: ["coup"] });
+    const { env, out } = makeEnv();
+    const code = await runSetGamesInteractive(args, env, () => Promise.resolve([]));
+    expect(code).toBe(0);
+    expect(readBridgeConfig().autoGames).toEqual(["coup"]);
+    expect(out()).toContain("select at least 1");
   });
 });
 
@@ -239,6 +285,24 @@ describe("bare `aifight rename` (interactive)", () => {
     seedBridge({ agentName: "Phantom Maverick" });
     const { env, out } = makeEnv();
     const name = await runRenameInteractive(env, reader(["q"], []));
+    expect(name).toBeUndefined();
+    expect(out()).toContain("No changes made.");
+  });
+
+  it("over 50 chars re-asks with a hint, then accepts a shorter name", async () => {
+    seedBridge({ agentName: "Phantom Maverick" });
+    const { env, out } = makeEnv();
+    const asked: string[] = [];
+    const name = await runRenameInteractive(env, reader(["N".repeat(60), "Dark Knight"], asked));
+    expect(asked).toEqual(["Public name [Phantom Maverick]: ", "Public name [Phantom Maverick]: "]);
+    expect(out()).toContain("50");
+    expect(name).toBe("Dark Knight");
+  });
+
+  it("over 50 chars then q cancels — nothing to change", async () => {
+    seedBridge({ agentName: "Phantom Maverick" });
+    const { env, out } = makeEnv();
+    const name = await runRenameInteractive(env, reader(["N".repeat(60), "q"], []));
     expect(name).toBeUndefined();
     expect(out()).toContain("No changes made.");
   });

@@ -283,10 +283,10 @@ describe("applyPendingBridgeRestart", () => {
       .toBe("restarted");
   });
 
-  it("is wired into `aifight set game`, which writes bridge.json too", async () => {
-    // Owner's actual complaint was about Telegram, but `set daily` / `set game`
-    // have exactly the same problem: they write bridge.json and the running
-    // bridge keeps its old copy. Both must go through the same apply path.
+  it("`aifight set game` saves with the connect-edge truth — no restart hint (V3)", async () => {
+    // V3 重启精确化: the running bridge re-reads the games list at every
+    // connect edge, so `set game` no longer reaches the apply path at all —
+    // the after-save line states the truth instead of offering a restart.
     const home = homeWithPendingEdit({ pending: false });
     const calls: string[][] = [];
     const out: string[] = [];
@@ -304,10 +304,8 @@ describe("applyPendingBridgeRestart", () => {
       autoGames: ["coup"],
       updatedAt: "2026-07-27T00:00:00.000Z",
     };
-    writeBridgeConfig(config); // fresh mtime > the port file's → pending
-    // Keep the port file firmly in the past so "started before the edit" holds.
-    const old = new Date("2020-01-01T00:00:00Z");
-    fs.utimesSync(path.join(home, "port"), old, old);
+    writeBridgeConfig(config);
+    const mtimeBefore = fs.statSync(path.join(home, "bridge.json")).mtimeMs;
 
     const rc = await runBridgeSet(
       { positional: ["game", "texas_holdem"], flags: {}, jsonMode: false },
@@ -315,9 +313,56 @@ describe("applyPendingBridgeRestart", () => {
     );
 
     expect(rc).toBe(0);
-    // stdin is not a TTY under vitest, so it degrades to the hint — but it DID
-    // reach the apply path, which is what used to be missing entirely.
-    expect(out.join("")).toContain("aifight service restart");
+    expect(out.join("")).toContain("Automatic match games set to: texas_holdem");
+    // No bridge seat in this test home → the "next start" variant of the truth.
+    expect(out.join("")).toContain("applies on next bridge start");
+    expect(out.join("")).not.toContain("service restart");
+    // And the write must not arm the menu's restart offer: preserveMtime
+    // restored the pre-write mtime (sub-ms filesystem precision noise aside —
+    // a real bump lands milliseconds-to-seconds in the future).
+    const mtimeAfter = fs.statSync(path.join(home, "bridge.json")).mtimeMs;
+    expect(Math.abs(mtimeAfter - mtimeBefore)).toBeLessThan(2);
+  });
+
+  it("an LLM profile config saved after the bridge started counts as pending (V3)", () => {
+    homeWithPendingEdit({ pending: false });
+    const prev = process.env.AIFIGHT_HOME;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aifight-apply-llm-"));
+    tmpDirs.push(dir);
+    process.env.AIFIGHT_HOME = dir;
+    try {
+      const profileDir = path.join(dir, "agents", "default");
+      fs.mkdirSync(profileDir, { recursive: true });
+      const cfg = path.join(profileDir, "config.json");
+      fs.writeFileSync(cfg, "{}");
+      // The port file sits at 2026-07-29T10:00 — this edit lands after it.
+      const saved = new Date("2026-07-29T10:05:00Z");
+      fs.utimesSync(cfg, saved, saved);
+      expect(bridgeRestartPending()).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.AIFIGHT_HOME;
+      else process.env.AIFIGHT_HOME = prev;
+    }
+  });
+
+  it("an LLM profile config that predates the bridge start is not pending", () => {
+    homeWithPendingEdit({ pending: false });
+    const prev = process.env.AIFIGHT_HOME;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aifight-apply-llm-"));
+    tmpDirs.push(dir);
+    process.env.AIFIGHT_HOME = dir;
+    try {
+      const profileDir = path.join(dir, "agents", "default");
+      fs.mkdirSync(profileDir, { recursive: true });
+      const cfg = path.join(profileDir, "config.json");
+      fs.writeFileSync(cfg, "{}");
+      const saved = new Date("2026-07-29T09:55:00Z");
+      fs.utimesSync(cfg, saved, saved);
+      expect(bridgeRestartPending()).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.AIFIGHT_HOME;
+      else process.env.AIFIGHT_HOME = prev;
+    }
   });
 
   it("reports a failed restart on stderr and keeps the saved setting", async () => {

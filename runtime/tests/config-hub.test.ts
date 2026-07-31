@@ -218,28 +218,33 @@ describe("panel — settings items carried over from the config hub", () => {
   it("show-current-config is reachable from the panel", async () => {
     useTempHome();
     seed();
-    const h = harness(["13", "q"]);
+    const h = harness(["14", "q"]);
 
     await runInteractiveMenu(h.deps);
 
     expect(h.dispatched).toEqual([{ cmd: "config", positional: ["show"] }]);
   });
 
-  it("offers the restart once on the way out, not after every edit", async () => {
+  it("games edits apply but no longer arm a restart offer (V3 connect-edge)", async () => {
     const dir = useTempHome();
     seed({ autoGames: ["coup"] });
     // A port file older than every write = "a bridge is running with stale
-    // settings", which is what turns the offer on at all.
+    // settings", which is what used to turn the offer on at all. V3: the
+    // running bridge re-reads the games list at every connect edge, so no
+    // restart is involved — and bridge.json predates the port, so any offer
+    // could only come from the edits below.
     fs.writeFileSync(path.join(dir, "port"), "45995", { mode: 0o644 });
-    const old = new Date("2020-01-01T00:00:00Z");
-    fs.utimesSync(path.join(dir, "port"), old, old);
+    const started = new Date("2020-01-02T00:00:00Z");
+    fs.utimesSync(path.join(dir, "port"), started, started);
+    const before = new Date("2020-01-01T00:00:00Z");
+    fs.utimesSync(path.join(dir, "bridge.json"), before, before);
     const h = harness(["7", "texas_holdem", "7", "coup,liars_dice", "q"]);
 
     await runInteractiveMenu(h.deps);
 
     expect(readBridgeConfig().autoGames).toEqual(["coup", "liars_dice"]);
     const offers = h.out().match(/service restart|next time it starts/g) ?? [];
-    expect(offers.length).toBe(1);
+    expect(offers.length).toBe(0);
   });
 
   it("a failing step is caught and the panel stays open", async () => {

@@ -10,14 +10,14 @@
 //   * an optional boxed STATUS banner above the title (╭─ title ──╮ rounded
 //     when colors are on, a plain ASCII +-+ frame when they are not);
 //   * a TWO-COLUMN numbered layout on terminals wide enough, column-major so
-//     the item numbers never move (1-7 left, 8-14 + Quit right).
+//     the item numbers never move (1-8 left, 9-16 + Quit right).
 // 2026-07-31 V2: two-tone rows (cyan-bold main word + dim hint) and a fixed
 // THREE-line banner whose middle line is the matching state.
 
 import { visibleWidth, type Ansi } from "../ansi.js";
 
 export interface MenuFrameChoice {
-  /** "1".."14" for actions, "q" for the Quit row. */
+  /** "1".."16" for actions, "q" for the Quit row. */
   readonly key: string;
   /** The action word ("Play", "Daily cap") — rendered cyan-bold (V2,
    *  2026-07-31: two-tone rows, owner decision ②). */
@@ -50,6 +50,10 @@ export interface MenuFrame {
   /** Warning lines drawn above the title (today: the NOT CLAIMED banner).
    *  Empty when there is nothing to warn about. */
   readonly banner: readonly string[];
+  /** Plain (unstyled) info lines between the title and the choices — the
+   *  profile submenu's "Active: <name> (<id> · <model>)" header (V3 ④).
+   *  Unlike `banner` these are not warnings, so they are not yellow. */
+  readonly subheader?: readonly string[];
   readonly choices: readonly MenuFrameChoice[];
   /** The 3x-ui-style status box above everything. Absent when there is no
    *  local identity to describe (first run) — the panel's first-run guidance
@@ -77,8 +81,8 @@ export interface ColumnLayout {
 
 /**
  * Column-major split, 3x-ui style: the left column takes the first floor(n/2)
- * choices, the right column the rest — for the panel's 15 rows that is 1-7 on
- * the left and 8-14 + Quit on the right. The split is a pure function of the
+ * choices, the right column the rest — for the panel's 17 rows that is 1-8 on
+ * the left and 9-16 + Quit on the right. The split is a pure function of the
  * choice count, so the mapping number → position is stable and muscle memory
  * survives resizes.
  */
@@ -97,8 +101,9 @@ export function columnLayout(choiceCount: number, width: number): ColumnLayout {
 /** Truncate plain text to `budget` VISIBLE columns, ellipsis included. Cuts
  *  by display width (CJK/fullwidth = 2 columns): a wide character that would
  *  cross the budget is dropped whole and the ellipsis takes the last column,
- *  so the result never exceeds budget nor leaves an odd half-column. */
-function truncatePlain(s: string, budget: number): string {
+ *  so the result never exceeds budget nor leaves an odd half-column. Exported
+ *  for the multi-select picker (select-multi.ts), which truncates the same way. */
+export function truncatePlain(s: string, budget: number): string {
   if (budget <= 0) return "";
   if (visibleWidth(s) <= budget) return s;
   if (budget === 1) return "…";
@@ -210,12 +215,17 @@ function renderStatusBox(box: MenuStatusBox, ansi: Ansi, width: number): string[
  * `width` truncates every line to that many VISIBLE columns (0 = no limit).
  * The chooser passes the terminal width minus one: a wrapped line would occupy
  * two rows and silently break the "move up N lines, redraw" repaint math.
+ *
+ * `opts.singleColumn` forces the one-row-per-choice layout even on a wide
+ * terminal (the profile submenu, V3 ④): the chooser's navigation and the
+ * rendering must agree on the layout, so it flows through here too.
  */
 export function renderMenuFrame(
   frame: MenuFrame,
   selected: number,
   ansi: Ansi,
   width = 0,
+  opts: { readonly singleColumn?: boolean } = {},
 ): string[] {
   const fit = (s: string): string => (width > 0 ? truncatePlain(s, width) : s);
   const lines: string[] = [];
@@ -230,7 +240,13 @@ export function renderMenuFrame(
   if (frame.banner.length > 0) lines.push("");
   lines.push(ansi.bold(fit(frame.title)));
   lines.push("");
-  const layout = columnLayout(frame.choices.length, width);
+  if (frame.subheader !== undefined && frame.subheader.length > 0) {
+    for (const s of frame.subheader) lines.push(fit(s));
+    lines.push("");
+  }
+  const layout = opts.singleColumn === true
+    ? { columns: 1 as const, left: frame.choices.map((_, i) => i), right: [] }
+    : columnLayout(frame.choices.length, width);
   if (layout.columns === 2) {
     lines.push(...renderTwoColumns(frame.choices, selected, ansi, width, layout));
   } else {

@@ -18,14 +18,14 @@ import {
 const PLAIN = createAnsi({ enabled: false });
 const COLOR = createAnsi({ enabled: true });
 
-/** The real panel's shape: 15 numbered actions + the Quit row (V2 + the
- *  Language item, 2026-07-31). */
+/** The real panel's shape: 16 numbered actions + the Quit row (V3 final
+ *  layout — Profile inserted at 9, 2026-07-31). */
 function frame(over: Partial<MenuFrame> = {}): MenuFrame {
   return {
     title: "AIFight — what would you like to do?",
     banner: [],
     choices: [
-      ...Array.from({ length: 15 }, (_, i) => ({
+      ...Array.from({ length: 16 }, (_, i) => ({
         key: String(i + 1),
         main: `Action ${i + 1}`,
         hint: `does thing ${i + 1}`,
@@ -62,22 +62,22 @@ function statusBox(over: Partial<MenuStatusBox> = {}): MenuStatusBox {
 }
 
 describe("columnLayout", () => {
-  it("splits column-major on a wide terminal: 1-8 left, 9-15 + q right", () => {
-    const layout = columnLayout(16, 100);
+  it("splits column-major on a wide terminal: 1-8 left, 9-16 + q right", () => {
+    const layout = columnLayout(17, 100);
     expect(layout.columns).toBe(2);
     expect(layout.left).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
-    expect(layout.right).toEqual([8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(layout.right).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16]);
   });
 
   it("stays single-column below the width threshold", () => {
-    const layout = columnLayout(16, TWO_COLUMN_MIN_WIDTH - 1);
+    const layout = columnLayout(17, TWO_COLUMN_MIN_WIDTH - 1);
     expect(layout.columns).toBe(1);
-    expect(layout.left).toHaveLength(16);
+    expect(layout.left).toHaveLength(17);
     expect(layout.right).toHaveLength(0);
   });
 
   it("stays single-column when the width is unknown (0)", () => {
-    expect(columnLayout(16, 0).columns).toBe(1);
+    expect(columnLayout(17, 0).columns).toBe(1);
   });
 
   it("stays single-column for tiny menus even on a wide terminal", () => {
@@ -86,18 +86,20 @@ describe("columnLayout", () => {
 });
 
 describe("two-column rendering", () => {
-  it("draws 8 rows: items 1-8 left, 9-15 + Quit right", () => {
+  it("draws 9 rows: items 1-8 left, 9-16 + Quit right", () => {
     const lines = renderMenuFrame(frame(), -1, PLAIN, 100);
-    // Layout: title, blank, then the 8 choice rows.
+    // Layout: title, blank, then the 9 choice rows.
     const rows = lines.slice(2);
-    expect(rows).toHaveLength(8);
+    expect(rows).toHaveLength(9);
     expect(stripAnsi(rows[0]!)).toContain("1) Action 1 — does thing 1");
     expect(stripAnsi(rows[0]!)).toContain("9) Action 9 — does thing 9");
     expect(stripAnsi(rows[6]!)).toContain("7) Action 7");
     expect(stripAnsi(rows[6]!)).toContain("15) Action 15");
-    // The last row pairs the left column's item 8 with the right's Quit cell.
+    // Item 8 pairs with 16 on the last full row; Quit sits alone below.
     expect(stripAnsi(rows[7]!)).toContain("8) Action 8");
-    expect(stripAnsi(rows[7]!)).toContain("q) Quit");
+    expect(stripAnsi(rows[7]!)).toContain("16) Action 16");
+    expect(stripAnsi(rows[8]!)).not.toContain("8) Action 8");
+    expect(stripAnsi(rows[8]!)).toContain("q) Quit");
   });
 
   it("keeps the two columns side by side within the terminal width", () => {
@@ -128,7 +130,7 @@ describe("two-column rendering", () => {
   it("truncates long labels instead of wrapping past the terminal", () => {
     const wide = frame({
       choices: [
-        ...Array.from({ length: 15 }, (_, i) => ({
+        ...Array.from({ length: 16 }, (_, i) => ({
           key: String(i + 1),
           main: `Action ${i + 1}`,
           hint: "with a very long hint that would wrap".repeat(3),
@@ -145,11 +147,38 @@ describe("two-column rendering", () => {
 
   it("degrades to the single-column list on a narrow terminal", () => {
     const lines = renderMenuFrame(frame(), -1, PLAIN, 60);
-    // title + blank + 16 rows.
-    expect(lines).toHaveLength(18);
-    expect(stripAnsi(lines[17]!)).toContain("q) Quit");
+    // title + blank + 17 rows.
+    expect(lines).toHaveLength(19);
+    expect(stripAnsi(lines[18]!)).toContain("q) Quit");
     expect(stripAnsi(lines[2]!)).toContain("1) Action 1 — does thing 1");
     expect(stripAnsi(lines[2]!)).not.toContain("9)");
+  });
+
+  it("the subheader renders PLAIN between title and choices (profile submenu, V3)", () => {
+    const lines = renderMenuFrame(
+      frame({ subheader: ["Active: Steel Mongoose (agent-1 · claude-opus-4-6)", "note line"] }),
+      -1,
+      COLOR,
+      100,
+    );
+    // title(1) + blank(1) + 2 subheader lines + blank(1), then the 9 choice rows.
+    expect(stripAnsi(lines[0]!)).toContain("what would you like to do?");
+    expect(stripAnsi(lines[2]!)).toBe("Active: Steel Mongoose (agent-1 · claude-opus-4-6)");
+    expect(stripAnsi(lines[3]!)).toBe("note line");
+    expect(lines[4]).toBe("");
+    expect(stripAnsi(lines[5]!)).toContain("1) Action 1");
+    // Not yellow, not bold — an info line, not a warning and not the title.
+    expect(lines[2]).not.toContain("\x1b[33m");
+    expect(lines[2]).not.toContain("\x1b[1m");
+  });
+
+  it("singleColumn: true renders one row per choice on a wide terminal", () => {
+    const lines = renderMenuFrame(frame(), -1, PLAIN, 100, { singleColumn: true });
+    // title + blank + 17 rows.
+    expect(lines).toHaveLength(19);
+    expect(stripAnsi(lines[2]!)).toContain("1) Action 1");
+    expect(stripAnsi(lines[2]!)).not.toContain("9)");
+    expect(stripAnsi(lines[18]!)).toContain("q) Quit");
   });
 });
 
@@ -284,7 +313,7 @@ describe("status box", () => {
     const claim = statusBox({
       lines: [
         [{ text: "Phantom Maverick", style: "bold" }],
-        [{ text: "⚠ claim your agent first — menu item 11", style: "yellow" }],
+        [{ text: "⚠ claim your agent first — menu item 12", style: "yellow" }],
         [{ text: "claude-opus-4-6", style: "cyan" }],
       ],
     });
@@ -340,13 +369,14 @@ function zhFrame(): MenuFrame {
     ["6", "每日上限", "自动对局 [5/天]"],
     ["7", "参赛游戏", "自动参赛 [已选 3 个]"],
     ["8", "策略文件", "你的 agent 怎么打"],
-    ["9", "改名", "公开显示名"],
-    ["10", "Telegram", "手机通知与遥控"],
-    ["11", "认领", "绑定到你的账号"],
-    ["12", "检查更新", "↑ 0.1.0-beta.41 可更新"],
-    ["13", "当前配置", "查看当前配置"],
-    ["14", "语言", "切换到 English"],
-    ["15", "全部命令", "全部命令与说明"],
+    ["9", "身份管理", "多 agent 身份切换"],
+    ["10", "改名", "公开显示名"],
+    ["11", "Telegram", "手机通知与遥控"],
+    ["12", "认领", "绑定到你的账号"],
+    ["13", "检查更新", "↑ 0.1.0-beta.41 可更新"],
+    ["14", "当前配置", "查看当前配置"],
+    ["15", "语言", "切换到 English"],
+    ["16", "全部命令", "全部命令与说明"],
   ];
   return frame({
     title: "AIFight —— 你想做什么？",
@@ -397,10 +427,10 @@ describe("zh layout (CJK width math)", () => {
   it("the zh two-column menu keeps the right column's start constant across rows", () => {
     for (const ansi of [PLAIN, COLOR]) {
       const lines = renderMenuFrame(zhFrame(), -1, ansi, 100);
-      const rows = lines.slice(2); // title + blank, then 8 choice rows
-      expect(rows).toHaveLength(8);
+      const rows = lines.slice(2); // title + blank, then 9 choice rows
+      expect(rows).toHaveLength(9);
       const starts = rows.map((row, r) => {
-        const marker = r < 7 ? `${r + 9})` : "q)"; // right column holds 9-15, q
+        const marker = r < 8 ? `${r + 9})` : "q)"; // right column holds 9-16, q
         const plainRow = stripAnsi(row);
         const idx = plainRow.indexOf(marker);
         expect(idx, `row ${r} must contain its right cell`).toBeGreaterThan(0);
@@ -461,7 +491,7 @@ describe("zh layout (CJK width math)", () => {
       PLAIN,
       100,
     );
-    // The exact pre-fix rendering (pinned 2026-07-31; EN has no wide chars,
+    // The exact V3 rendering (pinned 2026-07-31; EN has no wide chars,
     // so the width-math change must not move a single byte).
     expect(lines).toEqual([
       "+- AIFight · v0.1.0-beta.40 ----------------------------+",
@@ -479,7 +509,8 @@ describe("zh layout (CJK width math)", () => {
       "    5) Action 5 — does thing 5       13) Action 13 — does thing 13",
       "    6) Action 6 — does thing 6       14) Action 14 — does thing 14",
       "    7) Action 7 — does thing 7       15) Action 15 — does thing 15",
-      "    8) Action 8 — does thing 8        q) Quit                     ",
+      "    8) Action 8 — does thing 8       16) Action 16 — does thing 16",
+      "                                      q) Quit                     ",
     ]);
   });
 });

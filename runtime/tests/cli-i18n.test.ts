@@ -271,13 +271,14 @@ describe("menu in zh", () => {
       "6) 每日上限 — 自动对局 [5/天]",
       "7) 参赛游戏 — 自动参赛 [已选 3 个]",
       "8) 策略文件 — 你的 agent 怎么打",
-      "9) 改名 — 公开显示名",
-      "10) Telegram — 手机通知与遥控",
-      "11) 认领 — 绑定到你的账号",
-      "12) 检查更新 — 检查并更新",
-      "13) 当前配置 — 查看当前配置",
-      "14) 语言 — 切换到 English",
-      "15) 全部命令 — 全部命令与说明",
+      "9) 身份管理 — 多 agent 身份切换",
+      "10) 改名 — 公开显示名",
+      "11) Telegram — 手机通知与遥控",
+      "12) 认领 — 绑定到你的账号",
+      "13) 检查更新 — 检查并更新",
+      "14) 当前配置 — 查看当前配置",
+      "15) 语言 — 切换到 English",
+      "16) 全部命令 — 全部命令与说明",
       "q) 退出",
     ]) {
       expect(text, line).toContain(line);
@@ -300,9 +301,9 @@ describe("menu in zh", () => {
     expect(readBridgeConfig().locale).toBeUndefined();
   });
 
-  it("item 14 flips bridge.json and the NEXT frame is already Chinese", async () => {
+  it("item 15 flips bridge.json and the NEXT frame is already Chinese", async () => {
     seedBridge();
-    const h = menuHarness(["14", "q"]);
+    const h = menuHarness(["15", "q"]);
     await runInteractiveMenu(h.deps);
     expect(readBridgeConfig().locale).toBe("zh");
     // The confirmation printed in the NEW language…
@@ -313,12 +314,12 @@ describe("menu in zh", () => {
     expect(mains(h.frames[0]!)).toContain("Play");
     expect(mains(h.frames[1]!)).toContain("请求对局");
     expect(mains(h.frames[1!] as MenuFrame)).toContain("语言");
-    expect(h.out()).toContain("14) 语言 — 切换到 English");
+    expect(h.out()).toContain("15) 语言 — 切换到 English");
   });
 
   it("toggling twice comes back to English", async () => {
     seedBridge();
-    const h = menuHarness(["14", "14", "q"]);
+    const h = menuHarness(["15", "15", "q"]);
     await runInteractiveMenu(h.deps);
     expect(readBridgeConfig().locale).toBe("en");
     expect(h.out()).toContain("Language set to English.");
@@ -368,8 +369,8 @@ describe("banner in zh", () => {
     expect(line2(statusData({ dailyCap: 0, matching: { state: "not_running" } }))).toBe("桥未运行 · auto: 关");
   });
 
-  it("unclaimed points at menu item 11", () => {
-    expect(line2(statusData({ claimed: false }))).toBe("⚠ 请先认领 agent——菜单第 11 项");
+  it("unclaimed points at menu item 12", () => {
+    expect(line2(statusData({ claimed: false }))).toBe("⚠ 请先认领 agent——菜单第 12 项");
   });
 });
 

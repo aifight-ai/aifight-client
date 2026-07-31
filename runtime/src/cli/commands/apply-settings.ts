@@ -13,10 +13,12 @@
 // restart never silently costs someone a live match.
 
 import fs from "node:fs";
+import path from "node:path";
 
 import { isSafeAutoUpdatePhase } from "../../bridge/auto-update";
 import { getBridgeConfigPath } from "../../bridge/config";
 import { BridgeServiceError, restartBridgeService, statusBridgeService } from "../../bridge/service";
+import { getAgentsRoot } from "../../store/paths";
 import { portFilePath } from "../runtime-files";
 import type { HandlerEnv } from "../shared";
 import { makeClient } from "../shared";
@@ -59,18 +61,61 @@ export async function withDeferredApply<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Has bridge.json changed since the running bridge read it? The port file is
- * written when the bridge comes up and removed when it stops, so its mtime is a
- * good-enough "started at". Best effort by design: a missing file just means "no
- * bridge running here", which is the safe answer.
+ * Has a setting a RUNNING bridge only reads at startup changed since it
+ * started? The port file is written when the bridge comes up and removed when
+ * it stops, so its mtime is a good-enough "started at".
+ *
+ * Two sources (V3 重启精确化):
+ *   1. bridge.json newer than the start — but ONLY the genuinely
+ *      restart-needed writes still bump its mtime (rename, telegram, identity
+ *      switch, hand edits); the connect-edge settings (pause, daily cap,
+ *      games) and the display-only ones (locale, declared model) write with
+ *      preserveMtime precisely so they stop landing here.
+ *   2. any agents/<slug>/config.json newer than the start — the LLM
+ *      profile/model/key/routing config, which the bridge reads once at
+ *      startup. This is the one class the restart offer exists for now, and
+ *      the mtime scan catches edits from ANY writer (this CLI, the desktop
+ *      app, a hand edit), not just in-process ones.
+ *
+ * Best effort by design: a missing file just means "no bridge running here",
+ * which is the safe answer.
  */
 export function bridgeRestartPending(): boolean {
+  let started: number;
   try {
-    const started = fs.statSync(portFilePath()).mtimeMs;
-    return fs.statSync(getBridgeConfigPath()).mtimeMs > started;
+    started = fs.statSync(portFilePath()).mtimeMs;
+  } catch {
+    return false; // no port file = no bridge running = nothing can be pending
+  }
+  try {
+    if (fs.statSync(getBridgeConfigPath()).mtimeMs > started) return true;
+  } catch {
+    // No readable bridge.json — fall through to the LLM scan.
+  }
+  return llmConfigChangedSince(started);
+}
+
+/** Any agent profile's config.json newer than `startedMs`? Best effort: a
+ *  missing agents root (or a profile without config.json) is just "no LLM
+ *  change". */
+function llmConfigChangedSince(startedMs: number): boolean {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(getAgentsRoot(), { withFileTypes: true });
   } catch {
     return false;
   }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    try {
+      if (fs.statSync(path.join(getAgentsRoot(), entry.name, "config.json")).mtimeMs > startedMs) {
+        return true;
+      }
+    } catch {
+      // No config.json in this one — not an LLM change.
+    }
+  }
+  return false;
 }
 
 /**

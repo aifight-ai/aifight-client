@@ -249,6 +249,29 @@ async function performRegistration(
   env: HandlerEnv,
   baseUrlOverride?: string,
 ): Promise<BridgeConfig> {
+  const config = await registerAgentConfig(args, env, baseUrlOverride);
+  writeBridgeConfig(config);
+  // A brand-new agent registered from here is by definition this machine's.
+  // Re-stamping matters most on a copied home directory: "register a new
+  // agent" is one of the offered ways out of that, and leaving the previous
+  // machine's stamp in place would refuse the fresh agent too.
+  stampLocalDeviceIdentity();
+  return config;
+}
+
+/**
+ * The NETWORK half of registration: register the agent with the platform and
+ * build its BridgeConfig — writing NOTHING locally. `aifight setup` makes the
+ * result the active identity (performRegistration above); the panel's Profile
+ * "Create new agent" flow (V3 ④) stores it as a NEW identity and only makes
+ * it active after the user confirms the switch, so a cancelled create never
+ * clobbers bridge.json.
+ */
+export async function registerAgentConfig(
+  args: HandlerArgs,
+  env: HandlerEnv,
+  baseUrlOverride?: string,
+): Promise<BridgeConfig> {
   const suggestedName = resolveAgentName(args);
   // On --replace, keep the host the machine was already on (beta vs prod) rather
   // than the env/default, so re-register doesn't silently jump servers.
@@ -275,7 +298,7 @@ async function performRegistration(
       deviceId: getDeviceId(),
     });
 
-    const config: BridgeConfig = {
+    return {
       version: 1,
       baseUrl,
       wsUrl: deriveWsUrl(baseUrl),
@@ -292,13 +315,6 @@ async function performRegistration(
       autoDailyLimit: DEFAULT_AUTO_DAILY_LIMIT,
       updatedAt: new Date().toISOString(),
     };
-    writeBridgeConfig(config);
-    // A brand-new agent registered from here is by definition this machine's.
-    // Re-stamping matters most on a copied home directory: "register a new
-    // agent" is one of the offered ways out of that, and leaving the previous
-    // machine's stamp in place would refuse the fresh agent too.
-    stampLocalDeviceIdentity();
-    return config;
   } catch (e) {
     if (e instanceof RegisterHttpError) {
       const error = typeof e.body === "object" ? e.body.error : undefined;

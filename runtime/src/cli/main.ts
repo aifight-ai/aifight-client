@@ -41,7 +41,7 @@ import { runBridgeRun } from "./commands/bridge-run";
 import { runBridgeStatus } from "./commands/bridge-status";
 import { runBridgeUpdate } from "./commands/bridge-update";
 import { runBridgeRename } from "./commands/bridge-rename";
-import { runBridgeSet } from "./commands/bridge-set";
+import { pickGamesCheckbox, runBridgeSet } from "./commands/bridge-set";
 import { runBridgeChallenge } from "./commands/bridge-challenge";
 import { runBridgeAccept } from "./commands/bridge-accept";
 import { runBridgeService } from "./commands/bridge-service";
@@ -61,7 +61,7 @@ import { createMenuChooser } from "./commands/menu-select";
 import { createMenuStatusBox } from "./commands/menu-status";
 import { createOnboardIO } from "./commands/onboard-io";
 import { readBridgeConfig } from "../bridge/config";
-import type { BridgeServiceDeps } from "../bridge/service";
+import { statusBridgeService, type BridgeServiceDeps } from "../bridge/service";
 import { suggestClosest, CONFIG_EXAMPLES } from "./commands/config-shared";
 
 // Every top-level command name, for the did-you-mean suggester (D14). Keep in
@@ -229,12 +229,16 @@ export async function run(
     }
     // Resolved once, before the panel opens: an unclaimed agent cannot play at
     // all, so the banner is worth one short request (offline-safe — see
-    // claim-state.ts).
-    const claim = configured ? await resolveClaimState(env.fetchImpl) : undefined;
+    // claim-state.ts). Held in a `let` + exposed through getters so the
+    // Profile item's identity switch can refresh them mid-session (V3 ④).
+    let claim = configured ? await resolveClaimState(env.fetchImpl) : undefined;
     // The boxed status banner (3x-ui style). It reads the local config
     // synchronously and kicks off its own one-shot remote refresh — the
     // panel's first paint never waits on it. Absent on first run.
-    const statusBox = configured ? createMenuStatusBox({ fetchImpl: env.fetchImpl }) : undefined;
+    let statusBox = configured ? createMenuStatusBox({ fetchImpl: env.fetchImpl }) : undefined;
+    // V3 ③: the gentle "service not installed" banner line. Resolved once per
+    // panel open; a probe error stays undefined (no hint, never a nag).
+    const serviceInstalled = configured ? await probeServiceInstalled(env) : undefined;
     return runInteractiveMenu({
       env: panelEnv,
       prompt: createOnboardIO(env).promptLine,
@@ -276,8 +280,34 @@ export async function run(
           return SUPPORTED_GAMES;
         }
       },
-      ...(claim !== undefined ? { claim } : {}),
-      ...(statusBox !== undefined ? { statusBox } : {}),
+      // The Games item's checkbox picker (V3): the raw-mode multi-select over
+      // the supported games, pre-checked from bridge.json. TTY-gated the same
+      // way the chooser is, so scripts never reach it.
+      pickGames: (current) => pickGamesCheckbox(panelEnv, current),
+      get claim() {
+        return claim;
+      },
+      get statusBox() {
+        return statusBox;
+      },
+      // After a Profile identity switch: rebuild the status box from the new
+      // bridge.json and re-derive the claim banner locally (the remote
+      // re-check rides the new provider's own one-shot refresh), so the very
+      // next frame already shows the new identity.
+      onIdentitySwitched: () => {
+        statusBox = createMenuStatusBox({ fetchImpl: env.fetchImpl });
+        try {
+          const cfg = readBridgeConfig();
+          claim = {
+            pending: cfg.claimUrl !== undefined,
+            ...(cfg.claimUrl !== undefined ? { url: cfg.claimUrl } : {}),
+            agentName: cfg.agentName,
+          };
+        } catch {
+          // Unreadable config — keep the previous decorations.
+        }
+      },
+      ...(serviceInstalled !== undefined ? { serviceInstalled } : {}),
     });
   };
   const panelEnv: HandlerEnv = { ...env, openMainPanel };
@@ -319,6 +349,17 @@ function shouldDropNodeScriptPrefix(argv: readonly string[]): boolean {
   const second = argv[1] ?? "";
   if (/(^|[\\/])node(?:\.exe)?$/.test(first)) return true;
   return /(^|[\\/])(aifight|aifight-bridge|bin\.mjs|aifight\.ts)$/.test(second);
+}
+
+/** Is aifight.service installed on this machine? Best-effort for the panel's
+ *  V3 banner hint: a probe failure means "unknown" (undefined), which never
+ *  shows a hint — a service-manager hiccup must not become a nag. */
+async function probeServiceInstalled(env: HandlerEnv): Promise<boolean | undefined> {
+  try {
+    return (await statusBridgeService(env.bridgeService)).installed === true;
+  } catch {
+    return undefined;
+  }
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────

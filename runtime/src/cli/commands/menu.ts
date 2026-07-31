@@ -36,7 +36,7 @@ export interface MenuDeps {
   /** Read one line of input (main wires createOnboardIO(env).promptLine). */
   readonly prompt: (question: string) => Promise<string>;
   /** The chooser: given the freshly-built frame, resolve the key of the row
-   *  the user picked ("1".."14" or "q"). main.ts wires the arrow-key chooser
+   *  the user picked ("1".."16" or "q"). main.ts wires the arrow-key chooser
    *  (menu-select.ts) — the panel only ever opens on a TTY, so that is the
    *  production path. When absent the panel falls back to printing the frame
    *  and reading a number line-by-line (today's tests, and any future host
@@ -49,6 +49,11 @@ export interface MenuDeps {
   readonly showHelp: () => void;
   /** Whether a local bridge identity already exists (first-run vs returning). */
   readonly configured: boolean;
+  /** Whether aifight.service is installed on this machine (V3 ③): resolved
+   *  once when the panel opens. `false` adds one gentle yellow banner line —
+   *  the bridge dies with this window otherwise. Undefined = unknown (a probe
+   *  error must never nag). */
+  readonly serviceInstalled?: boolean;
   /** Live read of the display locale (AIFIGHT_LANG > bridge.json > "en"),
    *  consulted at every render — the Language item flips bridge.json and the
    *  very next frame repaints in the new language. Optional: defaults to en. */
@@ -64,6 +69,10 @@ export interface MenuDeps {
   /** Live read of the auto-play game selection (bridge.json autoGames) for
    *  item 7's hint. Optional; absent = the supported default list. */
   readonly autoGames?: () => readonly string[];
+  /** The checkbox games picker (V3, design §1): main.ts wires the raw-mode
+   *  multi-select; absent in tests/chooser-less hosts → item 7 falls back to
+   *  the line prompt. Resolves the new selection, null = cancelled. */
+  readonly pickGames?: (current: readonly string[]) => Promise<readonly string[] | null>;
   /** Local view of the claim handshake. The claim URL is scrubbed from
    *  bridge.json once the platform reports the agent claimed, so "still on
    *  file" is a reliable offline signal for "not claimed yet" — no network
@@ -75,6 +84,10 @@ export interface MenuDeps {
    *  one-shot remote enrichment; the panel just re-asks it for lines on
    *  every build. */
   readonly statusBox?: MenuStatusBoxProvider;
+  /** Called by the Profile item after an identity switch so the host can
+   *  refresh the identity-carrying decorations (status box, claim banner) —
+   *  main.ts rebuilds both from the new bridge.json. */
+  readonly onIdentitySwitched?: () => void;
 }
 
 interface MenuItem {
@@ -86,13 +99,25 @@ interface MenuItem {
   /** The short dim description after the main word, translated; carries live
    *  state for the cap/games/update rows. */
   readonly hint?: (loc: Locale, deps: MenuDeps) => string;
-  /** Yellow instead of dim while an update is known-newer (item 12). */
+  /** Yellow instead of dim while an update is known-newer (item 13). */
   readonly hintTone?: (deps: MenuDeps) => "dim" | "yellow";
   readonly run: (deps: MenuDeps) => Promise<void>;
 }
 
 function describeError(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+/** Did the inline setup actually leave a usable identity behind? The abort
+ *  path (a wizard quit, or a partial failure) must exit with hints instead of
+ *  dropping into a panel whose every action needs an identity. */
+function bridgeConfiguredNow(): boolean {
+  try {
+    readBridgeConfig();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** The actionable "what to do next" line typed errors carry (e.g. "Start it
@@ -114,8 +139,11 @@ function errorHint(cause: unknown): string | undefined {
 // word plus a dim hint. Hints are re-evaluated on every build, so the ones
 // carrying live state (Pause/Resume, the cap, the games count, the update
 // nudge) flip on the repaint right after the underlying value changed.
-// i18n (same day): every label goes through t(locale, …); item 14 (Language)
+// i18n (same day): every label goes through t(locale, …); item 15 (Language)
 // flips bridge.json and the next frame repaints in the new language.
+// V3 (2026-07-31, owner decision ②): the FINAL 17-row layout — Profile
+// (identity manage) inserted at 9, Rename→16 shifting one down; 1-8 left,
+// 9-16 + Quit right. V2 never shipped, so the renumber costs nothing.
 
 /** The locale for this render — re-read on every build (AIFIGHT_LANG >
  *  bridge.json > "en"), so the Language toggle repaints immediately. */
@@ -176,11 +204,11 @@ const ITEMS: readonly MenuItem[] = [
   },
   {
     key: "6",
-    // This and Games delegate to the prompts the old `aifight config` hub
-    // used, not to the barer ones this panel had: those show the CURRENT
-    // value, treat a blank answer as "keep it", and validate against the
-    // setup wizard's ceiling. Merging the menus meant picking one of each
-    // pair, and this is the better half.
+    // The daily item delegates to the prompt the old `aifight config` hub
+    // used: it shows the CURRENT value, treats a blank answer as "keep it",
+    // and validates against the setup wizard's ceiling (V3: re-asking after
+    // an invalid one instead of exiting). Merging the menus meant picking one
+    // of each pair, and this is the better half.
     main: (loc) => t(loc, "menu.item.daily.main"),
     hint: (loc, deps) => {
       const cap = deps.dailyCap?.();
@@ -200,9 +228,19 @@ const ITEMS: readonly MenuItem[] = [
     main: (loc) => t(loc, "menu.item.games.main"),
     hint: (loc, deps) =>
       t(loc, "menu.item.games.hint", { count: (deps.autoGames?.() ?? SUPPORTED_GAMES).length }),
-    run: async ({ env, prompt }) => {
+    run: async (deps) => {
+      // The checkbox picker (V3): rows are platform-given so nothing can be
+      // misspelled. The picked list dispatches through `set game`, which owns
+      // validation + the write. Chooser-less hosts keep the line prompt.
+      if (deps.pickGames !== undefined) {
+        const picked = await deps.pickGames([...(deps.autoGames?.() ?? SUPPORTED_GAMES)]);
+        if (picked === null) return; // cancelled — the picker said nothing changed
+        if (picked.length === 0) return; // the picker's own guard re-asks instead
+        await deps.dispatch("set", ["game", picked.join(",")]);
+        return;
+      }
       const { configureGamesInteractive } = await import("./config.js");
-      await configureGamesInteractive({ promptLine: prompt }, env);
+      await configureGamesInteractive({ promptLine: deps.prompt }, deps.env);
     },
   },
   {
@@ -212,7 +250,25 @@ const ITEMS: readonly MenuItem[] = [
     run: ({ dispatch }) => dispatch("strategy", ["path"]).then(() => undefined),
   },
   {
+    // Profile Manage (V3 ④): multiple agent identities on this machine, one
+    // active. The submenu lives in profile-menu.ts; after a switch the panel's
+    // identity-carrying decorations refresh via onIdentitySwitched.
     key: "9",
+    main: (loc) => t(loc, "menu.item.profile.main"),
+    hint: (loc) => t(loc, "menu.item.profile.hint"),
+    run: async (deps) => {
+      const { runProfileMenu } = await import("./profile-menu.js");
+      await runProfileMenu({
+        env: deps.env,
+        locale: () => localeOf(deps),
+        prompt: deps.prompt,
+        ...(deps.choose !== undefined ? { choose: deps.choose } : {}),
+        ...(deps.onIdentitySwitched !== undefined ? { onIdentitySwitched: deps.onIdentitySwitched } : {}),
+      });
+    },
+  },
+  {
+    key: "10",
     main: (loc) => t(loc, "menu.item.rename.main"),
     hint: (loc) => t(loc, "menu.item.rename.hint"),
     run: async ({ env, prompt, dispatch }) => {
@@ -226,13 +282,13 @@ const ITEMS: readonly MenuItem[] = [
   },
   {
     // Not "0" — that is the quit key.
-    key: "10",
+    key: "11",
     main: (loc) => t(loc, "menu.item.telegram.main"),
     hint: (loc) => t(loc, "menu.item.telegram.hint"),
     run: ({ dispatch }) => dispatch("telegram", []).then(() => undefined),
   },
   {
-    key: "11",
+    key: "12",
     main: (loc) => t(loc, "menu.item.claim.main"),
     hint: (loc) => t(loc, "menu.item.claim.hint"),
     run: async ({ env, claim }) => {
@@ -245,7 +301,7 @@ const ITEMS: readonly MenuItem[] = [
     },
   },
   {
-    key: "12",
+    key: "13",
     main: (loc) => t(loc, "menu.item.update.main"),
     // Yellow with the version only while the banner's update check has landed
     // a known-newer release; a quiet dim "check & update" otherwise.
@@ -260,7 +316,7 @@ const ITEMS: readonly MenuItem[] = [
   },
   {
     // Carried over from the old `aifight config` hub, which is now this panel.
-    key: "13",
+    key: "14",
     main: (loc) => t(loc, "menu.item.config.main"),
     hint: (loc) => t(loc, "menu.item.config.hint"),
     run: ({ dispatch }) => dispatch("config", ["show"]).then(() => undefined),
@@ -272,7 +328,7 @@ const ITEMS: readonly MenuItem[] = [
     // bridge never reads locale, so the write preserves the file mtime and
     // no restart offer fires on the way out. The confirmation prints in the
     // NEW language, same as `aifight set language`.
-    key: "14",
+    key: "15",
     main: (loc) => t(loc, "menu.item.language.main"),
     hint: (loc) => t(loc, "menu.item.language.hint"),
     run: async (deps) => {
@@ -291,7 +347,7 @@ const ITEMS: readonly MenuItem[] = [
     },
   },
   {
-    key: "15",
+    key: "16",
     main: (loc) => t(loc, "menu.item.help.main"),
     hint: (loc) => t(loc, "menu.item.help.hint"),
     run: async ({ showHelp }) => {
@@ -311,13 +367,19 @@ function buildFrame(deps: MenuDeps): MenuFrame {
     banner.push(t(loc, "menu.banner.unclaimed", { who }));
     if (deps.claim.url !== undefined) banner.push(deps.claim.url);
   }
+  // V3 ③: configured but no aifight.service — the bridge dies with this
+  // window. One gentle yellow line under the box, every repaint, no nag
+  // dialogs (owner decision ③).
+  if (deps.serviceInstalled === false) {
+    banner.push(t(loc, "menu.banner.no_service"));
+  }
   return {
     title: t(loc, "menu.title"),
     banner,
     choices: [
       // Main words and hints are re-evaluated on every build: item 2's wording
       // follows the live pause flag, the cap/games hints follow bridge.json,
-      // and item 12's yellow nudge appears the moment the update check lands —
+      // and item 13's yellow nudge appears the moment the update check lands —
       // the frame built right after any of those changed must already say so.
       ...ITEMS.map((item) => ({
         key: item.key,
@@ -352,18 +414,27 @@ async function lineChoice(deps: MenuDeps, frame: MenuFrame): Promise<string> {
  * shown, and the loop continues so one failed action never drops the panel).
  */
 export async function runInteractiveMenu(deps: MenuDeps): Promise<number> {
-  const { env, prompt, dispatch, configured } = deps;
+  const { env, dispatch, configured } = deps;
 
-  // First run on this machine: the guided path is `setup`. Offer it directly
-  // rather than showing a panel of actions that all need an identity first.
+  // First run on this machine (V3 ③, owner decision): no more "want to run
+  // setup?" gate — bare `aifight` goes straight through the EXISTING guided
+  // setup and lands in the full panel on success. An abort (or a failure that
+  // left no identity) exits with the next-step hints instead. The wizard's own
+  // inner strings stay English in V1 (the established i18n boundary); only the
+  // orchestration lines around it are translated.
   if (!configured) {
-    env.stdout("\nAIFight isn't set up on this machine yet.\n");
-    const ans = (await prompt("Run guided setup now? [Y/n]: ")).trim().toLowerCase();
-    if (ans === "" || ans === "y" || ans === "yes") {
-      return dispatch("setup", []);
+    const loc = localeOf(deps);
+    env.stdout(`\n${t(loc, "menu.firstrun.intro")}\n\n`);
+    const code = await dispatch("setup", []);
+    if (code !== 0 || !bridgeConfiguredNow()) {
+      env.stdout(`\n${t(loc, "menu.firstrun.aborted")}\n`);
+      return code;
     }
-    env.stdout("\nWhen you're ready: `aifight setup` (guided) or `aifight --help`.\n");
-    return 0;
+    env.stdout(`\n${t(loc, "menu.firstrun.done")}\n`);
+    // Fall through into the panel loop with the identity just created. (The
+    // status box and claim banner were resolved before the panel opened, so
+    // they debut on the NEXT bare `aifight`; the wizard already printed the
+    // claim URL twice.)
   }
 
   const byKey = new Map(ITEMS.map((i) => [i.key, i]));

@@ -485,6 +485,167 @@ describe("BridgeRunner", () => {
     await runner.stop();
   });
 
+  // V3 重启精确化: autoDailyLimit / autoGames got the same connect-edge re-read
+  // as the pause flag — a running bridge adopts `aifight set daily` / `set
+  // game` within ~a reconnect cycle, no manual restart.
+  function writeDiskAutoConfig(fields: { cap?: number; games?: string[] }): void {
+    // Same discipline as writePausedDiskConfig: a disk shape that passes
+    // readBridgeConfig validation (the in-memory fixture's wsUrl would not).
+    writeBridgeConfig({
+      version: 1,
+      baseUrl: "https://aifight.ai",
+      wsUrl: "wss://aifight.ai/api/ws",
+      agentId: "agent-1",
+      agentName: "alpha",
+      apiKey: "sk-local-agent-key",
+      runtimeType: "mock",
+      runtimeLocalUrl: "mock://local",
+      runtimeModel: "mock",
+      ...(fields.cap !== undefined ? { autoDailyLimit: fields.cap } : {}),
+      ...(fields.games !== undefined ? { autoGames: fields.games } : {}),
+      updatedAt: "2026-07-31T00:00:00.000Z",
+    });
+  }
+
+  it("a daily cap of 0 landing mid-run stops the re-join at the next reconnect", async () => {
+    const client = new FakeReconnectClient();
+    const connect = vi.fn(async (_opts: ReconnectingWSClientOptions) => client);
+    const logs: Array<{ code: string; message: string }> = [];
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      autoJoinGame: "liars_dice",
+      autoJoinMode: "ranked",
+      connect,
+      onLog: (event) => logs.push(event),
+      sessionStore: false,
+    });
+    await runner.start();
+    const joins = () => client.sent.filter((m) => m.type === "join_queue").length;
+    await flushEffects();
+    expect(joins()).toBe(1); // launch join — cap was still on
+
+    const fire = () => {
+      for (const h of [...client.stateHandlers]) h(client.snapshot());
+    };
+    // `aifight set daily 0` lands on disk mid-run.
+    writeDiskAutoConfig({ cap: 0 });
+    client.state = "backoff";
+    fire();
+    client.state = "connected";
+    fire();
+    await flushEffects();
+
+    expect(joins()).toBe(1); // no re-join under the new cap
+    expect(logs.some((e) => e.code === "bridge.auto_join_cap_off")).toBe(true);
+    expect(logs.some((e) => e.code === "bridge.queue_rejoined")).toBe(false);
+
+    await runner.stop();
+  });
+
+  it("a new games list landing mid-run is picked from at the next reconnect", async () => {
+    const client = new FakeReconnectClient();
+    const connect = vi.fn(async (_opts: ReconnectingWSClientOptions) => client);
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      autoJoinGame: "liars_dice",
+      autoJoinMode: "ranked",
+      connect,
+      onLog: () => {},
+      sessionStore: false,
+    });
+    await runner.start();
+    await flushEffects();
+
+    const fire = () => {
+      for (const h of [...client.stateHandlers]) h(client.snapshot());
+    };
+    // `aifight set game coup` lands on disk mid-run — a single-game list makes
+    // the random pick deterministic.
+    writeDiskAutoConfig({ cap: 2, games: ["coup"] });
+    client.state = "backoff";
+    fire();
+    client.state = "connected";
+    fire();
+    await flushEffects();
+
+    const rejoins = client.sent.filter((m) => m.type === "join_queue");
+    expect(rejoins).toHaveLength(2);
+    expect(rejoins[1]).toEqual({
+      type: "join_queue",
+      data: { game: "coup", mode: "ranked" },
+    });
+
+    await runner.stop();
+  });
+
+  it("a cap raised from 0 mid-run starts the auto-join on a manual-only bridge", async () => {
+    const client = new FakeReconnectClient();
+    const connect = vi.fn(async (_opts: ReconnectingWSClientOptions) => client);
+    const logs: Array<{ code: string; message: string }> = [];
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      // No autoJoinGame — launched manual-only (cap 0 at startup).
+      connect,
+      onLog: (event) => logs.push(event),
+      sessionStore: false,
+    });
+    await runner.start();
+    const joins = () => client.sent.filter((m) => m.type === "join_queue").length;
+    await flushEffects();
+    expect(joins()).toBe(0); // manual-only launch: nothing to join
+
+    const fire = () => {
+      for (const h of [...client.stateHandlers]) h(client.snapshot());
+    };
+    // `aifight set daily 3` (+ games) lands on disk mid-run.
+    writeDiskAutoConfig({ cap: 3, games: ["texas_holdem"] });
+    client.state = "backoff";
+    fire();
+    client.state = "connected";
+    fire();
+    await flushEffects();
+
+    expect(joins()).toBe(1);
+    expect(client.sent.filter((m) => m.type === "join_queue")[0]).toEqual({
+      type: "join_queue",
+      data: { game: "texas_holdem", mode: "ranked" },
+    });
+    expect(logs.some((e) => e.code === "bridge.queue_rejoined")).toBe(true);
+
+    await runner.stop();
+  });
+
+  it("a cap of 0 already on disk at start skips the launch join", async () => {
+    writeDiskAutoConfig({ cap: 0 });
+    const client = new FakeReconnectClient();
+    const connect = vi.fn(async (_opts: ReconnectingWSClientOptions) => client);
+    const logs: Array<{ code: string; message: string }> = [];
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      autoJoinGame: "liars_dice",
+      autoJoinMode: "ranked",
+      connect,
+      onLog: (event) => logs.push(event),
+      sessionStore: false,
+    });
+
+    await runner.start();
+    await flushEffects();
+
+    expect(client.sent.filter((m) => m.type === "join_queue")).toHaveLength(0);
+    expect(logs.some((e) => e.code === "bridge.auto_join_cap_off")).toBe(true);
+
+    await runner.stop();
+  });
+
   it("forwards raw server messages to onServerMessage even without a session store", async () => {
     const client = new FakeReconnectClient();
     const forwarded: ServerMessageEnvelope[] = [];
@@ -831,9 +992,11 @@ describe("BridgeRunner", () => {
     expect(snaps).toHaveLength(1);
     expect(snaps[0]?.state).toBe("connected");
 
-    // And the returned unsubscribe is the real one, not a no-op.
+    // And the returned unsubscribe is the real one, not a no-op. One handler
+    // stays behind: the runner's own auto-join reconnect subscriber, attached
+    // since V3 so a daily cap set mid-run is adopted at the next connect edge.
     unsubscribe();
-    expect(client.stateHandlers.size).toBe(0);
+    expect(client.stateHandlers.size).toBe(1);
   });
 
   it("connects normally on the machine that set the home up", async () => {

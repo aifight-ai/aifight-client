@@ -21,6 +21,7 @@ import {
 } from "../session/local-match-session-store";
 import type { AgentDecisionProvider } from "../agents/agent";
 import { readBridgeConfig, type BridgeConfig } from "./config";
+import { pickAutomaticGame } from "./auto-join";
 import {
   buildBridgeDecisionProvider,
   createMockRuntimeProvider,
@@ -441,22 +442,39 @@ export class BridgeRunner {
     this.#pendingConnHandlers.clear();
     this.#log("info", "bridge.connected", `Connected ${this.#opts.config.agentName}`);
     void this.#warnIfTermsPending();
-    if (this.#opts.autoJoinGame) {
+    if (this.#opts.autoJoinGame !== undefined || this.#opts.autoJoinOneShot !== true) {
       const oneShot = this.#opts.autoJoinOneShot === true;
+      // V3 重启精确化: the daily cap / games decision is re-read from disk at
+      // EVERY connect edge (the matchingPaused discipline), so `aifight set
+      // daily` / `aifight set game` reach a RUNNING bridge within ~a reconnect
+      // cycle instead of needing a manual restart. A manual one-shot launch is
+      // the exception: its game is explicit and stays frozen.
+      const edge = this.#autoJoinDecision();
+      const launchedDaily = this.#opts.autoJoinGame !== undefined;
       if (this.#matchingPaused()) {
-        this.#log(
-          "info",
-          "bridge.auto_join_paused",
-          "Automatic matching is paused — staying out of the queue (`aifight resume` re-enables it).",
-        );
-      } else {
-        agent.joinQueue(this.#opts.autoJoinGame, this.#opts.autoJoinMode, { oneShot });
+        if (edge !== null || launchedDaily) {
+          this.#log(
+            "info",
+            "bridge.auto_join_paused",
+            "Automatic matching is paused — staying out of the queue (`aifight resume` re-enables it).",
+          );
+        }
+      } else if (edge !== null) {
+        agent.joinQueue(edge.game, this.#opts.autoJoinMode, { oneShot });
         this.#log(
           "info",
           "bridge.queue_joined",
           oneShot
-            ? `Joined ${this.#opts.autoJoinGame} for one manual match`
-            : `Joined ${this.#opts.autoJoinGame} for daily automatic matching`,
+            ? `Joined ${edge.game} for one manual match`
+            : `Joined ${edge.game} for daily automatic matching`,
+        );
+      } else if (launchedDaily) {
+        // Launched for daily auto-join, but the cap is 0 now — the running
+        // bridge adopts the new cap right at this connect edge.
+        this.#log(
+          "info",
+          "bridge.auto_join_cap_off",
+          "Daily automatic matching is off (cap 0) — staying out of the queue (`aifight set daily <N>` re-enables it).",
         );
       }
       if (!oneShot) {
@@ -468,25 +486,40 @@ export class BridgeRunner {
         // placed in the shared runner so every host heals the same way.
         // (The subscriber fires once immediately with the current snapshot —
         // prev === null skips it; the launch join above already happened.)
+        // Attached even for manual-only launches: the edge decision is re-read
+        // on every reconnect, so a cap set mid-run is adopted here too.
         let last: string | null = null;
         agent.onConnectionStateChange((snap) => {
           const prev = last;
           last = snap.state;
           if (snap.state !== "connected" || prev === null || prev === "connected") return;
           if (this.#matchingPaused()) {
-            this.#log(
-              "info",
-              "bridge.auto_join_paused",
-              "Reconnected while automatic matching is paused — not re-joining the queue.",
-            );
+            if (this.#autoJoinDecision() !== null || this.#opts.autoJoinGame !== undefined) {
+              this.#log(
+                "info",
+                "bridge.auto_join_paused",
+                "Reconnected while automatic matching is paused — not re-joining the queue.",
+              );
+            }
+            return;
+          }
+          const reEdge = this.#autoJoinDecision();
+          if (reEdge === null) {
+            if (this.#opts.autoJoinGame !== undefined) {
+              this.#log(
+                "info",
+                "bridge.auto_join_cap_off",
+                "Reconnected with the daily cap at 0 — not re-joining the queue.",
+              );
+            }
             return;
           }
           try {
-            agent.joinQueue(this.#opts.autoJoinGame!, this.#opts.autoJoinMode, { oneShot: false });
+            agent.joinQueue(reEdge.game, this.#opts.autoJoinMode, { oneShot: false });
             this.#log(
               "info",
               "bridge.queue_rejoined",
-              `Reconnected — re-joined the ${this.#opts.autoJoinGame} queue`,
+              `Reconnected — re-joined the ${reEdge.game} queue`,
             );
           } catch {
             // join_queue sends over the live socket; if it raced a re-drop the
@@ -695,6 +728,42 @@ export class BridgeRunner {
     } catch {
       return this.#opts.config.matchingPaused === true;
     }
+  }
+
+  /**
+   * The daily auto-join decision, read FRESH from disk at every connect edge
+   * (V3 重启精确化 — same seam and rationale as #matchingPaused): `aifight set
+   * daily` / `aifight set game` write bridge.json while this bridge is running,
+   * and a snapshot frozen at start() would keep the old cap/games until a
+   * manual restart. A running bridge now adopts the new values within ~a
+   * reconnect cycle.
+   *
+   * Rules:
+   *   - a manual ONE-SHOT launch keeps its explicit frozen game (the daily
+   *     prefs do not apply to it);
+   *   - an explicit cap on disk wins (0 = off, and the games list comes from
+   *     disk too); with no explicit cap anywhere, the launch-time option is
+   *     the fallback — the same "unreadable file must not flip a running
+   *     bridge" discipline as #matchingPaused.
+   */
+  #autoJoinDecision(): { readonly game: "texas_holdem" | "liars_dice" | "coup" } | null {
+    if (this.#opts.autoJoinOneShot === true) {
+      return this.#opts.autoJoinGame !== undefined ? { game: this.#opts.autoJoinGame } : null;
+    }
+    let cap = this.#opts.config.autoDailyLimit;
+    let games = this.#opts.config.autoGames;
+    try {
+      const disk = readBridgeConfig();
+      cap = disk.autoDailyLimit ?? cap;
+      games = disk.autoGames ?? games;
+    } catch {
+      // Frozen snapshot fallback — see #matchingPaused.
+    }
+    if (cap !== undefined) {
+      if (cap <= 0) return null;
+      return { game: pickAutomaticGame(games) };
+    }
+    return this.#opts.autoJoinGame !== undefined ? { game: this.#opts.autoJoinGame } : null;
   }
 
   /** R13-F08: re-read the bridge config after a 401 reconnect failure so a

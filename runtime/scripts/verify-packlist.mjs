@@ -9,7 +9,7 @@ const raw = execFileSync('npm', ['pack', '--dry-run', '--json'], {
 const pack = JSON.parse(raw)[0]
 const files = pack.files.map((entry) => entry.path)
 const roots = Array.from(new Set(files.map((path) => path.split('/')[0]))).sort()
-const allowedRoots = new Set(['LICENSE', 'README.md', 'dist', 'package.json'])
+const allowedRoots = new Set(['LICENSE', 'README.md', 'dist', 'package.json', 'scripts'])
 const requiredFiles = [
   'LICENSE',
   'README.md',
@@ -18,6 +18,8 @@ const requiredFiles = [
   'dist/index.mjs',
   'dist/types/index.d.ts',
   'dist/schemas/README.md',
+  // The postinstall guidance box (V3): the only file shipped outside dist/.
+  'scripts/postinstall.mjs',
 ]
 
 const forbiddenPatterns = [

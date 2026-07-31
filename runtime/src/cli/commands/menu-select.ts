@@ -33,7 +33,10 @@ export interface SelectOptions {
   readonly ansi?: Ansi;
   /** The nav-hint language (i18n, 2026-07-31). Default "en". */
   readonly locale?: Locale;
-  /** How long a lone ambiguous digit ("1", which also prefixes "10".."15")
+  /** Force the single-column layout even on a wide terminal — the profile
+   *  submenu's rich rows (name · claimed · model) need the full width (V3 ④). */
+  readonly singleColumn?: boolean;
+  /** How long a lone ambiguous digit ("1", which also prefixes "10".."16")
    *  waits for a second digit before running item 1. Tests shrink it. */
   readonly digitCommitMs?: number;
   /** One-shot "the frame's data may have changed" signal — today the status
@@ -46,7 +49,7 @@ export interface SelectOptions {
 
 /** The chooser contract menu.ts depends on: the frame to draw first, plus an
  *  optional one-shot refresh hook (see SelectOptions). */
-export type MenuChoose = (frame: MenuFrame, opts?: Pick<SelectOptions, "locale" | "refreshWhen" | "getFrame">) => Promise<string>;
+export type MenuChoose = (frame: MenuFrame, opts?: Pick<SelectOptions, "locale" | "refreshWhen" | "getFrame" | "singleColumn">) => Promise<string>;
 
 const ESC = "\x1b";
 const HIDE_CURSOR = "\x1b[?25l";
@@ -60,7 +63,7 @@ export function createMenuChooser(env: HandlerEnv): MenuChoose {
 
 /**
  * Draw the frame, read keys until the user picks a row, and resolve that
- * row's key ("1".."14" or "q"). The menu is erased on the way out: what stays
+ * row's key ("1".."16" or "q"). The menu is erased on the way out: what stays
  * on screen is the picked action's own output (or the shell prompt on quit),
  * not a frozen copy of the panel.
  */
@@ -80,19 +83,23 @@ export function selectMenuKey(
   // corner of some emulators; keep a column of slack so the repaint math
   // (one terminal row per rendered line) always holds.
   const width = (process.stdout.columns ?? 0) > 0 ? process.stdout.columns! - 1 : 0;
-  let layout: ColumnLayout = columnLayout(choices.length, width);
+  const layoutOf = (count: number): ColumnLayout =>
+    opts.singleColumn === true
+      ? { columns: 1, left: Array.from({ length: count }, (_, i) => i), right: [] }
+      : columnLayout(count, width);
+  let layout: ColumnLayout = layoutOf(choices.length);
   let selected = 0;
   let drawn = 0;
   let settled = false;
   let pending = ""; // an escape sequence split across data chunks
-  let digits = ""; // buffered numeric shortcut ("1" may still become "10".."14")
+  let digits = ""; // buffered numeric shortcut ("1" may still become "10".."16")
   let digitTimer: ReturnType<typeof setTimeout> | null = null;
 
   const draw = (): void => {
     const twoColumns = layout.columns === 2;
     const lines = [
       "",
-      ...renderMenuFrame(currentFrame, selected, ansi, width),
+      ...renderMenuFrame(currentFrame, selected, ansi, width, { singleColumn: opts.singleColumn === true }),
       "",
       ansi.dim(t(loc, twoColumns ? "menu.nav.two" : "menu.nav.one")),
     ];
@@ -137,7 +144,7 @@ export function selectMenuKey(
         return;
       }
       if (exact) {
-        // "1" is an item AND a prefix of "10".."14" — jump the highlight so
+        // "1" is an item AND a prefix of "10".."16" — jump the highlight so
         // the user sees what Enter (or a beat of waiting) would run.
         const idx = choices.findIndex((c) => c.key === digits);
         if (idx >= 0) {
@@ -201,7 +208,7 @@ export function selectMenuKey(
             currentFrame = opts.getFrame();
             choices = currentFrame.choices;
             keys = new Set(choices.map((c) => c.key));
-            layout = columnLayout(choices.length, width);
+            layout = layoutOf(choices.length);
             if (selected >= choices.length) selected = choices.length - 1;
           }
           draw();

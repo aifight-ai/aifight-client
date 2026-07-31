@@ -14,9 +14,12 @@ import {
 } from "../../bridge/declared-model";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, SUPPORTED_GAMES, UsageError, expectArity, isSupportedGame } from "../shared";
-import { parseLocale, resolveLocale, t } from "../i18n";
-import { applyPendingBridgeRestart } from "./apply-settings";
+import { createAnsi, createStatusIcons } from "../ansi";
+import { parseLocale, resolveLocale, t, type I18nKey } from "../i18n";
+import { agentSeatHolderPid } from "./bridge-start";
 import { createOnboardIO, promptDefault } from "./onboard-io";
+import { selectMulti } from "./select-multi";
+import type { RawInput } from "./menu-select";
 
 // Re-exported for the CLI surfaces that already import them from here.
 export { DAILY_CAP_CONFIRM_THRESHOLD, SETUP_WIZARD_CAP_MAX, dailyCapNeedsConfirm };
@@ -62,16 +65,17 @@ export async function runBridgeSet(
   // it owns its arity instead of the fixed 2-arg shape daily/game share.
   if (kind === "declared-model") return setDeclaredModel(args, env);
   // Bare `aifight set daily` / `aifight set game` on a terminal: ASK instead of
-  // erroring, showing the current value as the default (3x-ui habit — Enter
-  // keeps it, owner ask 2026-07-30). Scripts (non-TTY / --json) keep the
-  // usage error below, so automation is untouched.
+  // erroring — daily shows the current value as the default (3x-ui habit —
+  // Enter keeps it, owner ask 2026-07-30); game opens the checkbox picker
+  // (V3 fool-proof, design §1). Scripts (non-TTY / --json) keep the usage
+  // error below, so automation is untouched.
   if (
     (kind === "daily" || kind === "game") &&
     args.positional.length === 1 &&
     args.jsonMode !== true &&
     process.stdin.isTTY === true
   ) {
-    return kind === "daily" ? promptDailyCap(args, env) : promptGames(args, env);
+    return kind === "daily" ? promptDailyCap(args, env) : promptGames(args, env, pickGamesCheckbox);
   }
   expectArity(args, 2, 2, USAGE);
   if (kind === "daily") return setDaily(args.positional[1]!, args, env);
@@ -93,57 +97,120 @@ export async function runSetDailyInteractive(
   return promptDailyCap(args, env, readLine);
 }
 
-/** Test seam: bare `aifight set game`'s interactive flow, line reader injected. */
-export async function runSetGamesInteractive(
-  args: HandlerArgs,
-  env: HandlerEnv,
-  readLine: SetReadLine,
-): Promise<number> {
-  return promptGames(args, env, readLine);
-}
-
 /** The interactive half of bare `aifight set daily`: prompt with the current
  *  cap as the default, then delegate the actual write to setDaily (which owns
- *  validation, the >threshold confirmation, and the platform sync). */
+ *  validation, the >threshold confirmation, and the platform sync).
+ *  Fool-proof (V3): a bad number is a yellow inline message and the prompt
+ *  RE-ASKS — the current value stays in the bracket; q/Esc still cancels and
+ *  a bare Enter still keeps. */
 async function promptDailyCap(args: HandlerArgs, env: HandlerEnv, readLine?: SetReadLine): Promise<number> {
   const loc = env.locale?.() ?? resolveLocale();
   const config = readSetBridgeConfig();
   const shown = config.autoDailyLimit === undefined ? "server default" : String(config.autoDailyLimit);
-  const answer = await promptDefault(env, t(loc, "prompt.daily.question", { max: SETUP_WIZARD_CAP_MAX }), shown, readLine);
-  if (answer.kind === "cancel") {
-    env.stdout(`${t(loc, "prompt.cancel")}\n`);
-    return 0;
+  const question = t(loc, "prompt.daily.question", { max: SETUP_WIZARD_CAP_MAX });
+  for (;;) {
+    const answer = await promptDefault(env, question, shown, readLine);
+    if (answer.kind === "cancel") {
+      env.stdout(`${t(loc, "prompt.cancel")}\n`);
+      return 0;
+    }
+    if (answer.kind === "keep") {
+      env.stdout(`${t(loc, "prompt.keep", { value: shown })}\n`);
+      return 0;
+    }
+    // Same forgiveness as the config hub's prompt: a bad number is explained,
+    // not a usage-error exit — nothing is written either way, and we re-ask.
+    if (!/^\d+$/.test(answer.value) || Number.parseInt(answer.value, 10) > SETUP_WIZARD_CAP_MAX) {
+      env.stdout(yellow(t(loc, "prompt.daily.invalid", { max: SETUP_WIZARD_CAP_MAX })));
+      continue;
+    }
+    return setDaily(answer.value, args, env);
   }
-  if (answer.kind === "keep") {
-    env.stdout(`${t(loc, "prompt.keep", { value: shown })}\n`);
-    return 0;
-  }
-  // Same forgiveness as the config hub's prompt: a bad number is explained,
-  // not a usage-error exit — nothing is written either way.
-  if (!/^\d+$/.test(answer.value) || Number.parseInt(answer.value, 10) > SETUP_WIZARD_CAP_MAX) {
-    env.stdout(`${t(loc, "prompt.daily.invalid", { max: SETUP_WIZARD_CAP_MAX })}\n`);
-    return 0;
-  }
-  return setDaily(answer.value, args, env);
 }
 
-/** The interactive half of bare `aifight set game`: prompt with the current
- *  list as the default, then delegate to setGames (validation + write). */
-async function promptGames(args: HandlerArgs, env: HandlerEnv, readLine?: SetReadLine): Promise<number> {
+/** The games picker's contract: given the currently-checked list, resolve the
+ *  new selection (null = cancelled, change nothing). The production picker is
+ *  the raw-mode checkbox list (select-multi.ts); tests inject a fake. */
+export type GamesPicker = (env: HandlerEnv, current: readonly string[]) => Promise<readonly string[] | null>;
+
+/** Test seam: bare `aifight set game`'s interactive flow, picker injected. */
+export async function runSetGamesInteractive(
+  args: HandlerArgs,
+  env: HandlerEnv,
+  picker: GamesPicker = pickGamesCheckbox,
+): Promise<number> {
+  return promptGames(args, env, picker);
+}
+
+/** The interactive half of bare `aifight set game`: the checkbox picker
+ *  (pre-checked from bridge.json, ALL checked when unset), then setGames owns
+ *  the write. Zero selected never reaches setGames — the picker's own
+ *  validate keeps the user picking instead. */
+async function promptGames(args: HandlerArgs, env: HandlerEnv, picker: GamesPicker): Promise<number> {
   const loc = env.locale?.() ?? resolveLocale();
   const config = readSetBridgeConfig();
-  const current = config.autoGames;
-  const shown = current === undefined || current.length === 0 ? "all games" : current.join(",");
-  const answer = await promptDefault(env, t(loc, "prompt.games.question", { games: SUPPORTED_GAMES.join(", ") }), shown, readLine);
-  if (answer.kind === "cancel") {
+  const current =
+    config.autoGames === undefined || config.autoGames.length === 0
+      ? [...SUPPORTED_GAMES]
+      : config.autoGames.filter(isSupportedGame);
+  const picked = await picker(env, current);
+  if (picked === null) {
     env.stdout(`${t(loc, "prompt.cancel")}\n`);
     return 0;
   }
-  if (answer.kind === "keep") {
-    env.stdout(`${t(loc, "prompt.keep", { value: shown })}\n`);
+  if (picked.length === 0) {
+    // A custom picker bypassing the checkbox's own guard — explain, change
+    // nothing (the checkbox itself re-asks instead of ever returning this).
+    env.stdout(yellow(t(loc, "set.game.picker.empty")));
     return 0;
   }
-  return setGames(answer.value, args, env);
+  return setGames(picked.join(","), args, env);
+}
+
+/** Per-game display names + picker hints. Ids stay English everywhere; the
+ *  display name mirrors displayGameName (inlined — the narrator module is
+ *  bridge-side and pulls in match machinery this command must not load). */
+const GAME_LABELS: Readonly<Record<string, string>> = {
+  texas_holdem: "Texas Hold'em",
+  liars_dice: "Liar's Dice",
+  coup: "Coup",
+};
+const GAME_HINT_KEYS: Readonly<Record<string, I18nKey>> = {
+  texas_holdem: "set.game.hint.texas_holdem",
+  liars_dice: "set.game.hint.liars_dice",
+  coup: "set.game.hint.coup",
+};
+
+/** The production games picker: the raw-mode checkbox list over
+ *  SUPPORTED_GAMES, pre-checked from the current selection. Confirming with
+ *  zero checked does NOT exit — the inline yellow hint explains that the way
+ *  to turn auto-play off entirely is `set daily 0` (design §1). Exported for
+ *  main.ts, which wires it as the menu's Games picker. */
+export async function pickGamesCheckbox(env: HandlerEnv, current: readonly string[]): Promise<readonly string[] | null> {
+  const loc = env.locale?.() ?? resolveLocale();
+  const picked = await selectMulti(
+    env,
+    {
+      title: t(loc, "set.game.picker.title"),
+      items: SUPPORTED_GAMES.map((game) => ({
+        label: GAME_LABELS[game] ?? game,
+        hint: t(loc, GAME_HINT_KEYS[game] ?? "set.game.hint.coup"),
+        checked: current.includes(game),
+      })),
+      navHint: t(loc, "set.game.picker.nav"),
+      validate: (selected) => (selected.length === 0 ? t(loc, "set.game.picker.empty") : undefined),
+    },
+    process.stdin as unknown as RawInput,
+    { locale: loc },
+  );
+  if (picked === null) return null;
+  return picked.map((i) => SUPPORTED_GAMES[i]!);
+}
+
+/** Yellow inline feedback (invalid input, picker guard) — plain when colors
+ *  are off (NO_COLOR / TERM=dumb / piped), so tests and scripts see text only. */
+function yellow(message: string): string {
+  return `${createAnsi().yellow(message)}\n`;
 }
 
 async function setDaily(raw: string, args: HandlerArgs, env: HandlerEnv): Promise<number> {
@@ -191,7 +258,9 @@ async function setDaily(raw: string, args: HandlerArgs, env: HandlerEnv): Promis
     throw cause;
   }
   const updated = { ...config, autoDailyLimit: limit, updatedAt: new Date().toISOString() };
-  writeBridgeConfig(updated);
+  // preserveMtime (V3 重启精确化): the running bridge re-reads the cap at every
+  // connect edge now, so this write must NOT read as "restart pending".
+  writeBridgeConfig(updated, { preserveMtime: true });
 
   if (args.jsonMode) {
     env.stdout(JSON.stringify({ status: "ok", autoDailyLimit: limit, platformPolicySynced: true }) + "\n");
@@ -203,10 +272,7 @@ async function setDaily(raw: string, args: HandlerArgs, env: HandlerEnv): Promis
     env.stdout(`Automatic ranked matches set to ${limit} per day.\n`);
   }
   env.stdout("AIFight platform policy synced.\n");
-  // The bridge read autoDailyLimit at startup and never looks again, so the new
-  // cap is inert until it restarts. Offer to do it here instead of leaving the
-  // user to discover that on their own.
-  await applyPendingBridgeRestart(env);
+  sayApplied(env);
   return 0;
 }
 
@@ -290,15 +356,28 @@ async function setGames(raw: string, args: HandlerArgs, env: HandlerEnv): Promis
 
   const config = readSetBridgeConfig();
   const updated = { ...config, autoGames: unique, updatedAt: new Date().toISOString() };
-  writeBridgeConfig(updated);
+  // preserveMtime (V3 重启精确化): the running bridge re-reads the games list
+  // at every connect edge now, so this write must NOT read as "restart pending".
+  writeBridgeConfig(updated, { preserveMtime: true });
 
   if (args.jsonMode) {
     env.stdout(JSON.stringify({ status: "ok", autoGames: unique }) + "\n");
     return 0;
   }
   env.stdout(`Automatic match games set to: ${unique.join(", ")}\n`);
-  await applyPendingBridgeRestart(env);
+  sayApplied(env);
   return 0;
+}
+
+/** The post-save truth for the two connect-edge settings (V3 ②): a running
+ *  bridge re-reads the daily cap and games list at every (re)connect, so no
+ *  restart is needed — and when nothing runs, the plain "applies on next
+ *  bridge start". */
+function sayApplied(env: HandlerEnv): void {
+  const loc = env.locale?.() ?? resolveLocale();
+  const icons = env.statusIcons ?? createStatusIcons();
+  const running = agentSeatHolderPid() !== undefined;
+  env.stdout(`${icons.ok} ${t(loc, running ? "set.apply.edge" : "set.apply.next_start")}\n`);
 }
 
 // ─── language ─────────────────────────────────────────────────────────
@@ -377,7 +456,10 @@ async function setDeclaredModel(args: HandlerArgs, env: HandlerEnv): Promise<num
   } else {
     updated = { ...config, declaredModel: raw, updatedAt };
   }
-  writeBridgeConfig(updated);
+  // preserveMtime (V3 重启精确化): the effective label is pushed to the
+  // platform over HTTP right below, so this write is display-only for the
+  // bridge and must NOT read as "restart pending".
+  writeBridgeConfig(updated, { preserveMtime: true });
 
   // Push the EFFECTIVE label: after a pin that's the name itself; after a
   // clear it falls back to the profile-derived model (or "direct").
