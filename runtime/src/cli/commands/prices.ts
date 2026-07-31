@@ -14,6 +14,7 @@ import {
   type ModelPrice,
 } from "../../usage/prices";
 import { UsageError, type HandlerArgs, type HandlerEnv } from "../shared";
+import { createOutput } from "../output";
 
 const USAGE = [
   "usage: aifight prices list",
@@ -44,10 +45,20 @@ export async function runPrices(args: HandlerArgs, env: HandlerEnv): Promise<num
       );
       return 0;
     }
-    env.stdout(`Currency: ${table.currency} (display only) · per 1M tokens · ${pricesFilePath()}\n`);
-    for (const [model, p] of entries) {
-      env.stdout(`  ${model}: input ${p.input} / output ${p.output} / cache-hit ${p.cacheHit}\n`);
-    }
+    const out = createOutput();
+    env.stdout(`${out.section("Model prices")}\n`);
+    env.stdout(
+      out.table(
+        [
+          { label: "MODEL" },
+          { label: "INPUT", align: "right" },
+          { label: "OUTPUT", align: "right" },
+          { label: "CACHE-HIT", align: "right" },
+        ],
+        entries.map(([model, p]) => [model, String(p.input), String(p.output), String(p.cacheHit)]),
+      ).join("\n") + "\n",
+    );
+    env.stdout(`${out.note(`${table.currency} (display only) · per 1M tokens · ${pricesFilePath()}`)}\n`);
     return 0;
   }
 

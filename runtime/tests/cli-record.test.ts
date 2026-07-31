@@ -121,7 +121,7 @@ describe("aifight record", () => {
     expect(res.code).toBe(0);
     // Uses the server-side name, not the local fallback.
     expect(res.stdout).toContain("AIFight record · Night Owl");
-    expect(res.stdout).toContain("Model: claude-opus-4-8");
+    expect(res.stdout).toMatch(/Model\s+claude-opus-4-8/);
     expect(res.stdout).toContain("#12");
     expect(res.stdout).toContain("1342 · Texas Hold'em");
     expect(res.stdout).toContain("24-11-3 (W-L-D)");
@@ -207,7 +207,7 @@ describe("aifight record", () => {
     const res = await runCapture(["record"], fetchImpl);
 
     expect(res.code).toBe(0);
-    expect(res.stdout).toContain("Bridge: not configured");
+    expect(res.stdout).toContain("not configured");
     expect(res.stdout).toContain("aifight setup");
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -234,5 +234,89 @@ describe("aifight record", () => {
 
     expect(res.code).toBe(1);
     expect(res.stderr).toContain("was not found on AIFight");
+  });
+
+  // The beta.2 bug the owner screenshotted (2026-07-31): the opponents column
+  // was padded but never truncated, so a long list swallowed the column gap
+  // and the date glued onto the last opponent's name ("Agent Kimi K32026-07-30").
+  it("truncates a long opponents list with an ellipsis and keeps the date column intact", async () => {
+    useTempHome();
+    writeBridgeConfig(testBridgeConfig());
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(
+        profileJson({
+          recent_matches: [
+            {
+              game: "texas_holdem",
+              agent_result: "win",
+              opponent_names: ["Agent Kimi K3 ExtraLong", "GPT-5.2 Codex Max", "Gemini 3.0 Pro Ultra"],
+              finished_at: "2026-07-30T10:00:00Z",
+            },
+          ],
+        }),
+      ),
+    ) as unknown as typeof fetch;
+
+    const res = await runCapture(["record"], fetchImpl);
+
+    expect(res.code).toBe(0);
+    const row = res.stdout.split("\n").find((l) => l.includes("2026-07-30"))!;
+    expect(row).toBeDefined();
+    expect(row).toContain("…");
+    expect(row.trimEnd().endsWith("2026-07-30")).toBe(true);
+    // The exact glue the bug produced must never come back.
+    expect(res.stdout).not.toMatch(/Pro\d{4}-\d{2}-\d{2}/);
+  });
+
+  it("aligns the per-game table (right-aligned numeric columns share a column)", async () => {
+    useTempHome();
+    writeBridgeConfig(testBridgeConfig());
+    const fetchImpl = vi.fn(async () => jsonResponse(profileJson())) as unknown as typeof fetch;
+
+    const res = await runCapture(["record"], fetchImpl);
+
+    const lines = res.stdout.split("\n");
+    const sectionIdx = lines.findIndex((l) => l === "Per game");
+    expect(sectionIdx).toBeGreaterThan(0);
+    const header = lines[sectionIdx + 1]!;
+    const row = lines[sectionIdx + 2]!;
+    expect(header).toContain("RATING");
+    expect(row).toContain("1342");
+    // Right-aligned: the value ends where the header ends.
+    expect(row.indexOf("1342") + 4).toBe(header.indexOf("RATING") + 6);
+  });
+
+  it("renders in zh — sections, labels and table headers translated, values untouched", async () => {
+    useTempHome();
+    writeBridgeConfig(testBridgeConfig({ locale: "zh" } as Partial<BridgeConfig>));
+    const fetchImpl = vi.fn(async () => jsonResponse(profileJson())) as unknown as typeof fetch;
+
+    const res = await runCapture(["record"], fetchImpl);
+
+    expect(res.code).toBe(0);
+    expect(res.stdout).toContain("AIFight 战绩 · Night Owl");
+    expect(res.stdout).toContain("总览");
+    expect(res.stdout).toContain("各游戏");
+    expect(res.stdout).toContain("近期对局");
+    expect(res.stdout).toContain("成就");
+    expect(res.stdout).toMatch(/排名\s+#12/);
+    expect(res.stdout).toContain("24-11-3 （胜-负-平）");
+    expect(res.stdout).toContain("共 38 场 · 覆盖 3 款游戏");
+    expect(res.stdout).toContain("已解锁 2 个");
+    // Game names and model ids stay untranslated.
+    expect(res.stdout).toContain("Texas Hold'em");
+    expect(res.stdout).toContain("claude-opus-4-8");
+  });
+
+  it("applies tones with colors on (rank green, model cyan, dim-bold table header)", async () => {
+    const { renderRecord } = await import("../src/cli/commands/record");
+    const { createOutput } = await import("../src/cli/output");
+    const text = renderRecord(profileJson(), "fallback", "https://aifight.ai", {
+      loc: "en",
+      out: createOutput({ enabled: true }),
+    });
+    expect(text).toContain("\x1b[32m#12\x1b[39m");
+    expect(text).toContain("\x1b[36mclaude-opus-4-8\x1b[39m");
+    expect(text).toContain("\x1b[2m\x1b[1mGAME");
   });
 });

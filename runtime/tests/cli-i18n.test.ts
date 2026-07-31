@@ -459,12 +459,13 @@ describe("aifight status in zh", () => {
     expect(code).toBe(0);
     const text = out.join("");
     expect(text).toContain("AIFight 状态");
-    expect(text).toContain("Agent：Steel Mongoose");
-    expect(text).toContain("档案：已认领，就绪");
-    expect(text).toContain("桥：已配置");
-    expect(text).toContain("自动排位对局：每日 5 场");
+    // V4: labels are a dim column followed by the styled value on the same row.
+    expect(text).toMatch(/Agent\s+Steel Mongoose/);
+    expect(text).toMatch(/档案\s+已认领，就绪/);
+    expect(text).toMatch(/桥\s+已配置/);
+    expect(text).toMatch(/自动排位对局\s+每日 5 场/);
     expect(text).toContain("匹配：已暂停（aifight resume 恢复）");
-    expect(text).toContain("游戏：texas_holdem, coup");
+    expect(text).toMatch(/游戏\s+texas_holdem, coup/);
     expect(text).toContain("此处不显示任何密钥。");
     // And the --json twin is unaffected (covered by cli-pause-resume, but
     // the locale must not leak into it either).

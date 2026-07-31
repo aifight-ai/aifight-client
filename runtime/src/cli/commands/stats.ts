@@ -14,6 +14,7 @@ import {
   type UsageBucket,
 } from "../../usage/stats";
 import { UsageError, type HandlerArgs, type HandlerEnv } from "../shared";
+import { createOutput } from "../output";
 
 const USAGE = [
   "usage: aifight stats [--days N] [--by-model] [--by-match] [--match <id>] [--json]",
@@ -86,39 +87,56 @@ export async function runStats(args: HandlerArgs, env: HandlerEnv): Promise<numb
 
   const t = summary.total;
   const cur = summary.currency;
-  env.stdout(`Window: ${since.toISOString().slice(0, 10)} → ${now.toISOString().slice(0, 10)}\n`);
+  const out = createOutput();
+  env.stdout(`${out.kv("Window", `${since.toISOString().slice(0, 10)} → ${now.toISOString().slice(0, 10)}`)}\n`);
   env.stdout(
-    `Total: ${t.calls} calls · ${t.matchIds.size} matches · in ${fmtTokens(t.inputTokens)} / out ${fmtTokens(t.outputTokens)}` +
+    `${out.kv("Total",
+      `${t.calls} calls · ${t.matchIds.size} matches · in ${fmtTokens(t.inputTokens)} / out ${fmtTokens(t.outputTokens)}` +
       (t.cachedTokens > 0 ? ` / cached ${fmtTokens(t.cachedTokens)}` : "") +
       (t.cacheWriteTokens > 0 ? ` / cache writes ${fmtTokens(t.cacheWriteTokens)}` : "") +
-      ` · avg out/call ${avgOutputPerCall(t)}\n`,
+      ` · avg out/call ${avgOutputPerCall(t)}`)}\n`,
   );
   if (t.estimatedCost !== undefined) {
     const perCall = avgCostPerCall(t);
     env.stdout(
-      `Estimated cost: ${cur}${round4(t.estimatedCost)}` +
-        (perCall !== undefined ? ` (avg ${cur}${round4(perCall)}/call)` : "") +
-        (t.unpricedCalls > 0 ? ` — ${t.unpricedCalls} calls unpriced` : "") +
-        ` · estimate only, your bill is authoritative\n`,
+      `${out.kv("Estimated cost",
+        `${cur}${round4(t.estimatedCost)}` +
+          (perCall !== undefined ? ` (avg ${cur}${round4(perCall)}/call)` : "") +
+          (t.unpricedCalls > 0 ? ` — ${t.unpricedCalls} calls unpriced` : "") +
+          ` · estimate only, your bill is authoritative`, { tone: "green" })}\n`,
     );
   } else {
-    env.stdout("Estimated cost: — (no model prices set; see `aifight prices set --help`)\n");
+    env.stdout(`${out.kv("Estimated cost", "— (no model prices set; see `aifight prices set --help`)")}\n`);
   }
 
   const wantsByMatch = args.flags["by-match"] === true || matchFilter !== undefined;
   const rows = wantsByMatch ? summary.byMatch : summary.byModel;
   const label = wantsByMatch ? "Match" : "Model";
-  env.stdout(`\n${label.padEnd(34)} ${"calls".padStart(6)} ${"in".padStart(10)} ${"out".padStart(10)} ${"avg out".padStart(8)} ${"est cost".padStart(12)}\n`);
-  for (const b of rows.slice(0, 25)) {
-    const cost =
-      b.estimatedCost !== undefined
-        ? `${cur}${round4(b.estimatedCost)}${b.unpricedCalls > 0 ? "*" : ""}`
-        : "—";
-    env.stdout(
-      `${truncKey(b.key).padEnd(34)} ${String(b.calls).padStart(6)} ${fmtTokens(b.inputTokens).padStart(10)} ${fmtTokens(b.outputTokens).padStart(10)} ${String(avgOutputPerCall(b)).padStart(8)} ${cost.padStart(12)}\n`,
-    );
-  }
-  if (rows.length > 25) env.stdout(`… ${rows.length - 25} more (use --json for everything)\n`);
+  env.stdout("\n");
+  env.stdout(
+    out.table(
+      [
+        { label, maxWidth: 34 },
+        { label: "calls", align: "right" },
+        { label: "in", align: "right" },
+        { label: "out", align: "right" },
+        { label: "avg out", align: "right" },
+        { label: "est cost", align: "right" },
+      ],
+      rows.slice(0, 25).map((b) => [
+        b.key,
+        String(b.calls),
+        fmtTokens(b.inputTokens),
+        fmtTokens(b.outputTokens),
+        String(avgOutputPerCall(b)),
+        b.estimatedCost !== undefined
+          ? `${cur}${round4(b.estimatedCost)}${b.unpricedCalls > 0 ? "*" : ""}`
+          : "—",
+      ]),
+      { indent: "" },
+    ).join("\n") + "\n",
+  );
+  if (rows.length > 25) env.stdout(out.note(`… ${rows.length - 25} more (use --json for everything)`) + "\n");
   return 0;
 }
 
@@ -126,10 +144,6 @@ function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
-}
-
-function truncKey(k: string): string {
-  return k.length <= 34 ? k : `${k.slice(0, 31)}…`;
 }
 
 function round4(n: number): number {

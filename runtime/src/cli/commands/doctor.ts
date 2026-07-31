@@ -5,6 +5,7 @@ import {
 } from "../../bridge/config";
 import { checkBridgeUpdate, type BridgeUpdateCheck } from "../../bridge/update-check";
 import { hello as defaultHello, type HelloResult } from "../../index";
+import { createOutput } from "../output";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { expectArity } from "../shared";
 
@@ -46,20 +47,24 @@ export async function runDoctor(
     return 0;
   }
 
+  const kit = createOutput();
   const out: string[] = [];
-  out.push("aifight doctor:");
-  out.push(`  version        : ${helloResult.runtimeVersion}`);
-  out.push(`  node           : ${process.versions.node}`);
-  out.push(`  platform       : ${process.platform}-${process.arch}`);
-  out.push(`  bridge config  : ${bridge.config}`);
+  out.push(kit.section("aifight doctor"));
+  out.push(...kit.kvRows([
+    ["version", helloResult.runtimeVersion],
+    ["node", process.versions.node],
+    ["platform", `${process.platform}-${process.arch}`],
+    ["bridge config", bridge.config],
+  ]));
   if (bridge.runtime !== undefined) {
-    out.push(`  runtime probe  : ${bridge.runtime.status}${bridge.runtime.detail ? ` (${bridge.runtime.detail})` : ""}`);
+    out.push(kit.kv("runtime probe", `${bridge.runtime.status}${bridge.runtime.detail ? ` (${bridge.runtime.detail})` : ""}`));
   }
   if (bridge.update !== undefined) {
-    out.push(`  version policy : ${bridge.update.message}`);
-    if (bridge.update.status === "update_recommended" || bridge.update.status === "unsupported") {
-      out.push("  update command : aifight update --yes");
-      out.push(`  manual npm     : ${bridge.update.policy?.updateCommand ?? "npm install -g @aifight/aifight"}`);
+    const newer = bridge.update.status === "update_recommended" || bridge.update.status === "unsupported";
+    out.push(kit.kv("version policy", bridge.update.message, newer ? { tone: "yellow" } : {}));
+    if (newer) {
+      out.push(kit.kv("update command", "aifight update --yes"));
+      out.push(kit.kv("manual npm", bridge.update.policy?.updateCommand ?? "npm install -g @aifight/aifight"));
     }
   }
   out.push("");

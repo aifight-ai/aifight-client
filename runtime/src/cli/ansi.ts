@@ -102,6 +102,39 @@ export function visibleWidth(s: string): number {
   return width;
 }
 
+/** Truncate plain text to `budget` VISIBLE columns, ellipsis included. Cuts
+ *  by display width (CJK/fullwidth = 2 columns): a wide character that would
+ *  cross the budget is dropped whole and the ellipsis takes the last column,
+ *  so the result never exceeds budget nor leaves an odd half-column. Lives
+ *  here next to visibleWidth (moved from menu-frame.ts, V4). */
+export function truncatePlain(s: string, budget: number): string {
+  if (budget <= 0) return "";
+  if (visibleWidth(s) <= budget) return s;
+  if (budget === 1) return "…";
+  let used = 0;
+  let out = "";
+  for (const ch of s) {
+    if (used + visibleWidth(ch) > budget - 1) break; // reserve the ellipsis column
+    out += ch;
+    used += visibleWidth(ch);
+  }
+  return `${out}…`;
+}
+
+/** Pad on the right with spaces to `width` VISIBLE columns (CJK-aware — the
+ *  counterpart of truncatePlain). No-op when already at/over width. */
+export function padEndVisible(s: string, width: number): string {
+  const w = visibleWidth(s);
+  return w >= width ? s : s + " ".repeat(width - w);
+}
+
+/** Pad on the left with spaces to `width` VISIBLE columns (numeric table
+ *  columns). No-op when already at/over width. */
+export function padStartVisible(s: string, width: number): string {
+  const w = visibleWidth(s);
+  return w >= width ? s : " ".repeat(width - w) + s;
+}
+
 /** The width table, hand-rolled (no wcwidth dependency): the East Asian
  *  Wide/Fullwidth ranges, plus 0x1F300–0x1FAFF so pictographs (emoji) get
  *  the same wide treatment as the mandated ranges. */

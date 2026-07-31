@@ -35,6 +35,7 @@ import {
 } from "../../notify/telegram/settings";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError, expectArity } from "../shared";
+import { createOutput } from "../output";
 import { applyPendingBridgeRestart, bridgeRestartPending, withDeferredApply } from "./apply-settings";
 import type { OnboardIO } from "./onboard-llm";
 import { createOnboardIO } from "./onboard-io";
@@ -313,22 +314,27 @@ function telegramStatus(args: HandlerArgs, env: HandlerEnv): number {
     return 0;
   }
 
-  env.stdout("AIFight Telegram companion\n\n");
+  const out = createOutput({ labelWidth: 18 });
+  env.stdout(`${out.section("AIFight Telegram companion")}\n\n`);
   if (section === undefined) {
     env.stdout(
       tokenTail !== undefined
-        ? `Status: bot token saved (…${tokenTail}), no chat linked\n`
-        : "Status: not set up\n",
+        ? `${out.kv("Status", `bot token saved (…${tokenTail}), no chat linked`, { tone: "yellow" })}\n`
+        : `${out.kv("Status", "not set up", { tone: "yellow" })}\n`,
     );
-    env.stdout("Set it up with: aifight telegram setup\n");
+    env.stdout(`${out.note("Set it up with: aifight telegram setup")}\n`);
     return 0;
   }
 
-  env.stdout(`Status: linked to chat ${section.chatId}\n`);
-  if (tokenTail !== undefined) env.stdout(`Bot token: …${tokenTail}\n`);
-  for (const line of describeTelegramSettings(section)) env.stdout(`${line}\n`);
+  env.stdout(`${out.kv("Status", `linked to chat ${section.chatId}`, { tone: "green" })}\n`);
+  if (tokenTail !== undefined) env.stdout(`${out.kv("Bot token", `…${tokenTail}`, { tone: "dim" })}\n`);
+  for (const line of describeTelegramSettings(section)) {
+    const sep = line.indexOf(": ");
+    if (sep > 0) env.stdout(`${out.kv(line.slice(0, sep), line.slice(sep + 2))}\n`);
+    else env.stdout(`${line}\n`);
+  }
   if (restartPending) {
-    env.stdout("\nSettings changed since the bridge started — run `aifight service restart` to apply them.\n");
+    env.stdout(`\n${out.note("Settings changed since the bridge started — run `aifight service restart` to apply them.")}\n`);
   }
   return 0;
 }

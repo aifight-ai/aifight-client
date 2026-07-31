@@ -390,7 +390,7 @@ describe("aifight status declared model line", () => {
     writeBridgeConfig(testBridgeConfig({ declaredModel: "Pinned Name" }));
     const r = await runCapture(["status"], statusFetch());
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("Declared model: Pinned Name (custom)");
+    expect(r.stdout).toMatch(/Declared model\s+Pinned Name \(custom\)/);
   });
 
   it("shows the profile-derived model when not pinned", async () => {
@@ -399,7 +399,7 @@ describe("aifight status declared model line", () => {
     seedProfileConfig("default", { claude: "claude-opus-4-6" }, "claude");
     const r = await runCapture(["status"], statusFetch());
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("Declared model: claude-opus-4-6 (from model config)");
+    expect(r.stdout).toMatch(/Declared model\s+claude-opus-4-6 \(from model config\)/);
   });
 
   it("shows the direct default when neither pin nor profile exists", async () => {
@@ -407,7 +407,7 @@ describe("aifight status declared model line", () => {
     writeBridgeConfig(testBridgeConfig());
     const r = await runCapture(["status"], statusFetch());
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("Declared model: direct (default)");
+    expect(r.stdout).toMatch(/Declared model\s+direct \(default\)/);
   });
 
   it("exposes value + origin in --json", async () => {

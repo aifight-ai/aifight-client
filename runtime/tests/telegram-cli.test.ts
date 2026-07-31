@@ -88,7 +88,7 @@ describe("aifight telegram status", () => {
     const r = await runCapture(["telegram", "status"]);
 
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("Status: not set up");
+    expect(r.stdout).toMatch(/Status\s+not set up/);
     expect(r.stdout).toContain("aifight telegram setup");
   });
 
@@ -111,9 +111,9 @@ describe("aifight telegram status", () => {
 
     expect(r.code).toBe(0);
     expect(r.stdout).toContain("linked to chat 4242");
-    expect(r.stdout).toContain("Match results: per_match");
-    expect(r.stdout).toContain("Daily digest: 22:00");
-    expect(r.stdout).toContain("Remote control: on");
+    expect(r.stdout).toMatch(/Match results\s+per_match/);
+    expect(r.stdout).toMatch(/Daily digest\s+22:00/);
+    expect(r.stdout).toMatch(/Remote control\s+on/);
     expect(r.stdout).not.toContain("1234567:TEST");
   });
 

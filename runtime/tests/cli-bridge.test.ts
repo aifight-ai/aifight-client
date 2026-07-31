@@ -86,7 +86,7 @@ describe("bridge CLI commands", () => {
     expect(cfg.runtimeType).toBe("direct");
     expect(cfg.runtimeLocalUrl).toBe("direct://local");
     expect(status.code).toBe(0);
-    expect(status.stdout).toContain("Bridge: configured");
+    expect(status.stdout).toMatch(/Bridge\s+configured/);
     expect(status.stdout).toContain(`Bridge ${RUNTIME_VERSION} is current enough`);
     expect(status.stdout).not.toContain("sk-super-secret-agent-key");
   });
@@ -229,8 +229,8 @@ describe("bridge CLI commands", () => {
       if (textUrl.endsWith("/api/bridge/version")) {
         return new Response(JSON.stringify({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.2.0-beta.3",
-          latest_version: "0.2.0-beta.3",
+          recommended_version: "0.2.0-beta.4",
+          latest_version: "0.2.0-beta.4",
           update_command: "npm install -g @aifight/aifight",
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
@@ -250,8 +250,8 @@ describe("bridge CLI commands", () => {
     const status = await runCapture(["status"], fetchImpl);
 
     expect(status.code).toBe(0);
-    expect(status.stdout).toContain("Update command: aifight update --yes");
-    expect(status.stdout).toContain("Manual npm command: npm install -g @aifight/aifight");
+    expect(status.stdout).toMatch(/Update command\s+aifight update --yes/);
+    expect(status.stdout).toMatch(/Manual npm command\s+npm install -g @aifight\/aifight/);
     expect(status.stdout).toContain("restarts `aifight.service`");
     expect(status.stdout).not.toMatch(/re-register|re-pair|aifight (setup|serve)/);
   });

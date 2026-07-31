@@ -14,7 +14,11 @@
 // 2026-07-31 V2: two-tone rows (cyan-bold main word + dim hint) and a fixed
 // THREE-line banner whose middle line is the matching state.
 
-import { visibleWidth, type Ansi } from "../ansi.js";
+import { truncatePlain, visibleWidth, type Ansi } from "../ansi.js";
+
+// truncatePlain moved to ansi.ts (V4) — re-exported here so existing
+// importers (menu-select.ts, select-multi.ts) keep working unchanged.
+export { truncatePlain };
 
 export interface MenuFrameChoice {
   /** "1".."16" for actions, "q" for the Quit row. */
@@ -96,25 +100,6 @@ export function columnLayout(choiceCount: number, width: number): ColumnLayout {
     left: Array.from({ length: leftCount }, (_, i) => i),
     right: Array.from({ length: choiceCount - leftCount }, (_, i) => leftCount + i),
   };
-}
-
-/** Truncate plain text to `budget` VISIBLE columns, ellipsis included. Cuts
- *  by display width (CJK/fullwidth = 2 columns): a wide character that would
- *  cross the budget is dropped whole and the ellipsis takes the last column,
- *  so the result never exceeds budget nor leaves an odd half-column. Exported
- *  for the multi-select picker (select-multi.ts), which truncates the same way. */
-export function truncatePlain(s: string, budget: number): string {
-  if (budget <= 0) return "";
-  if (visibleWidth(s) <= budget) return s;
-  if (budget === 1) return "…";
-  let used = 0;
-  let out = "";
-  for (const ch of s) {
-    if (used + visibleWidth(ch) > budget - 1) break; // reserve the ellipsis column
-    out += ch;
-    used += visibleWidth(ch);
-  }
-  return `${out}…`;
 }
 
 /** Truncate a segment line to `budget` visible columns, keeping whole

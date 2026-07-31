@@ -166,7 +166,7 @@ describe("bridge-first CLI command surface", () => {
     withRuntimeHome();
     const r = await runCapture(["status"]);
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("Bridge: not configured");
+    expect(r.stdout).toMatch(/Bridge\s+not configured/);
     expect(r.stdout).toContain("aifight setup");
     expect(r.stdout).toContain("aifight connect <PAIRING_CODE>");
     expect(r.stderr).toBe("");
@@ -201,8 +201,8 @@ describe("bridge-first CLI command surface", () => {
     const r = await runCapture(["status"], { fetchImpl });
 
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("Profile: claimed, ready");
-    expect(r.stdout).not.toContain("Profile: unclaimed");
+    expect(r.stdout).toMatch(/Profile\s+claimed, ready/);
+    expect(r.stdout).not.toMatch(/Profile\s+unclaimed/);
     expect(calls.some((c) => c.url.endsWith("/api/agents/me/status") && c.apiKey === "sk_test_secret")).toBe(true);
   });
 
@@ -235,9 +235,9 @@ describe("bridge-first CLI command surface", () => {
     };
     const r = await runCapture(["status", "--live"], { fetchImpl });
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("Connection: connected");
-    expect(r.stdout).toContain("Queue: coup (ranked)");
-    expect(r.stdout).toContain("Active matches: none");
+    expect(r.stdout).toMatch(/Connection\s+connected/);
+    expect(r.stdout).toMatch(/Queue\s+coup \(ranked\)/);
+    expect(r.stdout).toMatch(/Active matches\s+none/);
   });
 
   it("rejects removed commands instead of exposing old daemon/controlapi paths", async () => {
@@ -302,8 +302,8 @@ describe("bridge-first CLI command surface", () => {
 
     const paths = await runCapture(["strategy", "path", "texas_holdem"]);
     expect(paths.code).toBe(0);
-    expect(paths.stdout).toContain("Global strategy:");
-    expect(paths.stdout).toContain("texas_holdem:");
+    expect(paths.stdout).toMatch(/Global\s+~\/agents\/agent-strategy-1\/strategy\/global\.md/);
+    expect(paths.stdout).toMatch(/texas_holdem\s+~\/agents\/agent-strategy-1/);
 
     const init = await runCapture(["strategy", "init", "texas_holdem"]);
     expect(init.code).toBe(0);
@@ -652,8 +652,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.2.0-beta.3",
-          latest_version: "0.2.0-beta.3",
+          recommended_version: "0.2.0-beta.4",
+          latest_version: "0.2.0-beta.4",
           update_command: "npm install -g @aifight/aifight",
         });
       }
@@ -692,8 +692,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.2.0-beta.3",
-          latest_version: "0.2.0-beta.3",
+          recommended_version: "0.2.0-beta.4",
+          latest_version: "0.2.0-beta.4",
           update_command: "npm install -g @aifight/aifight",
         });
       }
@@ -948,7 +948,7 @@ describe("aifight set", () => {
 
     const status = await runCapture(["status"], { fetchImpl });
     expect(status.code).toBe(0);
-    expect(status.stdout).toContain("Automatic ranked matches: disabled");
+    expect(status.stdout).toMatch(/Automatic ranked matches\s+disabled/);
   });
 
   it("stores positive daily limits and syncs platform max_games_per_day", async () => {
@@ -1091,7 +1091,7 @@ describe("aifight set", () => {
     expect(r.stdout).toContain("liars_dice, coup");
 
     const status = await runCapture(["status"], { fetchImpl: async () => versionPolicyResp() });
-    expect(status.stdout).toContain("Games: liars_dice, coup");
+    expect(status.stdout).toMatch(/Games\s+liars_dice, coup/);
   });
 
   it("rejects unsupported automatic games", async () => {
@@ -1182,7 +1182,7 @@ describe("doctor", () => {
     withRuntimeHome();
     const r = await runCapture(["doctor"]);
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("bridge config  : not configured");
+    expect(r.stdout).toMatch(/bridge config\s+not configured/);
     expect(r.stdout).not.toMatch(/daemon|token file|port file/);
   });
 });

@@ -8,6 +8,7 @@ import {
 import { checkBridgeUpdate, type BridgeUpdateCheck } from "../../bridge/update-check";
 import { RUNTIME_VERSION } from "../../index";
 import { createStatusIcons } from "../ansi";
+import { createOutput } from "../output";
 import { resolveLocale, t } from "../i18n";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, expectArity, makeClient } from "../shared";
@@ -53,13 +54,16 @@ export async function runBridgeUpdate(
   }
 
   if (!args.jsonMode) {
+    const kit = createOutput();
+    env.stdout(`${kit.section("AIFight CLI update")}\n`);
     env.stdout(`${update.message}\n`);
     // The resolved "latest" (npm registry first, server policy as fallback) —
     // not the server policy's own latest_version field, which can lag npm.
     const latest = update.latestVersion ?? update.policy?.latestVersion;
     if (latest !== undefined) {
-      env.stdout(`Latest: ${latest}\n`);
-      env.stdout(`Update package: ${UPDATE_PACKAGE}\n`);
+      env.stdout(`${kit.kv("Current", RUNTIME_VERSION)}\n`);
+      env.stdout(`${kit.kv("Latest", latest, { tone: "yellow" })}\n`);
+      env.stdout(`${kit.kv("Package", UPDATE_PACKAGE)}\n`);
     }
   }
 
@@ -155,14 +159,14 @@ async function restartInstalledService(
 
   if (!status.installed) {
     if (!jsonMode) {
-      env.stdout("aifight.service is not installed. If you use a foreground Bridge, stop it and run `aifight run` again.\n");
+      env.stdout(`${icons(env).warn} aifight.service is not installed. If you use a foreground Bridge, stop it and run \`aifight run\` again.\n`);
     }
     return { installed: false };
   }
 
   if (status.running !== true) {
     if (!jsonMode) {
-      env.stdout("aifight.service is installed but not running. Start it with `aifight service start` when ready.\n");
+      env.stdout(`${icons(env).warn} aifight.service is installed but not running. Start it with \`aifight service start\` when ready.\n`);
     }
     return {
       installed: true,
@@ -178,7 +182,7 @@ async function restartInstalledService(
   const busyPhase = force ? null : await matchInProgressPhase(env);
   if (busyPhase !== null) {
     if (!jsonMode) {
-      env.stdout(`A match is in progress (${busyPhase}) — not restarting the service.\n`);
+      env.stdout(`${icons(env).warn} A match is in progress (${busyPhase}) — not restarting the service.\n`);
       env.stdout("The new package is installed. Run `aifight service restart` once the match ends,\n");
       env.stdout("or `aifight update --yes --force` to restart now and give up the match.\n");
     }
@@ -212,7 +216,7 @@ async function restartInstalledService(
   }
 
   if (!jsonMode) {
-    env.stdout("aifight.service restarted.\n");
+    env.stdout(`${icons(env).ok} aifight.service restarted.\n`);
   }
   return {
     installed: true,

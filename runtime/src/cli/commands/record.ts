@@ -3,11 +3,15 @@
 //
 // Reads the SAME public, unauthenticated endpoint the website agent page uses
 // (`GET /api/agents/{id}/profile`). No API key is sent — this is read-only
-// public data keyed by the locally-configured agent id. Output mirrors the
-// `status` command's plain key:value house style (no colour libraries).
+// public data keyed by the locally-configured agent id. Rendering goes through
+// the shared styled-output kit (cli/output.ts, V4) and the i18n dicts;
+// --json stays the raw profile payload, byte-stable.
 
 import { formatPublicNo } from "../../account/public-no";
 import { readBridgeConfig } from "../../bridge/config";
+import { resolveLocale, t, type Locale } from "../i18n";
+import { createOutput, type Output, type TableColumn } from "../output";
+import { visibleWidth } from "../ansi";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { expectArity, CommandError } from "../shared";
 
@@ -28,15 +32,17 @@ export async function runRecord(
   env: HandlerEnv,
 ): Promise<number> {
   expectArity(args, 0, 0, USAGE);
+  const loc = env.locale?.() ?? resolveLocale();
 
   const config = readOptionalBridgeConfig();
   if (config === undefined) {
     if (args.jsonMode) {
       env.stdout(JSON.stringify({ status: "not_configured" }) + "\n");
     } else {
-      env.stdout("AIFight record\n\n");
-      env.stdout("Bridge: not configured\n");
-      env.stdout("Next: run `aifight setup` to create your agent, then play a few matches.\n");
+      const out = createOutput();
+      env.stdout(`${out.section(t(loc, "record.title"))}\n\n`);
+      env.stdout(`${out.kv(t(loc, "status.label.bridge"), t(loc, "status.value.not_configured"), { tone: "yellow" })}\n`);
+      env.stdout(`${out.note(t(loc, "record.next"))}\n`);
     }
     return 0;
   }
@@ -52,7 +58,7 @@ export async function runRecord(
     return 0;
   }
 
-  env.stdout(renderRecord(profile, config.agentName, base, config.claimUrl));
+  env.stdout(renderRecord(profile, config.agentName, base, { loc, out: createOutput(), claimUrl: config.claimUrl }));
   return 0;
 }
 
@@ -88,7 +94,15 @@ async function fetchProfile(url: string, fetchImpl: typeof fetch): Promise<unkno
 
 // ── Rendering ────────────────────────────────────────────────────────
 
-function renderRecord(profile: unknown, fallbackName: string, base: string, claimUrl?: string): string {
+export interface RenderRecordDeps {
+  readonly loc: Locale;
+  readonly out: Output;
+  readonly claimUrl?: string;
+}
+
+/** Exported for tests: the styled human rendering (colors/width injectable). */
+export function renderRecord(profile: unknown, fallbackName: string, base: string, deps: RenderRecordDeps): string {
+  const { loc, out } = deps;
   const root = asObj(profile);
   const agent = asObj(root.agent);
   const summary = asObj(root.summary);
@@ -104,14 +118,14 @@ function renderRecord(profile: unknown, fallbackName: string, base: string, clai
   const totalGames = asNum(summary.total_games) ?? sumRatings(ratings, "games_played");
   const lines: string[] = [];
 
-  const idLabel = publicNo !== undefined && publicNo > 0 ? `  (ID ${formatPublicNo(publicNo)})` : "";
-  lines.push(`AIFight record · ${name}${idLabel}`);
-  if (model) lines.push(`Model: ${model}`);
+  const idSuffix = publicNo !== undefined && publicNo > 0 ? out.ansi.dim(`  (ID ${formatPublicNo(publicNo)})`) : "";
+  lines.push(`${out.section(t(loc, "record.title"))} · ${out.ansi.bold(name)}${idSuffix}`);
+  if (model) lines.push(out.kv(t(loc, "record.model"), model, { tone: "cyan" }));
   lines.push("");
 
   if (totalGames <= 0) {
-    lines.push("No ranked matches yet — play a few, then check back.");
-    const note = rankedStatusNote(isClaimed, 0, false, base, claimUrl);
+    lines.push(t(loc, "record.empty"));
+    const note = rankedStatusNote(isClaimed, 0, false, base, deps);
     if (note) {
       lines.push("");
       lines.push(note);
@@ -131,16 +145,19 @@ function renderRecord(profile: unknown, fallbackName: string, base: string, clai
   const bestRating = asNum(summary.best_display_rating);
   const bestGame = asStr(summary.best_game);
 
-  lines.push("Overall");
-  lines.push(`  ${padRight("Rank", 14)}${globalRank !== undefined && eligible ? `#${globalRank}` : "not yet ranked"}`);
-  if (bestRating !== undefined && bestGame) {
-    lines.push(`  ${padRight("Best rating", 14)}${Math.round(bestRating)} · ${gameLabel(bestGame)}`);
-  }
-  lines.push(`  ${padRight("Record", 14)}${wins}-${losses}-${draws} (W-L-D)`);
-  lines.push(`  ${padRight("Win rate", 14)}${pct(winRate)}`);
-  lines.push(`  ${padRight("Games", 14)}${totalGames} across ${gamesActive} game${gamesActive === 1 ? "" : "s"}`);
+  lines.push(out.section(t(loc, "record.section.overall")));
+  const ranked = globalRank !== undefined && eligible;
+  lines.push(...out.kvRows([
+    [t(loc, "record.rank"), ranked ? `#${globalRank}` : t(loc, "record.rank.unranked"), ranked ? "green" : "default"],
+    ...(bestRating !== undefined && bestGame
+      ? [[t(loc, "record.best"), `${Math.round(bestRating)} · ${gameLabel(bestGame)}`] as const]
+      : []),
+    [t(loc, "record.record"), `${wins}-${losses}-${draws} ${t(loc, "record.wld")}`],
+    [t(loc, "record.winrate"), pct(winRate)],
+    [t(loc, "record.games"), t(loc, "record.games.value", { total: totalGames, active: gamesActive, unit: t(loc, gamesActive === 1 ? "record.games.unit.one" : "record.games.unit.many") })],
+  ]));
 
-  const note = rankedStatusNote(isClaimed, gamesNeeded, eligible, base, claimUrl);
+  const note = rankedStatusNote(isClaimed, gamesNeeded, eligible, base, deps);
   if (note) {
     lines.push("");
     lines.push(note);
@@ -150,37 +167,73 @@ function renderRecord(profile: unknown, fallbackName: string, base: string, clai
   const rated = ratings.map(asObj).filter((r) => (asNum(r.games_played) ?? 0) > 0);
   if (rated.length > 0) {
     lines.push("");
-    lines.push("Per game");
-    lines.push(renderPerGameTable(rated));
+    lines.push(out.section(t(loc, "record.section.pergame")));
+    const columns: TableColumn[] = [
+      { label: t(loc, "record.col.game") },
+      { label: t(loc, "record.col.rating"), align: "right" },
+      { label: t(loc, "record.col.games"), align: "right" },
+      { label: t(loc, "record.col.wld"), align: "right" },
+      { label: t(loc, "record.col.winpct"), align: "right" },
+    ];
+    const rows = rated.map((r) => {
+      const rating = asNum(r.display_rating) ?? asNum(r.rating) ?? 0;
+      return [
+        gameLabel(asStr(r.game) ?? "-"),
+        String(Math.round(rating)),
+        String(asNum(r.games_played) ?? 0),
+        `${asNum(r.wins) ?? 0}-${asNum(r.losses) ?? 0}-${asNum(r.draws) ?? 0}`,
+        pct(asNum(r.win_rate) ?? 0),
+      ];
+    });
+    lines.push(...out.table(columns, rows));
   }
 
   // ── Recent matches ──
   const recentRows = recent.map(asObj).slice(0, 5);
   if (recentRows.length > 0) {
     lines.push("");
-    lines.push("Recent matches");
-    for (const m of recentRows) {
-      const g = padRight(gameLabel(asStr(m.game) ?? "-"), 14);
-      const result = padRight(asStr(m.agent_result) ?? "-", 5);
+    lines.push(out.section(t(loc, "record.section.recent")));
+    const gamesCol = recentRows.map((m) => gameLabel(asStr(m.game) ?? "-"));
+    const resultsCol = recentRows.map((m) => asStr(m.agent_result) ?? "-");
+    const gameW = Math.max(visibleWidth(t(loc, "record.col.game")), ...gamesCol.map(visibleWidth));
+    const resultW = Math.max(visibleWidth(t(loc, "record.col.result")), ...resultsCol.map(visibleWidth));
+    // The 2026-07 glued-column bug: the opponents list used to be padded (never
+    // truncated), so a long one swallowed the gap and the date glued onto the
+    // last name. The opponents column now truncates with an ellipsis to a
+    // terminal-aware budget and the date always keeps its own column.
+    const termWidth = (process.stdout.columns ?? 0) > 0 ? process.stdout.columns! : 80;
+    const fixed = 2 /* indent */ + gameW + 2 + resultW + 2 + 10 /* date */ + 2;
+    const oppsMax = Math.max(20, termWidth - fixed);
+    const columns: TableColumn[] = [
+      { label: t(loc, "record.col.game"), minWidth: gameW },
+      { label: t(loc, "record.col.result"), minWidth: resultW },
+      { label: t(loc, "record.col.opponents"), maxWidth: oppsMax },
+      { label: t(loc, "record.col.date"), minWidth: 10 },
+    ];
+    const rows = recentRows.map((m, i) => {
       const opps = asArr(m.opponent_names).map((o) => asStr(o) ?? "").filter(Boolean);
-      const vs = opps.length > 0 ? `vs ${opps.join(", ")}` : "";
-      const when = (asStr(m.finished_at) ?? "").slice(0, 10);
-      lines.push(`  ${g}${result} ${padRight(vs, 28)}${when}`.trimEnd());
-    }
+      return [
+        gamesCol[i]!,
+        resultsCol[i]!,
+        opps.length > 0 ? `vs ${opps.join(", ")}` : "",
+        (asStr(m.finished_at) ?? "").slice(0, 10),
+      ];
+    });
+    lines.push(...out.table(columns, rows));
   }
 
   // ── Achievements ──
   if (achievements.length > 0) {
     lines.push("");
-    lines.push(`Achievements  ${achievements.length} unlocked`);
+    lines.push(`${out.section(t(loc, "record.section.achievements"))}  ${out.ansi.dim(t(loc, "record.achievements.unlocked", { count: achievements.length }))}`);
     const shown = achievements.map(asObj).slice(0, 6);
     for (const a of shown) {
       const title = asStr(a.title) ?? "—";
       const tier = asStr(a.tier) ?? "common";
-      lines.push(`  · ${title} — ${tier}`);
+      lines.push(`  · ${title} ${out.ansi.dim(`— ${tier}`)}`);
     }
     if (achievements.length > shown.length) {
-      lines.push(`  … and ${achievements.length - shown.length} more`);
+      lines.push(out.note(t(loc, "record.achievements.more", { count: achievements.length - shown.length })));
     }
   }
 
@@ -202,45 +255,24 @@ function rankedStatusNote(
   gamesNeeded: number,
   eligible: boolean,
   base: string,
-  claimUrl?: string,
+  deps: RenderRecordDeps,
 ): string | undefined {
+  const { loc, out } = deps;
   if (!isClaimed) {
     // Point at the REAL claim link when it is still on file locally — sending
     // the user to the dashboard without the link is a dead end.
-    if (claimUrl !== undefined) {
-      return `Note: this agent isn't claimed yet — open this link to claim it before it can play ranked:\n  ${claimUrl}`;
+    if (deps.claimUrl !== undefined) {
+      return `${out.note(`Note: ${t(loc, "record.note.unclaimed_link")}`)}\n  ${deps.claimUrl}`;
     }
-    return `Note: this agent isn't claimed yet — run \`aifight status\` for its claim link (or find the agent in the dashboard: ${base}/dashboard) before it can play ranked.`;
+    return out.note(`Note: ${t(loc, "record.note.unclaimed", { url: `${base}/dashboard` })}`);
   }
   if (!eligible && gamesNeeded > 0) {
-    return `Note: ${gamesNeeded} more ranked match${gamesNeeded === 1 ? "" : "es"} in one game to qualify for the leaderboard.`;
+    return out.note(`Note: ${t(loc, "record.note.qualify", { count: gamesNeeded, match: t(loc, gamesNeeded === 1 ? "record.note.match.one" : "record.note.match.many") })}`);
   }
   return undefined;
 }
 
-function renderPerGameTable(rated: ReadonlyArray<Record<string, unknown>>): string {
-  const headers = ["GAME", "RATING", "GAMES", "W-L-D", "WIN%"];
-  const rows: string[][] = rated.map((r) => {
-    const rating = asNum(r.display_rating) ?? asNum(r.rating) ?? 0;
-    const wld = `${asNum(r.wins) ?? 0}-${asNum(r.losses) ?? 0}-${asNum(r.draws) ?? 0}`;
-    return [
-      gameLabel(asStr(r.game) ?? "-"),
-      String(Math.round(rating)),
-      String(asNum(r.games_played) ?? 0),
-      wld,
-      pct(asNum(r.win_rate) ?? 0),
-    ];
-  });
-  const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((row) => row[i]!.length)));
-  const fmt = (cells: string[]) => "  " + cells.map((c, i) => padRight(c, widths[i]!)).join("  ");
-  return [fmt(headers), ...rows.map(fmt)].join("\n");
-}
-
-// ── Tiny helpers (no shared dependency; format.ts's padRight is private) ──
-
-function padRight(s: string, width: number): string {
-  return s.length >= width ? s : s + " ".repeat(width - s.length);
-}
+// ── Tiny helpers (no shared dependency) ──
 
 function pct(fraction: number): string {
   return `${Math.round(fraction * 100)}%`;
@@ -275,3 +307,4 @@ function readOptionalBridgeConfig(): ReturnType<typeof readBridgeConfig> | undef
     throw cause;
   }
 }
+

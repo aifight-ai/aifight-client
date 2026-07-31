@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { createLocalMatchSessionStore, type LocalMatchSessionListItem } from "../../session/local-match-session-store";
 import { CommandError, expectArity, type HandlerArgs, type HandlerEnv, UsageError } from "../shared";
+import { createOutput } from "../output";
 import { resolveAgentDir } from "../../profile/profile-loader";
 import { validateConfig } from "../../profile/config-schema";
 import { resolveModelCapabilities } from "../../llm/capabilities/validate-capabilities";
@@ -50,7 +51,35 @@ export async function runBridgeSessions(
       env.stdout("No local AIFight match sessions found yet.\n");
       return 0;
     }
-    env.stdout(sessions.map(formatSessionLine).join("\n") + "\n");
+    const out = createOutput();
+    env.stdout(`${out.section("Local match sessions")}\n`);
+    env.stdout(
+      out.table(
+        [
+          { label: "SESSION" },
+          { label: "GAME" },
+          { label: "RESULT" },
+          { label: "DECISIONS", align: "right" },
+          { label: "UPDATED", tone: "dim" },
+          { label: "INFO", tone: "dim" },
+        ],
+        sessions.map((item) => {
+          const info = [
+            (item.token_truncation_count ?? 0) > 0 ? `truncated=${item.token_truncation_count}` : "",
+            errorClassTotal(item) > 0 ? `errors=${errorClassTotal(item)}` : "",
+            item.real_match_id ? `match=${shortId(item.real_match_id)}` : "",
+          ].filter(Boolean).join(" ");
+          return [
+            shortId(item.session_id),
+            item.game ?? "unknown_game",
+            item.result_label ?? item.status,
+            String(item.decision_count),
+            item.updated_at,
+            info,
+          ];
+        }),
+      ).join("\n") + "\n",
+    );
     return 0;
   }
 
@@ -105,22 +134,6 @@ function requireSession(
     throw new CommandError("session_not_found", `local match session not found: ${selector}`);
   }
   return item;
-}
-
-function formatSessionLine(item: LocalMatchSessionListItem): string {
-  const game = item.game ?? "unknown_game";
-  const result = item.result_label ?? item.status;
-  const match = item.real_match_id ? ` match=${shortId(item.real_match_id)}` : "";
-  return [
-    shortId(item.session_id),
-    game,
-    result,
-    `decisions=${item.decision_count}`,
-    (item.token_truncation_count ?? 0) > 0 ? `truncated=${item.token_truncation_count}` : "",
-    errorClassTotal(item) > 0 ? `errors=${errorClassTotal(item)}` : "",
-    `updated=${item.updated_at}`,
-    match.trim(),
-  ].filter(Boolean).join("  ");
 }
 
 function formatSessionDetail(item: LocalMatchSessionListItem, fixTokens?: number): string {

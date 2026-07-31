@@ -3,7 +3,11 @@ import path from "node:path";
 
 import { readBridgeConfig } from "../../bridge/config";
 import type { GameType } from "../../decision/types";
+import { getRuntimeHome } from "../../store/paths";
 import { resolveLocalStrategyPaths } from "../../strategy/local-strategy";
+import { createStatusIcons } from "../ansi";
+import { resolveLocale, t } from "../i18n";
+import { createOutput } from "../output";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { SUPPORTED_GAMES, UsageError, expectArity, isSupportedGame } from "../shared";
 
@@ -46,6 +50,8 @@ function printStrategyPaths(
   args: HandlerArgs,
   env: HandlerEnv,
 ): number {
+  const loc = env.locale?.() ?? resolveLocale();
+  const out = createOutput();
   const config = readBridgeConfig();
   const paths = resolveLocalStrategyPaths(config.agentId, game);
   const gamePaths = game === undefined
@@ -66,14 +72,17 @@ function printStrategyPaths(
     return 0;
   }
 
-  env.stdout(`Strategy root: ${paths.root}\n`);
-  env.stdout(`Global strategy: ${paths.global}\n`);
-  env.stdout(`Game strategy directory: ${paths.gamesDir}\n`);
-  for (const item of gamePaths) {
-    env.stdout(`${item.game}: ${item.path}\n`);
+  env.stdout(`${out.section(t(loc, "strategy.section"))}\n`);
+  for (const line of out.kvRows([
+    [t(loc, "strategy.root"), shortenHome(paths.root), "dim"],
+    [t(loc, "strategy.global"), shortenHome(paths.global), "dim"],
+    [t(loc, "strategy.gamesdir"), shortenHome(paths.gamesDir), "dim"],
+    ...gamePaths.map((item) => [item.game, shortenHome(item.path), "dim"] as const),
+  ])) {
+    env.stdout(`${line}\n`);
   }
-  env.stdout("Strategy files are Markdown/free-text .md files, not JSON config files.\n");
-  env.stdout("Missing or empty strategy files are skipped during matches.\n");
+  env.stdout(`${out.note(t(loc, "strategy.note.format"))}\n`);
+  env.stdout(`${out.note(t(loc, "strategy.note.skip"))}\n`);
   return 0;
 }
 
@@ -102,11 +111,15 @@ function initStrategyFiles(
     env.stdout(JSON.stringify({ status: "ok", created, kept, files }) + "\n");
     return 0;
   }
-  env.stdout(`Strategy files ready (${created} created, ${kept} kept).\n`);
-  for (const file of files) {
-    env.stdout(`${labelFor(file)}: ${file.path}\n`);
+  const loc = env.locale?.() ?? resolveLocale();
+  const out = createOutput();
+  env.stdout(`${t(loc, "strategy.init.ready", { created, kept })}\n`);
+  for (const line of out.kvRows(
+    files.map((file) => [labelFor(file), shortenHome(file.path), "dim"] as const),
+  )) {
+    env.stdout(`${line}\n`);
   }
-  env.stdout("Edit these Markdown/free-text files with strategy guidance. Empty files are skipped during matches.\n");
+  env.stdout(`${out.note(t(loc, "strategy.init.note"))}\n`);
   return 0;
 }
 
@@ -131,19 +144,21 @@ function validateStrategyFiles(
     return warnings.length === 0 ? 0 : 1;
   }
 
+  const loc = env.locale?.() ?? resolveLocale();
+  const icons = env.statusIcons ?? createStatusIcons();
   for (const file of files) {
     const label = labelFor(file);
     if (!file.exists) {
-      env.stdout(`${label}: missing (${file.path})\n`);
+      env.stdout(`${icons.warn} ${label}: ${t(loc, "strategy.validate.missing")} (${shortenHome(file.path)})\n`);
       continue;
     }
     if (file.empty) {
-      env.stdout(`${label}: empty (${file.path})\n`);
+      env.stdout(`${icons.warn} ${label}: ${t(loc, "strategy.validate.empty")} (${shortenHome(file.path)})\n`);
       continue;
     }
-    env.stdout(`${label}: ok, ${file.bytes} bytes${file.truncatedByBridge ? " (Bridge will read the first 65536 bytes)" : ""}\n`);
+    env.stdout(`${icons.ok} ${label}: ${t(loc, "strategy.validate.ok", { bytes: file.bytes })}${file.truncatedByBridge ? ` ${t(loc, "strategy.validate.truncated")}` : ""}\n`);
     for (const warning of file.warnings) {
-      env.stdout(`  warning: ${warning}\n`);
+      env.stdout(`  ${icons.warn} ${t(loc, "strategy.validate.warning", { warning })}\n`);
     }
   }
   return warnings.length === 0 ? 0 : 1;
@@ -230,6 +245,16 @@ function detectSecretLikeText(text: string): string[] {
 
 function labelFor(file: StrategyFile): string {
   return file.scope === "global" ? "global" : `game:${file.game}`;
+}
+
+/** Display a path under the runtime home as "~/…" (V4 — the owner's
+ *  screenshot was a wall of raw /root/.aifight/runtime/... absolute paths).
+ *  --json keeps the full paths; this is display-only. */
+function shortenHome(filePath: string): string {
+  const home = getRuntimeHome();
+  if (filePath === home) return "~";
+  const prefix = `${home}${path.sep}`;
+  return filePath.startsWith(prefix) ? `~${path.sep}${filePath.slice(prefix.length)}` : filePath;
 }
 
 function chmodBestEffort(filePath: string, mode: number): void {

@@ -8,6 +8,7 @@ import { checkBridgeUpdate } from "../../bridge/update-check";
 import { BridgeServiceError, statusBridgeService } from "../../bridge/service";
 import { RUNTIME_VERSION } from "../../index";
 import { getRuntimeHome } from "../../store/paths";
+import { createStatusIcons } from "../ansi";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError, isSupportedGame, makeClient, SUPPORTED_GAMES } from "../shared";
 import { ControlClientError } from "../control-client";
@@ -107,7 +108,8 @@ export async function runBridgeStart(
     }) + "\n");
   } else {
     const noun = request.count === 1 ? "match" : "matches";
-    env.stdout(`Requested ${request.count} manual ranked ${displayGameName(request.game)} ${noun} for ${config.agentName}.\n`);
+    const icons = env.statusIcons ?? createStatusIcons();
+    env.stdout(`${icons.ok} Requested ${request.count} manual ranked ${displayGameName(request.game)} ${noun} for ${config.agentName}.\n`);
     env.stdout("The running Bridge will keep your Agent online and handle the match when AIFight pairs it.\n");
   }
   return 0;

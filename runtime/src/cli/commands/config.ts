@@ -42,6 +42,8 @@ const KNOWN_CONFIG_SUBS: readonly string[] = [
 import { runBridgeSet, SETUP_WIZARD_CAP_MAX } from "./bridge-set.js";
 import { readBridgeConfig } from "../../bridge/config.js";
 import { createAnsi } from "../ansi.js";
+import { resolveLocale, t } from "../i18n.js";
+import { createOutput } from "../output.js";
 import { resolveAgentDir } from "../../profile/profile-loader.js";
 import { resolveModelCapabilities } from "../../llm/capabilities/validate-capabilities.js";
 import { validateConfig, type LLMConfig, type SecretRef as ConfigSecretRef } from "../../profile/config-schema.js";
@@ -529,6 +531,8 @@ async function runConfigShow(args: HandlerArgs, env: HandlerEnv): Promise<number
   expectArity(args, 0, 1, "usage: aifight config show [agent-slug]");
   const slug = (args.positional[0] as string | undefined) ?? "default";
   const { config } = await readConfigJson(slug);
+  const loc = env.locale?.() ?? resolveLocale();
+  const out = createOutput({ labelWidth: 18 });
 
   const profiles = [];
   for (const [id, def] of Object.entries(config.profiles)) {
@@ -556,21 +560,24 @@ async function runConfigShow(args: HandlerArgs, env: HandlerEnv): Promise<number
     return 0;
   }
 
-  env.stdout(`aifight config: agent "${slug}"\n`);
-  env.stdout(`  active profile : ${config.activeProfile}\n`);
-  env.stdout(`  routing default: ${config.routing.default}\n`);
+  env.stdout(`${out.section(t(loc, "configshow.title", { slug }))}\n`);
+  env.stdout(`${out.kv(t(loc, "configshow.active"), config.activeProfile)}\n`);
+  env.stdout(`${out.kv(t(loc, "configshow.routing"), config.routing.default)}\n`);
   const byGame = config.routing.byGame ?? {};
   const routes = Object.entries(byGame);
   if (routes.length > 0) {
-    env.stdout(`  per-game route : ${routes.map(([g, p]) => `${g}->${p}`).join(", ")}\n`);
+    env.stdout(`${out.kv(t(loc, "configshow.routes"), routes.map(([g, p]) => `${g} → ${p}`).join(", "))}\n`);
   }
-  env.stdout("  profiles:\n");
   for (const p of profiles) {
-    env.stdout(`    - ${p.id} (${p.displayName})\n`);
-    env.stdout(`        protocol : ${p.protocol}\n`);
-    env.stdout(`        model    : ${p.model}\n`);
-    env.stdout(`        baseURL  : ${p.baseURL ?? "(protocol default)"}\n`);
-    env.stdout(`        key      : ${p.key} ${p.keyResolvable ? "(resolvable)" : "(NOT resolvable)"}\n`);
+    env.stdout(`\n${out.ansi.bold(p.id)}${out.ansi.dim(` (${p.displayName})`)}\n`);
+    env.stdout(`${out.kv(t(loc, "configshow.protocol"), p.protocol)}\n`);
+    env.stdout(`${out.kv(t(loc, "configshow.model"), p.model, { tone: "cyan" })}\n`);
+    env.stdout(`${out.kv(t(loc, "configshow.baseurl"), p.baseURL ?? t(loc, "configshow.default_base"))}\n`);
+    env.stdout(`${out.kv(
+      t(loc, "configshow.key"),
+      `${out.ansi.dim(p.key)} ${p.keyResolvable ? t(loc, "configshow.resolvable") : t(loc, "configshow.not_resolvable")}`,
+      p.keyResolvable ? { tone: "green" } : { tone: "yellow" },
+    )}\n`);
   }
   env.stdout("\n");
   return 0;
