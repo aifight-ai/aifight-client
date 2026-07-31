@@ -51,13 +51,18 @@ interface Captured {
   readonly stderr: string;
 }
 
-async function runCapture(argv: readonly string[], fetchImpl?: typeof fetch): Promise<Captured> {
+async function runCapture(
+  argv: readonly string[],
+  fetchImpl?: typeof fetch,
+  extraEnv?: Record<string, unknown>,
+): Promise<Captured> {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const code = await run(argv, {
     stdout: (s) => stdout.push(s),
     stderr: (s) => stderr.push(s),
     ...(fetchImpl !== undefined ? { fetchImpl } : {}),
+    ...(extraEnv ?? {}),
   });
   return { code, stdout: stdout.join(""), stderr: stderr.join("") };
 }
@@ -243,6 +248,59 @@ describe("aifight resume", () => {
     expect(r.code).toBe(0);
     expect(r.stdout).toContain("not paused");
     expect(seen).toHaveLength(0);
+  });
+});
+
+// V2 (2026-07-31): human feedback leads with the status icons — a green ✓ on
+// success, a yellow ⚠ on warnings; "OK"/"!" when colors are off. --json stays
+// byte-stable: no icons, ever.
+describe("status icons (V2)", () => {
+  const ICONS = { statusIcons: { ok: "✓", warn: "⚠" } };
+
+  it("pause: ✓ on the pause, ⚠ on the no-bridge note — but never in --json", async () => {
+    useTempHome();
+    writeBridgeConfig(testBridgeConfig());
+    const { fetchImpl } = recordingFetch([
+      { urlIncludes: "/api/queue/leave", response: new Response("{}", { status: 200 }) },
+    ]);
+
+    const human = await runCapture(["pause"], fetchImpl, ICONS);
+    expect(human.stdout).toContain("✓ Automatic matching paused");
+    expect(human.stdout).toContain("⚠ No bridge is running");
+
+    writeBridgeConfig(testBridgeConfig()); // unpause for the json round
+    const json = await runCapture(["pause", "--json"], fetchImpl);
+    expect(json.stdout).not.toContain("✓");
+    expect(json.stdout).not.toContain("⚠");
+    expect(JSON.parse(json.stdout.trim())).toMatchObject({ status: "paused", matchingPaused: true });
+  });
+
+  it("resume: ✓ on the re-join, ⚠ on the cap-0 advisory", async () => {
+    useTempHome();
+    writeBridgeConfig(testBridgeConfig({ matchingPaused: true, autoDailyLimit: 0 }));
+
+    const capOff = await runCapture(["resume"], undefined, ICONS);
+    expect(capOff.stdout).toContain("✓ Automatic matching resumed.");
+    expect(capOff.stdout).toContain("⚠ The daily cap is 0");
+
+    const json = await runCapture(["resume", "--json"]);
+    expect(json.stdout).not.toContain("✓");
+    expect(JSON.parse(json.stdout.trim())).toMatchObject({ status: "not_paused", matchingPaused: false });
+  });
+
+  it("ASCII fallback without a TTY: OK / ! instead of the glyphs", async () => {
+    useTempHome();
+    writeBridgeConfig(testBridgeConfig());
+    const { fetchImpl } = recordingFetch([
+      { urlIncludes: "/api/queue/leave", response: new Response("{}", { status: 200 }) },
+    ]);
+    // No statusIcons injected and vitest's stdout is no TTY → the gate picks
+    // the plain pair.
+    const r = await runCapture(["pause"], fetchImpl);
+    expect(r.stdout).toContain("OK Automatic matching paused");
+    expect(r.stdout).toContain("! No bridge is running");
+    expect(r.stdout).not.toContain("✓");
+    expect(r.stdout).not.toContain("⚠");
   });
 });
 

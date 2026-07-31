@@ -79,6 +79,13 @@ export interface BridgeConfig {
    * without a restart). Manual matches and challenges are unaffected.
    */
   readonly matchingPaused?: boolean;
+  /**
+   * CLI display language ("en" default, "zh" 中文). Display-only: the bridge
+   * runner never reads it, so writes go through writeBridgeConfig with
+   * preserveMtime (no spurious restart offer). Set via the menu's Language
+   * item or `aifight set language <en|zh>`; AIFIGHT_LANG overrides it.
+   */
+  readonly locale?: "en" | "zh";
   /** Telegram bot token. Flat on purpose: ENCRYPTED_FIELDS works on top-level
    *  field names, so this gets encryption-at-rest, redaction and old-secret
    *  release for free. */
@@ -623,6 +630,7 @@ function isBridgeConfig(value: unknown): value is BridgeConfig {
     (v.autoDailyLimit === undefined || (typeof v.autoDailyLimit === "number" && Number.isInteger(v.autoDailyLimit) && v.autoDailyLimit >= 0)) &&
     (v.autoGames === undefined || (Array.isArray(v.autoGames) && v.autoGames.every((g) => typeof g === "string"))) &&
     (v.matchingPaused === undefined || typeof v.matchingPaused === "boolean") &&
+    (v.locale === undefined || v.locale === "en" || v.locale === "zh") &&
     // On disk this is the "enc:" reference, in memory the plaintext token —
     // both are strings, so one check covers pre- and post-decrypt validation.
     (v.telegramBotToken === undefined || typeof v.telegramBotToken === "string") &&

@@ -48,14 +48,19 @@ function makeEnv(): { env: HandlerEnv; out: () => string } {
   return { env, out: () => chunks.join("") };
 }
 
-/** The real panel's shape: 14 numbered actions + the Quit row. */
+/** The real panel's shape: 15 numbered actions + the Quit row (V2 + the
+ *  Language item, 2026-07-31). */
 function frame(over: Partial<MenuFrame> = {}): MenuFrame {
   return {
     title: "AIFight — what would you like to do?",
     banner: [],
     choices: [
-      ...Array.from({ length: 14 }, (_, i) => ({ key: String(i + 1), label: `Action ${i + 1}` })),
-      { key: "q", label: "Quit" },
+      ...Array.from({ length: 15 }, (_, i) => ({
+        key: String(i + 1),
+        main: `Action ${i + 1}`,
+        hint: `does thing ${i + 1}`,
+      })),
+      { key: "q", main: "Quit" },
     ],
     ...over,
   };
@@ -176,10 +181,22 @@ describe("chooser colors", () => {
     await picked;
     const text = out();
     expect(text).toContain("\x1b[7m"); // inverse on the selected row
-    expect(text).toContain("\x1b[36m"); // cyan item numbers
+    expect(text).toContain("\x1b[36m"); // cyan item numbers (and the cyan-bold main words)
     expect(text).toContain("\x1b[33m"); // yellow NOT CLAIMED banner
-    expect(text).toContain("\x1b[1m"); // bold title
+    expect(text).toContain("\x1b[1m"); // bold title (and the cyan-bold main words)
     expect(text).toContain("▸"); // the pointer
+  });
+
+  it("with color on: main words are cyan-bold, hints dim (V2 two-tone)", async () => {
+    const stdin = fakeStdin();
+    const { env, out } = makeEnv();
+    const picked = selectMenuKey(env, frame(), stdin, { ansi: COLOR });
+    stdin.press("q");
+    await picked;
+    const text = out();
+    expect(text).toContain(COLOR.bold(COLOR.cyan("Action 1")));
+    expect(text).toContain(COLOR.dim(" — does thing 1"));
+    expect(text).toContain(COLOR.bold(COLOR.cyan("Quit")));
   });
 
   it("with color off (NO_COLOR & co.): no SGR color codes, layout intact", async () => {
@@ -232,9 +249,9 @@ describe("two-column navigation", () => {
       const stdin = fakeStdin();
       const { env } = makeEnv();
       const picked = selectMenuKey(env, frame(), stdin, { ansi: PLAIN });
-      stdin.press("\x1b[C"); // → : row 0 left ("1") → row 0 right ("8")
+      stdin.press("\x1b[C"); // → : row 0 left ("1") → row 0 right ("9")
       stdin.press("\r");
-      await expect(picked).resolves.toBe("8");
+      await expect(picked).resolves.toBe("9");
     });
   });
 
@@ -243,12 +260,12 @@ describe("two-column navigation", () => {
       const stdin = fakeStdin();
       const { env } = makeEnv();
       const picked = selectMenuKey(env, frame(), stdin, { ansi: PLAIN });
-      // Quit is the right column's 8th row; ← has no left row 8, so it lands
-      // on the left column's last row (item 7).
+      // Quit is the right column's 8th row; ← lands on the left column's
+      // 8th row (item 8).
       stdin.press("\x1b[A"); // ↑ wraps to the last row = Quit
       stdin.press("\x1b[D"); // ←
       stdin.press("\r");
-      await expect(picked).resolves.toBe("7");
+      await expect(picked).resolves.toBe("8");
     });
   });
 
@@ -257,11 +274,11 @@ describe("two-column navigation", () => {
       const stdin = fakeStdin();
       const { env } = makeEnv();
       const picked = selectMenuKey(env, frame(), stdin, { ansi: PLAIN });
-      // 7 × ↓ from item 1 walks past the left column's bottom (7) onto the
-      // right column's top (8) — the column-major reading order.
-      for (let i = 0; i < 7; i += 1) stdin.press("\x1b[B");
+      // 8 × ↓ from item 1 walks past the left column's bottom (8) onto the
+      // right column's top (9) — the column-major reading order.
+      for (let i = 0; i < 8; i += 1) stdin.press("\x1b[B");
       stdin.press("\r");
-      await expect(picked).resolves.toBe("8");
+      await expect(picked).resolves.toBe("9");
     });
   });
 
@@ -272,7 +289,7 @@ describe("two-column navigation", () => {
       const picked = selectMenuKey(env, frame(), stdin, { ansi: PLAIN });
       stdin.press("\x1bOC"); // → via SS3
       stdin.press("\r");
-      await expect(picked).resolves.toBe("8");
+      await expect(picked).resolves.toBe("9");
     });
   });
 
@@ -304,6 +321,18 @@ describe("two-column navigation", () => {
       await picked;
       expect(out()).toContain("↑/↓ move · Enter select · number runs · q quit");
       expect(out()).not.toContain("←/→");
+    });
+  });
+
+  it("the hint line translates with the locale (i18n)", async () => {
+    await withColumns(100, async () => {
+      const stdin = fakeStdin();
+      const { env, out } = makeEnv();
+      const picked = selectMenuKey(env, frame(), stdin, { ansi: PLAIN, locale: "zh" });
+      stdin.press("q");
+      await picked;
+      expect(out()).toContain("↑/↓ ←/→ 移动 · Enter 进入 · 数字直达 · q 退出");
+      expect(out()).not.toContain("move · Enter select");
     });
   });
 

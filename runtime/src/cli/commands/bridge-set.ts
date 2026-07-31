@@ -14,6 +14,7 @@ import {
 } from "../../bridge/declared-model";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, SUPPORTED_GAMES, UsageError, expectArity, isSupportedGame } from "../shared";
+import { parseLocale, resolveLocale, t } from "../i18n";
 import { applyPendingBridgeRestart } from "./apply-settings";
 import { createOnboardIO, promptDefault } from "./onboard-io";
 
@@ -44,6 +45,7 @@ function readSetBridgeConfig(): BridgeConfig {
 const USAGE = [
   "usage: aifight set daily <N> [--yes]",
   "       aifight set game <game1,game2>",
+  "       aifight set language <en|zh>",
   "       aifight set declared-model <name...>",
   '       aifight set declared-model ""      (clear the custom name)',
   "       aifight set declared-model --clear",
@@ -74,7 +76,8 @@ export async function runBridgeSet(
   expectArity(args, 2, 2, USAGE);
   if (kind === "daily") return setDaily(args.positional[1]!, args, env);
   if (kind === "game") return setGames(args.positional[1]!, args, env);
-  throw new UsageError(`unknown set target '${kind}'`, "available: daily | game | declared-model");
+  if (kind === "language") return setLanguage(args.positional[1]!, args, env);
+  throw new UsageError(`unknown set target '${kind}'`, "available: daily | game | language | declared-model");
 }
 
 /** A line reader shaped like onboard-io's readLineVisible — injectable so the
@@ -103,21 +106,22 @@ export async function runSetGamesInteractive(
  *  cap as the default, then delegate the actual write to setDaily (which owns
  *  validation, the >threshold confirmation, and the platform sync). */
 async function promptDailyCap(args: HandlerArgs, env: HandlerEnv, readLine?: SetReadLine): Promise<number> {
+  const loc = env.locale?.() ?? resolveLocale();
   const config = readSetBridgeConfig();
   const shown = config.autoDailyLimit === undefined ? "server default" : String(config.autoDailyLimit);
-  const answer = await promptDefault(env, `Daily cap (0-${SETUP_WIZARD_CAP_MAX}, 0 = off)`, shown, readLine);
+  const answer = await promptDefault(env, t(loc, "prompt.daily.question", { max: SETUP_WIZARD_CAP_MAX }), shown, readLine);
   if (answer.kind === "cancel") {
-    env.stdout("No changes made.\n");
+    env.stdout(`${t(loc, "prompt.cancel")}\n`);
     return 0;
   }
   if (answer.kind === "keep") {
-    env.stdout(`Kept ${shown}.\n`);
+    env.stdout(`${t(loc, "prompt.keep", { value: shown })}\n`);
     return 0;
   }
   // Same forgiveness as the config hub's prompt: a bad number is explained,
   // not a usage-error exit — nothing is written either way.
   if (!/^\d+$/.test(answer.value) || Number.parseInt(answer.value, 10) > SETUP_WIZARD_CAP_MAX) {
-    env.stdout(`  Enter a whole number between 0 and ${SETUP_WIZARD_CAP_MAX}.\n`);
+    env.stdout(`${t(loc, "prompt.daily.invalid", { max: SETUP_WIZARD_CAP_MAX })}\n`);
     return 0;
   }
   return setDaily(answer.value, args, env);
@@ -126,16 +130,17 @@ async function promptDailyCap(args: HandlerArgs, env: HandlerEnv, readLine?: Set
 /** The interactive half of bare `aifight set game`: prompt with the current
  *  list as the default, then delegate to setGames (validation + write). */
 async function promptGames(args: HandlerArgs, env: HandlerEnv, readLine?: SetReadLine): Promise<number> {
+  const loc = env.locale?.() ?? resolveLocale();
   const config = readSetBridgeConfig();
   const current = config.autoGames;
   const shown = current === undefined || current.length === 0 ? "all games" : current.join(",");
-  const answer = await promptDefault(env, `Games to auto-play, comma-separated (options: ${SUPPORTED_GAMES.join(", ")})`, shown, readLine);
+  const answer = await promptDefault(env, t(loc, "prompt.games.question", { games: SUPPORTED_GAMES.join(", ") }), shown, readLine);
   if (answer.kind === "cancel") {
-    env.stdout("No changes made.\n");
+    env.stdout(`${t(loc, "prompt.cancel")}\n`);
     return 0;
   }
   if (answer.kind === "keep") {
-    env.stdout(`Kept ${shown}.\n`);
+    env.stdout(`${t(loc, "prompt.keep", { value: shown })}\n`);
     return 0;
   }
   return setGames(answer.value, args, env);
@@ -169,12 +174,11 @@ async function setDaily(raw: string, args: HandlerArgs, env: HandlerEnv): Promis
       );
     }
     const io = createOnboardIO(env);
-    env.stdout(
-      `${limit} automatic matches per day means a lot of model calls on your key — token costs add up fast.\n`,
-    );
-    const ok = await io.promptYesNo(`Allow up to ${limit} automatic matches per day?`, false);
+    const loc = env.locale?.() ?? resolveLocale();
+    env.stdout(`${t(loc, "prompt.daily.confirm.warn", { limit })}\n`);
+    const ok = await io.promptYesNo(t(loc, "prompt.daily.confirm.ask", { limit }), false);
     if (!ok) {
-      env.stdout("No changes made.\n");
+      env.stdout(`${t(loc, "prompt.cancel")}\n`);
       return 0;
     }
   }
@@ -294,6 +298,32 @@ async function setGames(raw: string, args: HandlerArgs, env: HandlerEnv): Promis
   }
   env.stdout(`Automatic match games set to: ${unique.join(", ")}\n`);
   await applyPendingBridgeRestart(env);
+  return 0;
+}
+
+// ─── language ─────────────────────────────────────────────────────────
+//
+// The scriptable twin of the menu's Language item (owner ask 2026-07-31).
+// Writes bridge.json's display-only locale field — the bridge never reads
+// it, so the write preserves mtime (no restart offer) and takes effect for
+// the CLI's human output immediately. The confirmation prints in the NEW
+// language; --json stays English-keyed.
+
+async function setLanguage(raw: string, args: HandlerArgs, env: HandlerEnv): Promise<number> {
+  const locale = parseLocale(raw);
+  if (locale === undefined) {
+    throw new UsageError(`language must be en or zh (got '${raw}')`, USAGE);
+  }
+  const config = readSetBridgeConfig();
+  writeBridgeConfig(
+    { ...config, locale, updatedAt: new Date().toISOString() },
+    { preserveMtime: true },
+  );
+  if (args.jsonMode) {
+    env.stdout(JSON.stringify({ status: "ok", locale }) + "\n");
+    return 0;
+  }
+  env.stdout(`${t(locale, "set.language.ok")}\n`);
   return 0;
 }
 

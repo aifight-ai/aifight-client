@@ -15,6 +15,7 @@
 
 import type { HandlerEnv } from "../shared.js";
 import { createAnsi, type Ansi } from "../ansi.js";
+import { t, type Locale } from "../i18n.js";
 import { columnLayout, renderMenuFrame, type ColumnLayout, type MenuFrame } from "./menu-frame.js";
 
 /** The slice of process.stdin the chooser needs — an interface so tests can
@@ -30,7 +31,9 @@ export interface RawInput {
 
 export interface SelectOptions {
   readonly ansi?: Ansi;
-  /** How long a lone ambiguous digit ("1", which also prefixes "10".."14")
+  /** The nav-hint language (i18n, 2026-07-31). Default "en". */
+  readonly locale?: Locale;
+  /** How long a lone ambiguous digit ("1", which also prefixes "10".."15")
    *  waits for a second digit before running item 1. Tests shrink it. */
   readonly digitCommitMs?: number;
   /** One-shot "the frame's data may have changed" signal — today the status
@@ -43,7 +46,7 @@ export interface SelectOptions {
 
 /** The chooser contract menu.ts depends on: the frame to draw first, plus an
  *  optional one-shot refresh hook (see SelectOptions). */
-export type MenuChoose = (frame: MenuFrame, opts?: Pick<SelectOptions, "refreshWhen" | "getFrame">) => Promise<string>;
+export type MenuChoose = (frame: MenuFrame, opts?: Pick<SelectOptions, "locale" | "refreshWhen" | "getFrame">) => Promise<string>;
 
 const ESC = "\x1b";
 const HIDE_CURSOR = "\x1b[?25l";
@@ -68,6 +71,7 @@ export function selectMenuKey(
   opts: SelectOptions = {},
 ): Promise<string> {
   const ansi = opts.ansi ?? createAnsi();
+  const loc = opts.locale ?? "en";
   const digitCommitMs = opts.digitCommitMs ?? DEFAULT_DIGIT_COMMIT_MS;
   let currentFrame = frame;
   let choices = currentFrame.choices;
@@ -90,11 +94,7 @@ export function selectMenuKey(
       "",
       ...renderMenuFrame(currentFrame, selected, ansi, width),
       "",
-      ansi.dim(
-        twoColumns
-          ? "  ↑/↓ ←/→ move · Enter select · number runs · q quit"
-          : "  ↑/↓ move · Enter select · number runs · q quit",
-      ),
+      ansi.dim(t(loc, twoColumns ? "menu.nav.two" : "menu.nav.one")),
     ];
     let out = drawn > 0 ? `\x1b[${drawn}F` : ""; // back to the first drawn line
     out += lines.map((l) => `\x1b[2K${l}`).join("\n") + "\n";

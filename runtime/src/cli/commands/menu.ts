@@ -23,6 +23,8 @@
 import type { HandlerEnv } from "../shared.js";
 import { CommandError, SUPPORTED_GAMES, UsageError } from "../shared.js";
 import { createAnsi } from "../ansi.js";
+import { readBridgeConfig, writeBridgeConfig } from "../../bridge/config.js";
+import { resolveLocale, t, type Locale } from "../i18n.js";
 import { applyPendingBridgeRestart, withDeferredApply } from "./apply-settings.js";
 import { MAX_MANUAL_MATCHES } from "./bridge-start.js";
 import { renderMenuFrame, type MenuFrame } from "./menu-frame.js";
@@ -47,11 +49,21 @@ export interface MenuDeps {
   readonly showHelp: () => void;
   /** Whether a local bridge identity already exists (first-run vs returning). */
   readonly configured: boolean;
+  /** Live read of the display locale (AIFIGHT_LANG > bridge.json > "en"),
+   *  consulted at every render — the Language item flips bridge.json and the
+   *  very next frame repaints in the new language. Optional: defaults to en. */
+  readonly locale?: () => Locale;
   /** Live read of the pause flag (bridge.json), consulted at every render and
    *  by the Pause/Resume item itself — the label must flip right after the
    *  dispatched command rewrote the config, without rebuilding the panel.
    *  Optional so tests and non-configured hosts can omit it (= not paused). */
   readonly matchingPaused?: () => boolean;
+  /** Live read of the daily cap (bridge.json autoDailyLimit) for item 6's
+   *  hint. Optional; absent = "not set". */
+  readonly dailyCap?: () => number | undefined;
+  /** Live read of the auto-play game selection (bridge.json autoGames) for
+   *  item 7's hint. Optional; absent = the supported default list. */
+  readonly autoGames?: () => readonly string[];
   /** Local view of the claim handshake. The claim URL is scrubbed from
    *  bridge.json once the platform reports the agent claimed, so "still on
    *  file" is a reliable offline signal for "not claimed yet" — no network
@@ -67,9 +79,15 @@ export interface MenuDeps {
 
 interface MenuItem {
   readonly key: string;
-  /** Static for almost every item; a function for the ones whose wording
-   *  depends on live state (Pause vs Resume matching). */
-  readonly label: string | ((deps: MenuDeps) => string);
+  /** The action word ("Play"), translated. A function of the locale AND the
+   *  deps: Pause/Resume flips with the live flag, Language flips with the
+   *  locale itself. */
+  readonly main: (loc: Locale, deps: MenuDeps) => string;
+  /** The short dim description after the main word, translated; carries live
+   *  state for the cap/games/update rows. */
+  readonly hint?: (loc: Locale, deps: MenuDeps) => string;
+  /** Yellow instead of dim while an update is known-newer (item 12). */
+  readonly hintTone?: (deps: MenuDeps) => "dim" | "yellow";
   readonly run: (deps: MenuDeps) => Promise<void>;
 }
 
@@ -89,20 +107,27 @@ function errorHint(cause: unknown): string | undefined {
 // The "adjust later" actions, in display order. Each gathers any arguments via
 // the injected prompt, then dispatches to the existing command handler — the menu
 // adds NO new behavior, it is purely a friendlier front door.
+//
+// V2 (2026-07-31, owner decision ① — an accepted one-time break): renumbered
+// by usage frequency — playing first (Play/Pause/Status/Record), settings in
+// the middle, system items last — and every row is two-tone: a cyan-bold main
+// word plus a dim hint. Hints are re-evaluated on every build, so the ones
+// carrying live state (Pause/Resume, the cap, the games count, the update
+// nudge) flip on the repaint right after the underlying value changed.
+// i18n (same day): every label goes through t(locale, …); item 14 (Language)
+// flips bridge.json and the next frame repaints in the new language.
+
+/** The locale for this render — re-read on every build (AIFIGHT_LANG >
+ *  bridge.json > "en"), so the Language toggle repaints immediately. */
+function localeOf(deps: MenuDeps): Locale {
+  return deps.locale?.() ?? "en";
+}
+
 const ITEMS: readonly MenuItem[] = [
   {
     key: "1",
-    label: "Status — show this machine's setup",
-    run: ({ dispatch }) => dispatch("status", []).then(() => undefined),
-  },
-  {
-    key: "2",
-    label: "Record — your ratings, rank & recent matches",
-    run: ({ dispatch }) => dispatch("record", []).then(() => undefined),
-  },
-  {
-    key: "3",
-    label: "Play — request a manual ranked match",
+    main: (loc) => t(loc, "menu.item.play.main"),
+    hint: (loc) => t(loc, "menu.item.play.hint"),
     run: async ({ env, prompt, dispatch }) => {
       const game = (await prompt(`Game (blank = auto-pick; options: ${SUPPORTED_GAMES.join(", ")}): `)).trim();
       // Validate against the same 1-20 ceiling `aifight start` enforces, here —
@@ -117,8 +142,79 @@ const ITEMS: readonly MenuItem[] = [
     },
   },
   {
+    // The CLI twin of the desktop app's pause switch. The main word AND the
+    // dispatched command both follow the live flag, so the item flips to
+    // "Resume" on the repaint right after pausing.
+    key: "2",
+    main: (loc, deps) =>
+      t(loc, deps.matchingPaused?.() === true ? "menu.item.resume.main" : "menu.item.pause.main"),
+    hint: (loc, deps) =>
+      t(loc, deps.matchingPaused?.() === true ? "menu.item.resume.hint" : "menu.item.pause.hint"),
+    run: (deps) =>
+      deps.dispatch(deps.matchingPaused?.() === true ? "resume" : "pause", []).then(() => undefined),
+  },
+  {
+    key: "3",
+    main: (loc) => t(loc, "menu.item.status.main"),
+    hint: (loc) => t(loc, "menu.item.status.hint"),
+    run: ({ dispatch }) => dispatch("status", []).then(() => undefined),
+  },
+  {
     key: "4",
-    label: "Rename — change your public display name",
+    main: (loc) => t(loc, "menu.item.record.main"),
+    hint: (loc) => t(loc, "menu.item.record.hint"),
+    run: ({ dispatch }) => dispatch("record", []).then(() => undefined),
+  },
+  {
+    key: "5",
+    // `config llm`, not bare `config`: bare config opens its own hub, so this
+    // used to drop the user into a SECOND menu one level down — which is the
+    // "why are there two different menus" the owner ran into (2026-07-29).
+    main: (loc) => t(loc, "menu.item.llm.main"),
+    hint: (loc) => t(loc, "menu.item.llm.hint"),
+    run: ({ dispatch }) => dispatch("config", ["llm"]).then(() => undefined),
+  },
+  {
+    key: "6",
+    // This and Games delegate to the prompts the old `aifight config` hub
+    // used, not to the barer ones this panel had: those show the CURRENT
+    // value, treat a blank answer as "keep it", and validate against the
+    // setup wizard's ceiling. Merging the menus meant picking one of each
+    // pair, and this is the better half.
+    main: (loc) => t(loc, "menu.item.daily.main"),
+    hint: (loc, deps) => {
+      const cap = deps.dailyCap?.();
+      return cap === undefined
+        ? t(loc, "menu.item.daily.hint.unset")
+        : cap === 0
+          ? t(loc, "menu.item.daily.hint.off")
+          : t(loc, "menu.item.daily.hint.cap", { cap });
+    },
+    run: async ({ env, prompt }) => {
+      const { configureDailyInteractive } = await import("./config.js");
+      await configureDailyInteractive({ promptLine: prompt }, env);
+    },
+  },
+  {
+    key: "7",
+    main: (loc) => t(loc, "menu.item.games.main"),
+    hint: (loc, deps) =>
+      t(loc, "menu.item.games.hint", { count: (deps.autoGames?.() ?? SUPPORTED_GAMES).length }),
+    run: async ({ env, prompt }) => {
+      const { configureGamesInteractive } = await import("./config.js");
+      await configureGamesInteractive({ promptLine: prompt }, env);
+    },
+  },
+  {
+    key: "8",
+    main: (loc) => t(loc, "menu.item.strategy.main"),
+    hint: (loc) => t(loc, "menu.item.strategy.hint"),
+    run: ({ dispatch }) => dispatch("strategy", ["path"]).then(() => undefined),
+  },
+  {
+    key: "9",
+    main: (loc) => t(loc, "menu.item.rename.main"),
+    hint: (loc) => t(loc, "menu.item.rename.hint"),
     run: async ({ env, prompt, dispatch }) => {
       const name = (await prompt("New display name: ")).trim();
       if (name === "") {
@@ -129,55 +225,16 @@ const ITEMS: readonly MenuItem[] = [
     },
   },
   {
-    key: "5",
-    // These two delegate to the prompts the old `aifight config` hub used, not
-    // to the barer ones this panel had: those show the CURRENT value, treat a
-    // blank answer as "keep it", and validate against the setup wizard's
-    // ceiling. Merging the menus meant picking one of each pair, and this is
-    // the better half.
-    label: "Daily cap — automatic matches per day (0 = off)",
-    run: async ({ env, prompt }) => {
-      const { configureDailyInteractive } = await import("./config.js");
-      await configureDailyInteractive({ promptLine: prompt }, env);
-    },
-  },
-  {
-    key: "6",
-    label: "Games — which games to auto-play",
-    run: async ({ env, prompt }) => {
-      const { configureGamesInteractive } = await import("./config.js");
-      await configureGamesInteractive({ promptLine: prompt }, env);
-    },
-  },
-  {
-    key: "7",
-    // `config llm`, not bare `config`: bare config opens its own hub, so this
-    // used to drop the user into a SECOND menu one level down — which is the
-    // "why are there two different menus" the owner ran into (2026-07-29).
-    label: "LLM — set up / test your model (provider, key, routing)",
-    run: ({ dispatch }) => dispatch("config", ["llm"]).then(() => undefined),
-  },
-  {
-    key: "8",
-    label: "Update — get the latest CLI and restart the service",
-    run: ({ dispatch }) => dispatch("update", []).then(() => undefined),
-  },
-  {
-    key: "9",
-    label: "Full command list",
-    run: async ({ showHelp }) => {
-      showHelp();
-    },
-  },
-  {
     // Not "0" — that is the quit key.
     key: "10",
-    label: "Telegram — phone notifications & remote control",
+    main: (loc) => t(loc, "menu.item.telegram.main"),
+    hint: (loc) => t(loc, "menu.item.telegram.hint"),
     run: ({ dispatch }) => dispatch("telegram", []).then(() => undefined),
   },
   {
     key: "11",
-    label: "Claim — link this agent to your account (required before it can play)",
+    main: (loc) => t(loc, "menu.item.claim.main"),
+    hint: (loc) => t(loc, "menu.item.claim.hint"),
     run: async ({ env, claim }) => {
       if (claim?.pending !== true || claim.url === undefined) {
         env.stdout("\nThis agent is already claimed. Manage it in the Dashboard: https://aifight.ai/dashboard\n");
@@ -189,60 +246,93 @@ const ITEMS: readonly MenuItem[] = [
   },
   {
     key: "12",
-    label: "Strategy — where to edit how your agent plays",
-    run: ({ dispatch }) => dispatch("strategy", ["path"]).then(() => undefined),
+    main: (loc) => t(loc, "menu.item.update.main"),
+    // Yellow with the version only while the banner's update check has landed
+    // a known-newer release; a quiet dim "check & update" otherwise.
+    hint: (loc, deps) => {
+      const newer = deps.statusBox?.updateVersion?.();
+      return newer !== undefined
+        ? t(loc, "menu.item.update.hint.newer", { version: newer })
+        : t(loc, "menu.item.update.hint");
+    },
+    hintTone: (deps) => (deps.statusBox?.updateVersion?.() !== undefined ? "yellow" : "dim"),
+    run: ({ dispatch }) => dispatch("update", []).then(() => undefined),
   },
   {
     // Carried over from the old `aifight config` hub, which is now this panel.
     key: "13",
-    label: "Show current config — what this machine is set to",
+    main: (loc) => t(loc, "menu.item.config.main"),
+    hint: (loc) => t(loc, "menu.item.config.hint"),
     run: ({ dispatch }) => dispatch("config", ["show"]).then(() => undefined),
   },
   {
-    // The CLI twin of the desktop app's pause switch (owner gap 2026-07-30:
-    // the app persists a pause, the CLI only had the "daily cap 0" workaround).
-    // Appended LAST so the existing 13 keys keep their numbers. The label and
-    // the dispatched command both follow the live flag, so the item flips to
-    // "Resume" on the repaint right after pausing.
+    // The display-language toggle (owner ask 2026-07-31). Local-only like
+    // Claim: flips bridge.json's locale field and the VERY NEXT frame
+    // repaints fully translated — localeOf re-reads on every build. The
+    // bridge never reads locale, so the write preserves the file mtime and
+    // no restart offer fires on the way out. The confirmation prints in the
+    // NEW language, same as `aifight set language`.
     key: "14",
-    label: (deps) =>
-      deps.matchingPaused?.() === true
-        ? "Resume matching — let your agent auto-join matches again"
-        : "Pause matching — stop auto-joining new matches (manual ones still work)",
-    run: (deps) =>
-      deps.dispatch(deps.matchingPaused?.() === true ? "resume" : "pause", []).then(() => undefined),
+    main: (loc) => t(loc, "menu.item.language.main"),
+    hint: (loc) => t(loc, "menu.item.language.hint"),
+    run: async (deps) => {
+      const next: Locale = localeOf(deps) === "zh" ? "en" : "zh";
+      try {
+        const config = readBridgeConfig();
+        writeBridgeConfig(
+          { ...config, locale: next, updatedAt: new Date().toISOString() },
+          { preserveMtime: true },
+        );
+      } catch {
+        // The panel only opens when configured; a config that vanished
+        // mid-session just loses persistence.
+      }
+      deps.env.stdout(`${t(next, "set.language.ok")}\n`);
+    },
+  },
+  {
+    key: "15",
+    main: (loc) => t(loc, "menu.item.help.main"),
+    hint: (loc) => t(loc, "menu.item.help.hint"),
+    run: async ({ showHelp }) => {
+      showHelp();
+    },
   },
 ];
 
 function buildFrame(deps: MenuDeps): MenuFrame {
+  const loc = localeOf(deps);
   const banner: string[] = [];
   // An unclaimed agent cannot play at all, and nothing in the panel used to say
   // so — the owner finished a whole VPS setup and never saw a reminder
   // (2026-07-29). Lead with it, every time round the loop, until it is done.
   if (deps.claim?.pending === true) {
     const who = deps.claim.agentName !== undefined ? ` (${deps.claim.agentName})` : "";
-    banner.push(`⚠ NOT CLAIMED${who} — this agent cannot play until you claim it.`);
+    banner.push(t(loc, "menu.banner.unclaimed", { who }));
     if (deps.claim.url !== undefined) banner.push(deps.claim.url);
   }
   return {
-    title: "AIFight — what would you like to do?",
+    title: t(loc, "menu.title"),
     banner,
     choices: [
-      // Labels are re-evaluated on every build: item 14's wording follows the
-      // live pause flag, and the frame built right after the command rewrote
-      // it must already say "Resume".
+      // Main words and hints are re-evaluated on every build: item 2's wording
+      // follows the live pause flag, the cap/games hints follow bridge.json,
+      // and item 12's yellow nudge appears the moment the update check lands —
+      // the frame built right after any of those changed must already say so.
       ...ITEMS.map((item) => ({
         key: item.key,
-        label: typeof item.label === "function" ? item.label(deps) : item.label,
+        main: item.main(loc, deps),
+        ...(item.hint !== undefined ? { hint: item.hint(loc, deps) } : {}),
+        ...(item.hintTone !== undefined ? { hintTone: item.hintTone(deps) } : {}),
       })),
       // A selectable Quit row, so pure arrow-key usage can exit too.
-      { key: "q", label: "Quit" },
+      { key: "q", main: t(loc, "menu.item.quit") },
     ],
     // The status box re-composes from the provider's live data on every
     // build: the first build is local-only, the one the chooser's refresh
     // hook triggers right after carries the remote answers.
     ...(deps.statusBox !== undefined
-      ? { statusBox: { title: deps.statusBox.title, lines: deps.statusBox.lines() } }
+      ? { statusBox: { title: deps.statusBox.title, lines: deps.statusBox.lines(loc) } }
       : {}),
   };
 }
@@ -253,7 +343,7 @@ function buildFrame(deps: MenuDeps): MenuFrame {
  *  practice this path lives in tests. */
 async function lineChoice(deps: MenuDeps, frame: MenuFrame): Promise<string> {
   deps.env.stdout(`\n${renderMenuFrame(frame, -1, createAnsi({ enabled: false })).join("\n")}\n\n`);
-  return (await deps.prompt("Pick an action (number, or q to quit): ")).trim().toLowerCase();
+  return (await deps.prompt(t(localeOf(deps), "menu.pick"))).trim().toLowerCase();
 }
 
 /**
@@ -287,7 +377,10 @@ export async function runInteractiveMenu(deps: MenuDeps): Promise<number> {
       const refreshWhen = deps.statusBox?.refreshed?.();
       choice = (await deps.choose(
         frame,
-        refreshWhen !== undefined ? { refreshWhen, getFrame: () => buildFrame(deps) } : undefined,
+        {
+          locale: localeOf(deps),
+          ...(refreshWhen !== undefined ? { refreshWhen, getFrame: () => buildFrame(deps) } : {}),
+        },
       )).trim().toLowerCase();
     } else {
       choice = await lineChoice(deps, frame);

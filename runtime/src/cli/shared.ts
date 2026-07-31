@@ -4,6 +4,7 @@
 
 import type { ControlClient, CreateControlClientOptions } from "./control-client";
 import { createControlClient } from "./control-client";
+import type { Locale } from "./i18n";
 import { readToken, readPort } from "./runtime-files";
 import type { HelloResult } from "../index";
 import type { BridgeServiceDeps } from "../bridge/service";
@@ -28,6 +29,16 @@ export interface HandlerEnv {
   readonly baseTimeoutMs?: number;
   /** Optional bridge service manager overrides for tests and controlled installs. */
   readonly bridgeService?: BridgeServiceDeps;
+  /** The ✓/⚠ prefix for human success/warning feedback lines (pause / resume
+   *  / update). Handlers fall back to createStatusIcons() (the TTY/NO_COLOR
+   *  gate, ASCII "OK"/"!" when plain) when unset; tests inject fixed icons to
+   *  pin either side. Never used in --json output. */
+  readonly statusIcons?: { readonly ok: string; readonly warn: string };
+  /** The display locale for human-facing text (AIFIGHT_LANG > bridge.json >
+   *  "en"). A reader (not a value) so surfaces that repaint — the menu — see
+   *  a flip immediately. main.ts wires resolveLocale; handlers fall back to
+   *  resolveLocale() when unset. Never affects --json output. */
+  readonly locale?: () => Locale;
   /**
    * Opens the one interactive panel (the same one bare `aifight` shows).
    *

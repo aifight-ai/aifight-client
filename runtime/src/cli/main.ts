@@ -28,6 +28,7 @@ import {
 import { jsonErrorEnvelope } from "./format";
 import { createAnsi } from "./ansi";
 import { renderGlobalHelp, styleSubcommandUsage } from "./help";
+import { resolveLocale } from "./i18n";
 import type { HelloResult } from "../index";
 
 import { runVersion } from "./commands/version";
@@ -86,6 +87,9 @@ export interface RunOptions {
   readonly baseTimeoutMs?: number;
   readonly onLog?: (event: { code: string; message: string }) => void;
   readonly bridgeService?: BridgeServiceDeps;
+  /** Test seam for the V2 status icons (✓/⚠); handlers default to the
+   *  TTY/NO_COLOR gate when unset. */
+  readonly statusIcons?: { readonly ok: string; readonly warn: string };
 }
 
 export async function run(
@@ -100,6 +104,10 @@ export async function run(
     ...(opts.baseTimeoutMs !== undefined ? { baseTimeoutMs: opts.baseTimeoutMs } : {}),
     ...(opts.onLog !== undefined ? { onLog: opts.onLog } : {}),
     ...(opts.bridgeService !== undefined ? { bridgeService: opts.bridgeService } : {}),
+    ...(opts.statusIcons !== undefined ? { statusIcons: opts.statusIcons } : {}),
+    // Re-resolved on every call (AIFIGHT_LANG > bridge.json > "en"), so the
+    // menu's Language toggle repaints in the new language immediately.
+    locale: () => resolveLocale(),
   };
 
   // Drop [node, script] prefix when present. Tests typically pass the
@@ -236,9 +244,12 @@ export async function run(
       // the menu's line-prompt fallback stays test-only.
       choose: createMenuChooser(panelEnv),
       dispatch: (c, positional) => dispatch(c, { positional, flags: {}, jsonMode: false }, panelEnv),
-      showHelp: () => env.stdout(renderGlobalHelp(createAnsi()) + "\n"),
+      showHelp: () => env.stdout(renderGlobalHelp(createAnsi(), resolveLocale()) + "\n"),
       configured,
-      // Read fresh on every render/dispatch: item 14 (Pause/Resume matching)
+      // Same live-read discipline as the pause flag: item 14 (Language) flips
+      // bridge.json and the very next frame must already render translated.
+      locale: () => resolveLocale(),
+      // Read fresh on every render/dispatch: item 2 (Pause/Resume matching)
       // flips this flag, and the panel must show the new state on the next
       // repaint without being rebuilt. Unreadable config = "not paused" — the
       // panel already survived the configured check above.
@@ -247,6 +258,22 @@ export async function run(
           return readBridgeConfig().matchingPaused === true;
         } catch {
           return false;
+        }
+      },
+      // Same live-read discipline for the two settings hints (items 6/7):
+      // the repaint right after an edit already shows the new value.
+      dailyCap: () => {
+        try {
+          return readBridgeConfig().autoDailyLimit;
+        } catch {
+          return undefined;
+        }
+      },
+      autoGames: () => {
+        try {
+          return readBridgeConfig().autoGames ?? SUPPORTED_GAMES;
+        } catch {
+          return SUPPORTED_GAMES;
         }
       },
       ...(claim !== undefined ? { claim } : {}),
@@ -374,9 +401,10 @@ async function dispatch(
 
 function printGlobalHelp(env: HandlerEnv, jsonMode: boolean): number {
   if (jsonMode) {
-    env.stdout(JSON.stringify({ help: renderGlobalHelp(createAnsi({ enabled: false })) }) + "\n");
+    // Machine output is always English, whatever the display locale.
+    env.stdout(JSON.stringify({ help: renderGlobalHelp(createAnsi({ enabled: false }), "en") }) + "\n");
   } else {
-    env.stdout(renderGlobalHelp(createAnsi()) + "\n");
+    env.stdout(renderGlobalHelp(createAnsi(), env.locale?.() ?? resolveLocale()) + "\n");
   }
   return 0;
 }
@@ -547,10 +575,12 @@ function commandUsage(positional: readonly string[]): string | undefined {
       return [
         "Usage: aifight set daily <N>",
         "       aifight set game <game1,game2>",
+        "       aifight set language <en|zh>",
         "       aifight set declared-model <name...>",
         "       aifight set declared-model --clear",
         "  daily 0 means the agent no longer joins daily automatic matches.",
         "  Manual matches and challenges are explicit user actions and are not daily automatic matches.",
+        "  language sets the CLI display language (default en; AIFIGHT_LANG overrides).",
         "  declared-model pins the PUBLIC model name the leaderboard shows (default: your configured LLM model).",
         `  supported games: ${SUPPORTED_GAMES.join(", ")}`,
       ].join("\n");

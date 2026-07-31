@@ -190,6 +190,7 @@ aifight doctor
 aifight set daily <N>
 aifight set daily <N> --yes
 aifight set game <game1,game2>
+aifight set language <en|zh>
 aifight set declared-model <name>
 aifight set declared-model --clear
 aifight rename <name>

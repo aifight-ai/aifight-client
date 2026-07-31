@@ -67,6 +67,25 @@ describe("global help layout (plain mode)", () => {
     // Plain mode is genuinely plain: no SGR codes at all.
     expect(help).not.toContain("\x1b[");
   });
+
+  it("zh descriptions start at the same column as the English ones (width-aware pad)", () => {
+    const zh = renderGlobalHelp(PLAIN, "zh");
+    const descColumn = (text: string, usagePrefix: string, descPrefix: string): number => {
+      const line = text.split("\n").find((l) => l.startsWith(`  ${usagePrefix} `) && l.includes(descPrefix));
+      expect(line, usagePrefix).toBeDefined();
+      return line!.indexOf(descPrefix);
+    };
+    // The description column is computed from usage widths (all ASCII), so a
+    // zh description must land exactly where its English counterpart does.
+    const pairs: Array<[string, string, string]> = [
+      ["aifight setup", "Guided setup:", "向导式初始化："],
+      ["aifight pause", "Pause automatic", "暂停自动匹配"],
+      ["aifight set language <en|zh>", "Set CLI display language", "设置 CLI 显示语言"],
+    ];
+    for (const [usage, enDesc, zhDesc] of pairs) {
+      expect(descColumn(zh, usage, zhDesc), usage).toBe(descColumn(help, usage, enDesc));
+    }
+  });
 });
 
 describe("global help colors (forced on)", () => {

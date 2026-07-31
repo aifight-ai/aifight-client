@@ -62,8 +62,8 @@ interface Harness {
   readonly dispatched: Array<{ cmd: string; positional: string[] }>;
   /** Every frame the injected chooser was offered (one per loop iteration). */
   readonly frames: MenuFrame[];
-  /** The optional second argument each chooser call received (refresh hook). */
-  readonly chooseOpts: Array<{ refreshWhen?: Promise<unknown>; getFrame?: () => MenuFrame } | undefined>;
+  /** The optional second argument each chooser call received (locale + refresh hook). */
+  readonly chooseOpts: Array<{ locale?: "en" | "zh"; refreshWhen?: Promise<unknown>; getFrame?: () => MenuFrame } | undefined>;
   helpShown: boolean;
 }
 
@@ -89,7 +89,10 @@ function harness(
     throwOn?: string;
     throwError?: Error;
     claim?: MenuDeps["claim"];
+    locale?: () => "en" | "zh";
     matchingPaused?: () => boolean;
+    dailyCap?: () => number | undefined;
+    autoGames?: () => readonly string[];
     onDispatch?: (cmd: string) => void;
     linePrompt?: boolean;
     statusBox?: MenuDeps["statusBox"];
@@ -122,7 +125,7 @@ function harness(
       ...(opts?.linePrompt === true
         ? {}
         : {
-            choose: (frame: MenuFrame, chooseOpt?: { refreshWhen?: Promise<unknown>; getFrame?: () => MenuFrame }) => {
+            choose: (frame: MenuFrame, chooseOpt?: { locale?: "en" | "zh"; refreshWhen?: Promise<unknown>; getFrame?: () => MenuFrame }) => {
               frames.push(frame);
               chooseOpts.push(chooseOpt);
               chunks.push(`\n${renderMenuFrame(frame, -1, plain).join("\n")}\n\n`);
@@ -139,7 +142,10 @@ function harness(
         h.helpShown = true;
       },
       configured: opts?.configured ?? true,
+      ...(opts?.locale !== undefined ? { locale: opts.locale } : {}),
       ...(opts?.matchingPaused !== undefined ? { matchingPaused: opts.matchingPaused } : {}),
+      ...(opts?.dailyCap !== undefined ? { dailyCap: opts.dailyCap } : {}),
+      ...(opts?.autoGames !== undefined ? { autoGames: opts.autoGames } : {}),
       ...(opts?.claim !== undefined ? { claim: opts.claim } : {}),
       ...(opts?.statusBox !== undefined ? { statusBox: opts.statusBox } : {}),
     },
@@ -164,32 +170,38 @@ describe("interactive menu", () => {
   });
 
   it("picks status then quits", async () => {
-    const h = harness(["1", "q"]);
+    const h = harness(["3", "q"]);
     const code = await runInteractiveMenu(h.deps);
     expect(code).toBe(0);
     expect(h.dispatched).toEqual([{ cmd: "status", positional: [] }]);
   });
 
+  it("record is item 4", async () => {
+    const h = harness(["4", "q"]);
+    await runInteractiveMenu(h.deps);
+    expect(h.dispatched).toEqual([{ cmd: "record", positional: [] }]);
+  });
+
   it("rename prompts for a name and dispatches it joined", async () => {
-    const h = harness(["4", "Dark Knight", "q"]);
+    const h = harness(["9", "Dark Knight", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "rename", positional: ["Dark Knight"] }]);
   });
 
   it("play asks game + count → start [game] [N]", async () => {
-    const h = harness(["3", "texas_holdem", "2", "q"]);
+    const h = harness(["1", "texas_holdem", "2", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "start", positional: ["texas_holdem", "2"] }]);
   });
 
   it("play with blank game → start [N] (auto game)", async () => {
-    const h = harness(["3", "", "", "q"]); // blank game, blank count → default 1
+    const h = harness(["1", "", "", "q"]); // blank game, blank count → default 1
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "start", positional: ["1"] }]);
   });
 
   it("daily cap without an agent on this machine says so instead of prompting", async () => {
-    const h = harness(["5", "q"]);
+    const h = harness(["6", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.out()).toContain("No agent on this machine yet");
     expect(h.dispatched).toEqual([]);
@@ -197,14 +209,14 @@ describe("interactive menu", () => {
 
   it("rejects a non-numeric daily cap without writing anything", async () => {
     seedBridge();
-    const h = harness(["5", "lots", "q"]);
+    const h = harness(["6", "lots", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.out()).toContain("Enter a whole number");
     expect(h.dispatched).toEqual([]);
   });
 
   it("update dispatches the update command", async () => {
-    const h = harness(["8", "q"]);
+    const h = harness(["12", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "update", positional: [] }]);
     expect(h.helpShown).toBe(false);
@@ -223,11 +235,17 @@ describe("interactive menu", () => {
     expect(h.dispatched).toEqual([]);
   });
 
-  it("full command list calls showHelp", async () => {
-    const h = harness(["9", "q"]);
+  it("help (item 15) calls showHelp", async () => {
+    const h = harness(["15", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.helpShown).toBe(true);
     expect(h.dispatched).toEqual([]);
+  });
+
+  it("config (item 13) shows the current settings", async () => {
+    const h = harness(["13", "q"]);
+    await runInteractiveMenu(h.deps);
+    expect(h.dispatched).toEqual([{ cmd: "config", positional: ["show"] }]);
   });
 
   it("unknown choice re-prompts, does not dispatch", async () => {
@@ -241,19 +259,19 @@ describe("interactive menu", () => {
   // so picking "LLM" dropped the user into a second, different menu one level
   // down. That is the "why are there two menus" the owner ran into (2026-07-29).
   it("LLM goes straight to the LLM wizard, not into the config hub", async () => {
-    const h = harness(["7", "q"]);
+    const h = harness(["5", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "config", positional: ["llm"] }]);
   });
 
   it("strategy dispatches `strategy path`", async () => {
-    const h = harness(["12", "q"]);
+    const h = harness(["8", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "strategy", positional: ["path"] }]);
   });
 
   it("a failing action is caught and the panel continues", async () => {
-    const h = harness(["1", "2", "q"], { throwOn: "status" });
+    const h = harness(["3", "4", "q"], { throwOn: "status" });
     const code = await runInteractiveMenu(h.deps);
     expect(code).toBe(0);
     // status threw but was caught; record still ran afterwards.
@@ -268,7 +286,7 @@ describe("interactive menu", () => {
     // The CLI funnel always prints a CommandError's hint (e.g. "Start it with
     // `aifight service start`"); the menu's catch used to swallow it and leave
     // the failure a dead end.
-    const h = harness(["1", "q"], {
+    const h = harness(["3", "q"], {
       throwOn: "status",
       throwError: new CommandError("bridge_not_running", "AIFight Bridge is not running.", {
         hint: "Start it with `aifight service start`.",
@@ -281,21 +299,21 @@ describe("interactive menu", () => {
   });
 
   it("play rejects a count of 0 before dispatching", async () => {
-    const h = harness(["3", "coup", "0", "q"]);
+    const h = harness(["1", "coup", "0", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([]);
     expect(h.out()).toContain("between 1 and 20");
   });
 
   it("play rejects a count above 20 before dispatching", async () => {
-    const h = harness(["3", "coup", "999", "q"]);
+    const h = harness(["1", "coup", "999", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([]);
     expect(h.out()).toContain("between 1 and 20");
   });
 
   it("play accepts the 1-20 boundary", async () => {
-    const h = harness(["3", "coup", "20", "q"]);
+    const h = harness(["1", "coup", "20", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "start", positional: ["coup", "20"] }]);
   });
@@ -322,7 +340,7 @@ describe("claim reminder", () => {
   });
 
   it("repeats the warning every time round the loop, not just once", async () => {
-    const h = harness(["1", "q"], { claim: PENDING });
+    const h = harness(["3", "q"], { claim: PENDING });
     await runInteractiveMenu(h.deps);
     // Drawn before the first choice and again after the action returns —
     // a one-shot banner scrolls away behind the command's own output.
@@ -373,10 +391,10 @@ describe("one menu, two doors", () => {
     const text = h.out();
     for (const item of [
       // was only in bare `aifight`
-      "Status —", "Record —", "Play —", "Rename —", "Update —", "Full command list",
+      "Status —", "Record —", "Play —", "Update —", "Help —", "Language —",
       // was only in `aifight config`
       "LLM —", "Daily cap —", "Games —", "Telegram —", "Claim —", "Strategy —",
-      "Show current config —",
+      "Config —",
     ]) {
       expect(text, item).toContain(item);
     }
@@ -392,7 +410,7 @@ describe("one menu, two doors", () => {
 
   it("the LLM item opens the LLM step directly, not bare `config`", async () => {
     seedBridge();
-    const h = harness(["7", "q"]);
+    const h = harness(["5", "q"]);
     await runInteractiveMenu(h.deps);
     // `config` with no subcommand would re-open this very panel — one level
     // deeper, forever. It must be `config llm`.
@@ -406,7 +424,7 @@ describe("one menu, two doors", () => {
     const old = new Date("2020-01-01T00:00:00Z");
     fs.utimesSync(path.join(dir, "port"), old, old);
 
-    const h = harness(["6", "texas_holdem", "6", "coup,liars_dice", "q"]);
+    const h = harness(["7", "texas_holdem", "7", "coup,liars_dice", "q"]);
     await runInteractiveMenu(h.deps);
 
     const offers = h.out().match(/service restart|next time it starts/g) ?? [];
@@ -414,10 +432,9 @@ describe("one menu, two doors", () => {
   });
 });
 
-// Item 14 is the CLI twin of the desktop app's pause switch (owner gap
+// Item 2 is the CLI twin of the desktop app's pause switch (owner gap
 // 2026-07-30: the app persists a pause; the CLI only had "daily cap 0").
-// Appended last so the existing 13 keys never move; its label AND its
-// dispatch follow the live flag in bridge.json.
+// Its main word AND its dispatch follow the live flag in bridge.json.
 describe("pause/resume matching item", () => {
   const livePaused = (): boolean => {
     try {
@@ -427,27 +444,27 @@ describe("pause/resume matching item", () => {
     }
   };
 
-  it("shows 'Pause matching' as item 14 when not paused, and dispatches pause", async () => {
+  it("shows 'Pause' as item 2 when not paused, and dispatches pause", async () => {
     seedBridge();
-    const h = harness(["14", "q"], { matchingPaused: livePaused });
+    const h = harness(["2", "q"], { matchingPaused: livePaused });
     await runInteractiveMenu(h.deps);
-    expect(h.out()).toContain("14) Pause matching");
-    expect(h.out()).not.toContain("Resume matching");
+    expect(h.out()).toContain("2) Pause — pause auto-matching");
+    expect(h.out()).not.toContain("Resume — resume auto-matching");
     expect(h.dispatched).toEqual([{ cmd: "pause", positional: [] }]);
   });
 
-  it("shows 'Resume matching' and dispatches resume while paused", async () => {
+  it("shows 'Resume' and dispatches resume while paused", async () => {
     seedBridge({ matchingPaused: true });
-    const h = harness(["14", "q"], { matchingPaused: livePaused });
+    const h = harness(["2", "q"], { matchingPaused: livePaused });
     await runInteractiveMenu(h.deps);
-    expect(h.out()).toContain("14) Resume matching");
-    expect(h.out()).not.toContain("Pause matching");
+    expect(h.out()).toContain("2) Resume — resume auto-matching");
+    expect(h.out()).not.toContain("Pause — pause auto-matching");
     expect(h.dispatched).toEqual([{ cmd: "resume", positional: [] }]);
   });
 
   it("flips the label on the repaint right after the command rewrote the flag", async () => {
     seedBridge();
-    const h = harness(["14", "q"], {
+    const h = harness(["2", "q"], {
       matchingPaused: livePaused,
       // Stand in for `aifight pause`: the real command rewrites bridge.json.
       onDispatch: (cmd) => {
@@ -458,8 +475,81 @@ describe("pause/resume matching item", () => {
     });
     await runInteractiveMenu(h.deps);
     const text = h.out();
-    expect(text).toContain("14) Pause matching"); // first paint
-    expect(text).toContain("14) Resume matching"); // repaint after the write
+    expect(text).toContain("2) Pause — pause auto-matching"); // first paint
+    expect(text).toContain("2) Resume — resume auto-matching"); // repaint after the write
+  });
+});
+
+// V2 live hints: the settings rows show their current value, re-read on
+// every build, so the repaint right after an edit already says the new one.
+describe("live hints (V2)", () => {
+  it("daily cap shows [N/day], [off] at 0, [not set] when unset", async () => {
+    for (const [cap, expected] of [
+      [5, "Daily cap — auto matches [5/day]"],
+      [0, "Daily cap — auto matches [off]"],
+      [undefined, "Daily cap — auto matches [not set]"],
+    ] as const) {
+      const h = harness(["q"], { dailyCap: () => cap });
+      await runInteractiveMenu(h.deps);
+      expect(h.out(), `cap ${String(cap)}`).toContain(expected);
+    }
+  });
+
+  it("games shows the live selection count", async () => {
+    const h = harness(["q"], { autoGames: () => ["texas_holdem", "liars_dice", "coup"] });
+    await runInteractiveMenu(h.deps);
+    expect(h.out()).toContain("Games — auto-play [3 selected]");
+    const fewer = harness(["q"], { autoGames: () => ["coup"] });
+    await runInteractiveMenu(fewer.deps);
+    expect(fewer.out()).toContain("Games — auto-play [1 selected]");
+  });
+
+  it("games falls back to the full default list when no reader is wired", async () => {
+    const h = harness(["q"]);
+    await runInteractiveMenu(h.deps);
+    expect(h.out()).toContain("Games — auto-play [3 selected]");
+    expect(h.out()).toContain("Daily cap — auto matches [not set]");
+  });
+
+  it("the hint is re-read on every build — a change shows on the next repaint", async () => {
+    let cap: number | undefined = 5;
+    // Any action returning triggers a rebuild; the reader then answers anew
+    // (the production reader re-reads bridge.json the same way).
+    const h = harness(["3", "q"], {
+      dailyCap: () => cap,
+      onDispatch: () => {
+        cap = 9;
+      },
+    });
+    await runInteractiveMenu(h.deps);
+    const text = h.out();
+    expect(text).toContain("Daily cap — auto matches [5/day]"); // first paint
+    expect(text).toContain("Daily cap — auto matches [9/day]"); // after the change
+  });
+
+  it("update is a dim 'check & update' without a known-newer version", async () => {
+    const h = harness(["q"]);
+    await runInteractiveMenu(h.deps);
+    const frame = h.frames[0]!;
+    const update = frame.choices.find((c) => c.key === "12")!;
+    expect(update.main).toBe("Update");
+    expect(update.hint).toBe("check & update");
+    expect(update.hintTone ?? "dim").toBe("dim");
+  });
+
+  it("update turns yellow with the version once one is known-newer", async () => {
+    const provider: NonNullable<MenuDeps["statusBox"]> = {
+      title: "AIFight · v0.1.0-beta.40",
+      lines: () => [[{ text: "PokerMind", style: "bold" }]],
+      refreshed: () => undefined,
+      updateVersion: () => "0.1.0-beta.41",
+    };
+    const h = harness(["q"], { statusBox: provider });
+    await runInteractiveMenu(h.deps);
+    const update = h.frames[0]!.choices.find((c) => c.key === "12")!;
+    expect(update.hint).toBe("↑ 0.1.0-beta.41 available");
+    expect(update.hintTone).toBe("yellow");
+    expect(h.out()).toContain("12) Update — ↑ 0.1.0-beta.41 available");
   });
 });
 
@@ -467,14 +557,33 @@ describe("pause/resume matching item", () => {
 // These pin its shape so the interactive presentation cannot quietly lose the
 // Quit row or stale a dynamic label.
 describe("menu frame handed to the chooser", () => {
-  it("offers Quit as the last selectable row, after all 14 actions", async () => {
+  it("offers Quit as the last selectable row, after all 15 actions", async () => {
     const h = harness(["q"]);
     await runInteractiveMenu(h.deps);
     expect(h.frames).toHaveLength(1);
     const choices = h.frames[0]!.choices;
-    expect(choices).toHaveLength(15);
-    expect(choices[14]).toEqual({ key: "q", label: "Quit" });
-    expect(choices.map((c) => c.key)).toContain("14");
+    expect(choices).toHaveLength(16);
+    expect(choices[15]).toEqual({ key: "q", main: "Quit" });
+    expect(choices.map((c) => c.key)).toEqual([
+      "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "q",
+    ]);
+  });
+
+  it("carries the V2 order and the two-tone main/hint split", async () => {
+    seedBridge();
+    const h = harness(["q"], { dailyCap: () => 5, autoGames: () => ["coup"] });
+    await runInteractiveMenu(h.deps);
+    const mains = h.frames[0]!.choices.map((c) => c.main);
+    expect(mains).toEqual([
+      "Play", "Pause", "Status", "Record", "LLM", "Daily cap", "Games",
+      "Strategy", "Rename", "Telegram", "Claim", "Update", "Config", "Language", "Help", "Quit",
+    ]);
+    const byKey = new Map(h.frames[0]!.choices.map((c) => [c.key, c]));
+    expect(byKey.get("1")).toMatchObject({ main: "Play", hint: "request a ranked match" });
+    expect(byKey.get("6")).toMatchObject({ main: "Daily cap", hint: "auto matches [5/day]" });
+    expect(byKey.get("7")).toMatchObject({ main: "Games", hint: "auto-play [1 selected]" });
+    expect(byKey.get("14")).toMatchObject({ main: "Language", hint: "switch to 中文" });
+    expect(byKey.get("15")).toMatchObject({ main: "Help", hint: "full command list" });
   });
 
   it("carries the NOT CLAIMED banner in the frame, not just in text", async () => {
@@ -496,7 +605,7 @@ describe("menu frame handed to the chooser", () => {
         return false;
       }
     };
-    const h = harness(["14", "q"], {
+    const h = harness(["2", "q"], {
       matchingPaused: paused,
       onDispatch: (cmd) => {
         if (cmd === "pause") writeBridgeConfig({ ...readBridgeConfig(), matchingPaused: true });
@@ -504,10 +613,10 @@ describe("menu frame handed to the chooser", () => {
     });
     await runInteractiveMenu(h.deps);
     expect(h.frames).toHaveLength(2);
-    const labelOf = (f: (typeof h.frames)[number]) =>
-      f.choices.find((c) => c.key === "14")!.label;
-    expect(labelOf(h.frames[0]!)).toContain("Pause matching");
-    expect(labelOf(h.frames[1]!)).toContain("Resume matching");
+    const mainOf = (f: (typeof h.frames)[number]) =>
+      f.choices.find((c) => c.key === "2")!.main;
+    expect(mainOf(h.frames[0]!)).toBe("Pause");
+    expect(mainOf(h.frames[1]!)).toBe("Resume");
   });
 });
 
@@ -517,7 +626,7 @@ describe("menu frame handed to the chooser", () => {
 // (and any future non-raw host) drive the panel.
 describe("line-prompt fallback (no chooser wired)", () => {
   it("picks by number and quits on q", async () => {
-    const h = harness(["1", "q"], { linePrompt: true });
+    const h = harness(["3", "q"], { linePrompt: true });
     const code = await runInteractiveMenu(h.deps);
     expect(code).toBe(0);
     expect(h.dispatched).toEqual([{ cmd: "status", positional: [] }]);
@@ -551,7 +660,7 @@ describe("status banner in the panel", () => {
       [{ text: "Phantom Maverick", style: "bold" as const }, { text: " · " }, { text: "✓ claimed", style: "green" as const }],
     ];
     return {
-      title: "AIFight · v0.1.0-beta.39",
+      title: "AIFight · v0.1.0-beta.40",
       lines: () => lines,
       refreshed: () => (opts.pending ? Promise.resolve().then(() => {
         lines = [[{ text: "Phantom Maverick", style: "bold" as const }, { text: " · enriched" }]];
@@ -565,10 +674,10 @@ describe("status banner in the panel", () => {
     expect(h.frames).toHaveLength(1);
     const box = h.frames[0]!.statusBox;
     expect(box).toBeDefined();
-    expect(box!.title).toBe("AIFight · v0.1.0-beta.39");
+    expect(box!.title).toBe("AIFight · v0.1.0-beta.40");
     expect(box!.lines[0]!.map((s) => s.text).join("")).toContain("Phantom Maverick");
     // And the renderer drew it (plain ASCII frame in tests).
-    expect(h.out()).toContain("+- AIFight · v0.1.0-beta.39");
+    expect(h.out()).toContain("+- AIFight · v0.1.0-beta.40");
   });
 
   it("hands the chooser the refresh hook while the remote answers are pending", async () => {
@@ -577,12 +686,15 @@ describe("status banner in the panel", () => {
     expect(h.chooseOpts).toHaveLength(1);
     expect(h.chooseOpts[0]?.refreshWhen).toBeDefined();
     expect(typeof h.chooseOpts[0]?.getFrame).toBe("function");
+    // The locale rides along on every chooser call.
+    expect(h.chooseOpts[0]?.locale).toBe("en");
   });
 
-  it("passes no hook once the provider has settled", async () => {
+  it("passes no refresh hook once the provider has settled", async () => {
     const h = harness(["q"], { statusBox: fakeProvider({ pending: false }) });
     await runInteractiveMenu(h.deps);
-    expect(h.chooseOpts[0]).toBeUndefined();
+    expect(h.chooseOpts[0]?.refreshWhen).toBeUndefined();
+    expect(h.chooseOpts[0]?.getFrame).toBeUndefined();
   });
 
   it("no provider → no box, and the panel renders exactly as before", async () => {
@@ -590,7 +702,7 @@ describe("status banner in the panel", () => {
     await runInteractiveMenu(h.deps);
     expect(h.frames[0]!.statusBox).toBeUndefined();
     expect(h.out()).not.toContain("+- AIFight · v");
-    expect(h.chooseOpts[0]).toBeUndefined();
+    expect(h.chooseOpts[0]?.refreshWhen).toBeUndefined();
   });
 
   it("the getFrame hook rebuilds from the provider's (possibly enriched) lines", async () => {

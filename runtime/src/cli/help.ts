@@ -7,22 +7,27 @@
 // drift. The layout is computed (descriptions aligned from the longest
 // command), not hand-spaced.
 //
+// i18n (2026-07-31): every human string is an i18n key looked up in the
+// caller's locale; --json always passes "en" (machine output stays English).
+//
 // Coverage rule: every command in main.ts's dispatch switch appears here —
 // including `run`, which used to be missing from the global help.
 
 import { RUNTIME_VERSION } from "../index.js";
 import type { Ansi } from "./ansi.js";
+import { visibleWidth } from "./ansi.js";
+import { t, type I18nKey, type Locale } from "./i18n.js";
 import { SUPPORTED_GAMES } from "./shared.js";
 
 interface HelpRow {
-  /** The invocation, e.g. "aifight setup" or "--json". */
+  /** The invocation, e.g. "aifight setup" or "--json" (never translated). */
   readonly usage: string;
-  /** Second-column description ("" = usage-only row). */
-  readonly desc: string;
+  /** Second-column description key ("" = usage-only row). */
+  readonly descKey: I18nKey;
 }
 
 interface HelpGroup {
-  readonly title: string;
+  readonly titleKey: I18nKey;
   /** "cmd" rows render the usage cyan, "flag" rows dim. */
   readonly kind: "cmd" | "flag";
   readonly rows: readonly HelpRow[];
@@ -30,113 +35,118 @@ interface HelpGroup {
 
 const GROUPS: readonly HelpGroup[] = [
   {
-    title: "First run (set up this machine):",
+    titleKey: "help.group.firstrun",
     kind: "cmd",
     rows: [
-      { usage: "aifight setup", desc: "Guided setup: create your agent, connect & test your LLM, claim" },
-      { usage: "aifight config", desc: "Set up & test your LLM, daily matches, claim, style (interactive)" },
-      { usage: "aifight config add <profile> …", desc: "Headless: configure an LLM with flags (see `aifight config --help`)" },
-      { usage: "aifight connect <PAIRING_CODE>", desc: "Authorize this machine for an existing claimed agent" },
+      { usage: "aifight setup", descKey: "help.cmd.setup" },
+      { usage: "aifight config", descKey: "help.cmd.config" },
+      { usage: "aifight config add <profile> …", descKey: "help.cmd.config.add" },
+      { usage: "aifight connect <PAIRING_CODE>", descKey: "help.cmd.connect" },
     ],
   },
   {
-    title: "Play:",
+    titleKey: "help.group.play",
     kind: "cmd",
     rows: [
-      { usage: "aifight start [game] [N]", desc: "Request manual ranked match(es)" },
-      { usage: "aifight pause", desc: "Pause automatic matching (leaves the queue; persists until resume)" },
-      { usage: "aifight resume", desc: "Resume automatic matching" },
-      { usage: "aifight status", desc: "Show local config with secrets redacted (--live: realtime state)" },
-      { usage: "aifight record", desc: "Show your public competitive record: ratings, rank, recent matches" },
-      { usage: "aifight challenge <game>", desc: "Create a one-use friendly challenge URL" },
-      { usage: "aifight accept <url_or_token>", desc: "Accept a received challenge URL" },
+      { usage: "aifight start [game] [N]", descKey: "help.cmd.start" },
+      { usage: "aifight pause", descKey: "help.cmd.pause" },
+      { usage: "aifight resume", descKey: "help.cmd.resume" },
+      { usage: "aifight status", descKey: "help.cmd.status" },
+      { usage: "aifight record", descKey: "help.cmd.record" },
+      { usage: "aifight challenge <game>", descKey: "help.cmd.challenge" },
+      { usage: "aifight accept <url_or_token>", descKey: "help.cmd.accept" },
     ],
   },
   {
-    title: "Tune your agent (adjust any time):",
+    titleKey: "help.group.tune",
     kind: "cmd",
     rows: [
-      { usage: "aifight rename <name>", desc: "Change your agent's public display name" },
-      { usage: "aifight accept-terms", desc: "Review & accept updated Terms/Privacy (keeps your agent active)" },
-      { usage: "aifight set daily <N>", desc: "Set daily automatic match preference" },
-      { usage: "aifight set game <game1,game2>", desc: "Set automatic match game preference" },
-      { usage: "aifight strategy <command>", desc: "Show/init/validate local strategy files" },
-      { usage: "aifight review <id>", desc: "Post-match self-review of a local session (uses your LLM key)" },
-      { usage: "aifight stats", desc: "Local token usage + estimated cost (this month by default)" },
-      { usage: "aifight prices <command>", desc: "Set per-model token prices used by `aifight stats` (local only)" },
-      { usage: "aifight telegram <command>", desc: "Phone notifications & remote control via your own Telegram bot" },
+      { usage: "aifight rename <name>", descKey: "help.cmd.rename" },
+      { usage: "aifight accept-terms", descKey: "help.cmd.accept_terms" },
+      { usage: "aifight set daily <N>", descKey: "help.cmd.set.daily" },
+      { usage: "aifight set game <game1,game2>", descKey: "help.cmd.set.game" },
+      { usage: "aifight set language <en|zh>", descKey: "help.cmd.set.language" },
+      { usage: "aifight strategy <command>", descKey: "help.cmd.strategy" },
+      { usage: "aifight review <id>", descKey: "help.cmd.review" },
+      { usage: "aifight stats", descKey: "help.cmd.stats" },
+      { usage: "aifight prices <command>", descKey: "help.cmd.prices" },
+      { usage: "aifight telegram <command>", descKey: "help.cmd.telegram" },
     ],
   },
   {
-    title: "Manage this machine:",
+    titleKey: "help.group.manage",
     kind: "cmd",
     rows: [
-      { usage: "aifight service <command>", desc: "Install or manage aifight.service (persistent / VPS)" },
-      { usage: "aifight sessions <command>", desc: "Inspect local match session records" },
-      { usage: "aifight run", desc: "Advanced: run the outbound Bridge in this terminal" },
-      { usage: "aifight update", desc: "Update the CLI package, then restart the service unless a match is in progress" },
-      { usage: "aifight uninstall", desc: "Remove local AIFight setup from this machine" },
-      { usage: "aifight doctor", desc: "Troubleshoot local setup" },
-      { usage: "aifight version", desc: "Print version" },
+      { usage: "aifight service <command>", descKey: "help.cmd.service" },
+      { usage: "aifight sessions <command>", descKey: "help.cmd.sessions" },
+      { usage: "aifight run", descKey: "help.cmd.run" },
+      { usage: "aifight update", descKey: "help.cmd.update" },
+      { usage: "aifight uninstall", descKey: "help.cmd.uninstall" },
+      { usage: "aifight doctor", descKey: "help.cmd.doctor" },
+      { usage: "aifight version", descKey: "help.cmd.version" },
     ],
   },
   {
-    title: "Global flags:",
+    titleKey: "help.group.flags",
     kind: "flag",
     rows: [
-      { usage: "--json", desc: "Emit machine-readable JSON instead of human text" },
-      { usage: "--version, -v", desc: "Print version" },
-      { usage: "--help, -h", desc: "Print this help (or per-command help when after a command)" },
-      { usage: "--env <NAME>", desc: "config set-key only: read the LLM API key from an environment variable" },
-      { usage: "--file <PATH>", desc: "config set-key only: read the LLM API key from a 0600 key file" },
-      { usage: "--profile <name>", desc: "config only: target a specific LLM profile" },
-      { usage: "--name <name>", desc: "setup only: set the agent's initial display name (else one is suggested)" },
-      { usage: "--auto", desc: "setup only: non-interactive register + service + status (no prompts)" },
-      { usage: "--approved-local-setup", desc: "setup only: skip repeated local prompts after user-approved Agent setup" },
-      { usage: "--yes", desc: "update only: run npm update without an interactive confirmation" },
-      { usage: "--replace-local-identity", desc: "connect only: approve replacing existing local bridge credentials" },
+      { usage: "--json", descKey: "help.flag.json" },
+      { usage: "--version, -v", descKey: "help.flag.version" },
+      { usage: "--help, -h", descKey: "help.flag.help" },
+      { usage: "--env <NAME>", descKey: "help.flag.env" },
+      { usage: "--file <PATH>", descKey: "help.flag.file" },
+      { usage: "--profile <name>", descKey: "help.flag.profile" },
+      { usage: "--name <name>", descKey: "help.flag.name" },
+      { usage: "--auto", descKey: "help.flag.auto" },
+      { usage: "--approved-local-setup", descKey: "help.flag.approved" },
+      { usage: "--yes", descKey: "help.flag.yes" },
+      { usage: "--replace-local-identity", descKey: "help.flag.replace" },
     ],
   },
 ];
 
 /**
  * The full grouped help. Colors appear exactly where the passed Ansi enables
- * them; layout (grouping, order, alignment) is identical either way.
+ * them; layout (grouping, order, alignment) is identical either way. The
+ * header's tagline stays English in every locale (brand); --json callers
+ * pass "en" so machine output never varies.
  */
-export function renderGlobalHelp(ansi: Ansi): string {
+export function renderGlobalHelp(ansi: Ansi, locale: Locale = "en"): string {
   // One description column for the whole page: the longest usage across every
-  // group, plus a two-space gutter.
+  // group (in terminal cells — a wide-char usage must not skew the column),
+  // plus a two-space gutter.
   const pad =
-    Math.max(...GROUPS.flatMap((g) => g.rows.map((r) => r.usage.length))) + 2;
+    Math.max(...GROUPS.flatMap((g) => g.rows.map((r) => visibleWidth(r.usage)))) + 2;
 
   const row = (r: HelpRow, kind: "cmd" | "flag"): string => {
     const usage = kind === "flag" ? ansi.dim(r.usage) : ansi.cyan(r.usage);
-    if (r.desc === "") return `  ${usage}`;
-    return `  ${usage}${" ".repeat(pad - r.usage.length)}${r.desc}`;
+    const desc = t(locale, r.descKey);
+    if (desc === "") return `  ${usage}`;
+    return `  ${usage}${" ".repeat(pad - visibleWidth(r.usage))}${desc}`;
   };
 
   const lines: string[] = [
     ansi.bold(`AIFight CLI — AI fights AI. Bring yours. · v${RUNTIME_VERSION}`),
     "",
-    "Play hidden-information strategy games on AIFight with your own LLM.",
-    "Direct-LLM: paste an LLM API key into local config and play. Run it on a VPS",
-    "to stay online without keeping a computer on.",
+    t(locale, "help.intro1"),
+    t(locale, "help.intro2"),
+    t(locale, "help.intro3"),
     "",
-    ansi.yellow("Quickstart (direct-LLM):"),
+    ansi.yellow(t(locale, "help.quickstart")),
     `  ${ansi.cyan("npm install -g @aifight/aifight")}`,
-    `  ${ansi.cyan("aifight setup")}${" ".repeat(pad - "aifight setup".length)}Guided: create your agent, connect & test your LLM, go online, claim`,
-    ansi.dim("  # follow the printed claim URL to verify your email — then your agent is live"),
+    `  ${ansi.cyan("aifight setup")}${" ".repeat(pad - visibleWidth("aifight setup"))}${t(locale, "help.quickstart.setup")}`,
+    ansi.dim(t(locale, "help.quickstart.note")),
     "",
-    "Tip: run `aifight` with no command in a terminal for an interactive menu.",
+    t(locale, "help.tip"),
   ];
   for (const group of GROUPS) {
     lines.push("");
-    lines.push(ansi.yellow(group.title));
+    lines.push(ansi.yellow(t(locale, group.titleKey)));
     for (const r of group.rows) lines.push(row(r, group.kind));
   }
   lines.push("");
-  lines.push(`Supported games for manual matches: ${SUPPORTED_GAMES.join(", ")}`);
-  lines.push("Challenge games in this release: texas_holdem, liars_dice, coup");
+  lines.push(t(locale, "help.footer.games", { games: SUPPORTED_GAMES.join(", ") }));
+  lines.push(t(locale, "help.footer.challenge"));
   return lines.join("\n");
 }
 

@@ -3,6 +3,7 @@ import { renameAgent, AgentActionError } from "../../bridge/agent-actions";
 import { readBridgeConfig, writeBridgeConfig, type BridgeConfig } from "../../bridge/config";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError } from "../shared";
+import { resolveLocale, t } from "../i18n";
 import { applyPendingBridgeRestart, bridgeRestartPending } from "./apply-settings";
 import { promptDefault } from "./onboard-io";
 
@@ -84,14 +85,15 @@ async function promptPublicName(
   env: HandlerEnv,
   readLine?: (env: HandlerEnv, question: string) => Promise<string>,
 ): Promise<string | undefined> {
+  const loc = env.locale?.() ?? resolveLocale();
   const config = readRenameBridgeConfig();
-  const answer = await promptDefault(env, "Public name", config.agentName, readLine);
+  const answer = await promptDefault(env, t(loc, "prompt.rename.question"), config.agentName, readLine);
   if (answer.kind === "cancel") {
-    env.stdout("No changes made.\n");
+    env.stdout(`${t(loc, "prompt.cancel")}\n`);
     return undefined;
   }
   if (answer.kind === "keep") {
-    env.stdout(`Kept ${config.agentName}.\n`);
+    env.stdout(`${t(loc, "prompt.keep", { value: config.agentName })}\n`);
     return undefined;
   }
   return answer.value;

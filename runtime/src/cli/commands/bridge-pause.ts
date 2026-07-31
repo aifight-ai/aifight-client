@@ -22,7 +22,9 @@
 import { pickAutomaticGame } from "../../bridge/auto-join";
 import { readBridgeConfig, writeBridgeConfig, type BridgeConfig } from "../../bridge/config";
 import { fetchNoFollow } from "../../net/guarded-fetch";
+import { createStatusIcons } from "../ansi";
 import { ControlClientError } from "../control-client";
+import { resolveLocale, t, type Locale } from "../i18n";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, expectArity, makeClient } from "../shared";
 import { agentSeatHolderPid } from "./bridge-start";
@@ -35,13 +37,14 @@ export async function runBridgePause(
   env: HandlerEnv,
 ): Promise<number> {
   expectArity(args, 0, 0, PAUSE_USAGE);
+  const loc = env.locale?.() ?? resolveLocale();
   const config = readPauseBridgeConfig();
 
   if (config.matchingPaused === true) {
     if (args.jsonMode) {
       env.stdout(JSON.stringify({ status: "already_paused", matchingPaused: true }) + "\n");
     } else {
-      env.stdout("Automatic matching is already paused. Resume with `aifight resume`.\n");
+      env.stdout(`${t(loc, "pause.already")}\n`);
     }
     return 0;
   }
@@ -72,11 +75,14 @@ export async function runBridgePause(
     }) + "\n");
     return 0;
   }
-  env.stdout("Automatic matching paused — left the queue; the agent will not re-join automatically after a match ends.\n");
+  // Human feedback leads with the V2 status icons (✓ / ⚠, ASCII fallback
+  // "OK" / "!" when colors are off) — --json above stays byte-stable.
+  const icons = env.statusIcons ?? createStatusIcons();
+  env.stdout(`${icons.ok} ${t(loc, "pause.ok")}\n`);
   if (!viaControl) {
-    env.stdout(`${notRunningNote()}\n`);
+    env.stdout(`${icons.warn} ${notRunningNote(loc)}\n`);
   }
-  env.stdout("Resume any time: aifight resume\n");
+  env.stdout(`${t(loc, "pause.resume_hint")}\n`);
   return 0;
 }
 
@@ -85,13 +91,14 @@ export async function runBridgeResume(
   env: HandlerEnv,
 ): Promise<number> {
   expectArity(args, 0, 0, RESUME_USAGE);
+  const loc = env.locale?.() ?? resolveLocale();
   const config = readPauseBridgeConfig();
 
   if (config.matchingPaused !== true) {
     if (args.jsonMode) {
       env.stdout(JSON.stringify({ status: "not_paused", matchingPaused: false }) + "\n");
     } else {
-      env.stdout("Automatic matching is not paused.\n");
+      env.stdout(`${t(loc, "resume.not_paused")}\n`);
     }
     return 0;
   }
@@ -122,18 +129,21 @@ export async function runBridgeResume(
     }) + "\n");
     return 0;
   }
+  const icons = env.statusIcons ?? createStatusIcons();
   switch (outcome) {
     case "joined":
-      env.stdout(`Automatic matching resumed — re-joined the ${game} queue.\n`);
+      env.stdout(`${icons.ok} ${t(loc, "resume.ok.joined", { game: game ?? "" })}\n`);
       break;
     case "not_running":
-      env.stdout(`Automatic matching resumed. ${notRunningNote()}\n`);
+      env.stdout(`${icons.ok} ${t(loc, "resume.ok")}\n`);
+      env.stdout(`${icons.warn} ${notRunningNote(loc)}\n`);
       break;
     case "join_failed":
-      env.stdout("Automatic matching resumed (saved), but the running bridge did not accept the re-join — it picks the setting up on its next reconnect.\n");
+      env.stdout(`${icons.warn} ${t(loc, "resume.warn.join_failed")}\n`);
       break;
     case "cap_off":
-      env.stdout("Automatic matching resumed. The daily cap is 0 (manual only), so the agent still will not queue by itself — set one with `aifight set daily <N>`.\n");
+      env.stdout(`${icons.ok} ${t(loc, "resume.ok")}\n`);
+      env.stdout(`${icons.warn} ${t(loc, "resume.warn.cap_off")}\n`);
       break;
   }
   return 0;
@@ -142,10 +152,10 @@ export async function runBridgeResume(
 /** What "no CLI bridge answered the control API" means for the user. When the
  *  desktop app holds the agent seat it IS running but speaks no control API —
  *  and it keeps its own pause switch, so say so instead of "not running". */
-function notRunningNote(): string {
+function notRunningNote(loc: Locale): string {
   return agentSeatHolderPid() !== undefined
-    ? "The desktop app currently runs this agent on this machine and keeps its own pause switch — set it in the app (Play view) too."
-    : "No bridge is running on this machine — the change is saved and applies the next time one starts.";
+    ? t(loc, "note.desktop_seat")
+    : t(loc, "note.not_running");
 }
 
 /** readBridgeConfig, with the expected local-config failures mapped to a

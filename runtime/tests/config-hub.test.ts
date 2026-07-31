@@ -173,7 +173,8 @@ describe("panel — settings items carried over from the config hub", () => {
       "Telegram —",
       "Claim —",
       "Strategy —",
-      "Show current config —",
+      "Config —",
+      "Language —",
     ]) {
       expect(text, item).toContain(item);
     }
@@ -184,7 +185,7 @@ describe("panel — settings items carried over from the config hub", () => {
   it("games is editable and writes through to bridge.json", async () => {
     useTempHome();
     seed({ autoGames: ["coup"] });
-    const h = harness(["6", "texas_holdem,liars_dice", "q"]);
+    const h = harness(["7", "texas_holdem,liars_dice", "q"]);
 
     await runInteractiveMenu(h.deps);
 
@@ -194,7 +195,7 @@ describe("panel — settings items carried over from the config hub", () => {
   it("blank keeps the current games rather than clearing them", async () => {
     useTempHome();
     seed({ autoGames: ["coup"] });
-    const h = harness(["6", "", "q"]);
+    const h = harness(["7", "", "q"]);
 
     await runInteractiveMenu(h.deps);
 
@@ -205,7 +206,7 @@ describe("panel — settings items carried over from the config hub", () => {
   it("daily cap shows the current value and blank keeps it", async () => {
     useTempHome();
     seed({ autoDailyLimit: 4 });
-    const h = harness(["5", "", "q"]);
+    const h = harness(["6", "", "q"]);
 
     await runInteractiveMenu(h.deps);
 
@@ -232,7 +233,7 @@ describe("panel — settings items carried over from the config hub", () => {
     fs.writeFileSync(path.join(dir, "port"), "45995", { mode: 0o644 });
     const old = new Date("2020-01-01T00:00:00Z");
     fs.utimesSync(path.join(dir, "port"), old, old);
-    const h = harness(["6", "texas_holdem", "6", "coup,liars_dice", "q"]);
+    const h = harness(["7", "texas_holdem", "7", "coup,liars_dice", "q"]);
 
     await runInteractiveMenu(h.deps);
 
@@ -244,7 +245,7 @@ describe("panel — settings items carried over from the config hub", () => {
   it("a failing step is caught and the panel stays open", async () => {
     useTempHome();
     seed();
-    const h = harness(["6", "chess", "q"]);
+    const h = harness(["7", "chess", "q"]);
 
     const code = await runInteractiveMenu(h.deps);
 

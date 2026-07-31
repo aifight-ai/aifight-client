@@ -7,6 +7,8 @@ import {
 } from "../../bridge/service";
 import { checkBridgeUpdate, type BridgeUpdateCheck } from "../../bridge/update-check";
 import { RUNTIME_VERSION } from "../../index";
+import { createStatusIcons } from "../ansi";
+import { resolveLocale, t } from "../i18n";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, expectArity, makeClient } from "../shared";
 
@@ -122,8 +124,13 @@ async function runNpmUpdate(env: HandlerEnv, jsonMode: boolean, update: BridgeUp
     );
   }
   if (!jsonMode) {
-    env.stdout("AIFight CLI package updated.\n");
+    env.stdout(`${icons(env).ok} ${t(env.locale?.() ?? resolveLocale(), "update.ok")}\n`);
   }
+}
+
+/** The V2 status icons for human feedback lines (never in --json output). */
+function icons(env: HandlerEnv): { readonly ok: string; readonly warn: string } {
+  return env.statusIcons ?? createStatusIcons();
 }
 
 async function restartInstalledService(
@@ -139,8 +146,9 @@ async function restartInstalledService(
     status = await statusBridgeService(env.bridgeService);
   } catch (cause) {
     if (!jsonMode) {
-      env.stderr(`warning: could not inspect aifight.service: ${firstErrorLine(cause)}\n`);
-      env.stderr("If you use a foreground Bridge, stop it and run `aifight run` again.\n");
+      const loc = env.locale?.() ?? resolveLocale();
+      env.stderr(`${icons(env).warn} ${t(loc, "update.warn.inspect", { error: firstErrorLine(cause) })}\n`);
+      env.stderr(`${t(loc, "update.warn.inspect.tail")}\n`);
     }
     return { installed: false };
   }
@@ -190,9 +198,10 @@ async function restartInstalledService(
   } catch (cause) {
     const hint = cause instanceof BridgeServiceError ? cause.hint : undefined;
     if (!jsonMode) {
-      env.stderr(`warning: aifight.service restart failed: ${firstErrorLine(cause)}\n`);
+      const loc = env.locale?.() ?? resolveLocale();
+      env.stderr(`${icons(env).warn} ${t(loc, "update.warn.restart_failed", { error: firstErrorLine(cause) })}\n`);
       if (hint) env.stderr(`${hint}\n`);
-      env.stderr("Run `aifight service restart` after resolving the service manager issue.\n");
+      env.stderr(`${t(loc, "update.warn.restart_failed.tail")}\n`);
     }
     return {
       installed: true,

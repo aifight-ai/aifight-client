@@ -5,6 +5,7 @@ import { declaredModelOriginLabel, resolveEffectiveDeclaredModel } from "../../b
 import { checkBridgeUpdate } from "../../bridge/update-check";
 import { RUNTIME_VERSION } from "../../index";
 import { ControlClientError } from "../control-client";
+import { resolveLocale, t, type Locale } from "../i18n";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { expectArity, makeClient } from "../shared";
 import type { BridgeConfig } from "../../bridge/config";
@@ -17,6 +18,7 @@ export async function runBridgeStatus(
   env: HandlerEnv,
 ): Promise<number> {
   expectArity(args, 0, 0, USAGE);
+  const loc = env.locale?.() ?? resolveLocale();
   // 连接审计 #14: `--live` asks the RUNNING bridge (aifight run / the service)
   // over its control API — realtime transport + queue, not config-file guesses.
   if (args.flags.live === true) return runLiveStatus(args, env);
@@ -25,10 +27,10 @@ export async function runBridgeStatus(
     if (args.jsonMode) {
       env.stdout(JSON.stringify({ status: "not_configured", bridgeVersion: RUNTIME_VERSION }) + "\n");
     } else {
-      env.stdout("AIFight status\n\n");
-      env.stdout("Bridge: not configured\n");
-      env.stdout(`CLI version: ${RUNTIME_VERSION}\n`);
-      env.stdout("Next: run `aifight setup` for a new agent, or `aifight connect <PAIRING_CODE>` for an existing agent.\n");
+      env.stdout(`${t(loc, "status.title")}\n\n`);
+      env.stdout(`${t(loc, "status.not_configured")}\n`);
+      env.stdout(`${t(loc, "status.cli_version", { version: RUNTIME_VERSION })}\n`);
+      env.stdout(`${t(loc, "status.next")}\n`);
     }
     return 0;
   }
@@ -60,50 +62,50 @@ export async function runBridgeStatus(
     return 0;
   }
 
-  env.stdout("AIFight status\n\n");
+  env.stdout(`${t(loc, "status.title")}\n\n`);
   // Prefer the server-authoritative name (reflects a rename from any device);
   // fall back to the locally cached name when the status check is unavailable.
   const serverName = platformAgentStatus.kind === "ok" ? platformAgentStatus.name : undefined;
   const publicNo = platformAgentStatus.kind === "ok" ? platformAgentStatus.publicNo : undefined;
   const idSuffix = publicNo !== undefined ? `  (ID ${formatPublicNo(publicNo)})` : "";
-  env.stdout(`Agent: ${serverName ?? redacted.agentName}${idSuffix}\n`);
-  env.stdout(`Profile: ${profileLabel(platformAgentStatus, config)}\n`);
+  env.stdout(`${t(loc, "status.agent", { name: serverName ?? redacted.agentName, id: idSuffix })}\n`);
+  env.stdout(`${t(loc, "status.profile", { label: profileLabel(loc, platformAgentStatus, config) })}\n`);
   if (platformAgentStatus.kind === "unavailable") {
-    env.stdout(`Profile check: ${platformAgentStatus.message}\n`);
+    env.stdout(`${t(loc, "status.profile_check", { message: platformAgentStatus.message })}\n`);
   }
   // An unclaimed agent cannot play at all — the claim link IS the way past the
   // gate, so print it here instead of leaving the user at "Profile: unclaimed".
   const claimUrl = unclaimedClaimUrl(platformAgentStatus, config);
   if (claimUrl !== undefined) {
-    env.stdout("Claim: this agent is not claimed yet — it cannot play until you open this link:\n");
+    env.stdout(`${t(loc, "status.claim")}\n`);
     env.stdout(`  ${claimUrl}\n`);
   }
   if (platformAgentStatus.kind === "ok" && platformAgentStatus.termsPending) {
     const dashUrl = `${config.baseUrl.replace(/\/+$/, "")}/dashboard`;
-    env.stdout("Action needed: updated Terms/Privacy must be accepted to keep your agent active.\n");
-    env.stdout(`  Accept in the CLI: aifight accept-terms   (or in the browser: ${dashUrl})\n`);
+    env.stdout(`${t(loc, "status.terms")}\n`);
+    env.stdout(`${t(loc, "status.terms.tail", { url: dashUrl })}\n`);
   }
-  env.stdout("Bridge: configured\n");
-  env.stdout(`CLI version: ${RUNTIME_VERSION}\n`);
-  env.stdout(`Update: ${update.message}\n`);
+  env.stdout(`${t(loc, "status.configured")}\n`);
+  env.stdout(`${t(loc, "status.cli_version", { version: RUNTIME_VERSION })}\n`);
+  env.stdout(`${t(loc, "status.update", { message: update.message })}\n`);
   if (update.status === "update_recommended" || update.status === "unsupported") {
-    env.stdout("Update command: aifight update --yes\n");
-    env.stdout(`Manual npm command: ${update.policy?.updateCommand ?? "npm install -g @aifight/aifight"}\n`);
-    env.stdout("The update command keeps local credentials and restarts `aifight.service` when it is installed.\n");
+    env.stdout(`${t(loc, "status.update.cmd")}\n`);
+    env.stdout(`${t(loc, "status.update.manual", { cmd: update.policy?.updateCommand ?? "npm install -g @aifight/aifight" })}\n`);
+    env.stdout(`${t(loc, "status.update.note")}\n`);
   }
-  env.stdout(`Runtime: ${runtimeLabel(redacted.runtimeType)} at ${redacted.runtimeLocalUrl}\n`);
+  env.stdout(`${t(loc, "status.runtime", { label: runtimeLabel(redacted.runtimeType), url: redacted.runtimeLocalUrl })}\n`);
   // What the leaderboard/profile shows as this agent's model, and why.
-  env.stdout(`Declared model: ${declaredModel.value} (${declaredModelOriginLabel(declaredModel.origin)})\n`);
-  env.stdout(`Automatic ranked matches: ${formatDaily(redacted.autoDailyLimit)}\n`);
+  env.stdout(`${t(loc, "status.declared", { value: declaredModel.value, origin: declaredModelOriginLabel(declaredModel.origin) })}\n`);
+  env.stdout(`${t(loc, "status.daily", { daily: formatDaily(loc, redacted.autoDailyLimit) })}\n`);
   // The pause flag survives restarts, so say it out loud when set — a paused
   // agent looks "configured and online" everywhere else, which is exactly the
   // confusion that made the desktop show this state prominently too.
   if (config.matchingPaused === true) {
-    env.stdout("Matching: paused (aifight resume to re-enable)\n");
+    env.stdout(`${t(loc, "status.paused")}\n`);
   }
-  env.stdout(`Games: ${redacted.autoGames?.join(", ") ?? "texas_holdem, liars_dice, coup"}\n`);
-  env.stdout(`AIFight WebSocket: ${redacted.wsUrl}\n`);
-  env.stdout("No secrets are shown here.\n");
+  env.stdout(`${t(loc, "status.games", { games: redacted.autoGames?.join(", ") ?? "texas_holdem, liars_dice, coup" })}\n`);
+  env.stdout(`${t(loc, "status.ws", { url: redacted.wsUrl })}\n`);
+  env.stdout(`${t(loc, "status.secrets")}\n`);
   return 0;
 }
 
@@ -123,6 +125,7 @@ interface LiveAgentRow {
 }
 
 async function runLiveStatus(args: HandlerArgs, env: HandlerEnv): Promise<number> {
+  const loc = env.locale?.() ?? resolveLocale();
   const client = makeClient(env);
   let agents: readonly LiveAgentRow[];
   try {
@@ -140,11 +143,11 @@ async function runLiveStatus(args: HandlerArgs, env: HandlerEnv): Promise<number
             : { status: "bridge_not_running" },
         ) + "\n");
       } else if (pid !== undefined) {
-        env.stdout(`A bridge for this agent is already running on this machine (PID ${pid}), but it does not expose the CLI control API.\n`);
-        env.stdout("If you use the AIFight desktop app, your agent is online inside it — check live status there, or quit the app and use `aifight run` (or the service).\n");
+        env.stdout(`${t(loc, "status.live.desktop1", { pid })}\n`);
+        env.stdout(`${t(loc, "status.live.desktop2")}\n`);
       } else {
-        env.stdout("Bridge not running on this machine — live status needs `aifight run` (or the background service).\n");
-        env.stdout("Plain `aifight status` shows the stored configuration instead.\n");
+        env.stdout(`${t(loc, "status.live.down1")}\n`);
+        env.stdout(`${t(loc, "status.live.down2")}\n`);
       }
       return 1;
     }
@@ -154,19 +157,23 @@ async function runLiveStatus(args: HandlerArgs, env: HandlerEnv): Promise<number
     env.stdout(JSON.stringify({ status: "ok", agents }) + "\n");
     return 0;
   }
-  env.stdout("AIFight live status\n\n");
+  env.stdout(`${t(loc, "status.live.title")}\n\n`);
   if (agents.length === 0) {
-    env.stdout("No agents running in the bridge.\n");
+    env.stdout(`${t(loc, "status.live.empty")}\n`);
     return 0;
   }
   for (const a of agents) {
     const s = a.state ?? null;
-    env.stdout(`Agent: ${a.name ?? "-"}\n`);
-    env.stdout(`Connection: ${a.transport ?? "-"}\n`);
-    env.stdout(`Phase: ${s?.phase ?? "-"}\n`);
-    env.stdout(`Queue: ${s?.queue?.game !== undefined ? `${s.queue.game} (${s.queue.mode ?? "ranked"})` : "not queued"}\n`);
+    env.stdout(`${t(loc, "status.live.agent", { name: a.name ?? "-" })}\n`);
+    env.stdout(`${t(loc, "status.live.connection", { transport: a.transport ?? "-" })}\n`);
+    env.stdout(`${t(loc, "status.live.phase", { phase: s?.phase ?? "-" })}\n`);
+    env.stdout(`${t(loc, "status.live.queue", {
+      value: s?.queue?.game !== undefined ? `${s.queue.game} (${s.queue.mode ?? "ranked"})` : t(loc, "status.live.queue.none"),
+    })}\n`);
     const matches = s?.activeMatches !== undefined ? Object.values(s.activeMatches) : [];
-    env.stdout(`Active matches: ${matches.length === 0 ? "none" : matches.map((m) => m.game ?? "?").join(", ")}\n`);
+    env.stdout(`${t(loc, "status.live.matches", {
+      value: matches.length === 0 ? t(loc, "status.live.matches.none") : matches.map((m) => m.game ?? "?").join(", "),
+    })}\n`);
   }
   return 0;
 }
@@ -182,27 +189,27 @@ function unclaimedClaimUrl(status: PlatformAgentStatus, config: BridgeConfig): s
   return config.claimUrl;
 }
 
-function profileLabel(status: PlatformAgentStatus, config: BridgeConfig): string {
+function profileLabel(loc: Locale, status: PlatformAgentStatus, config: BridgeConfig): string {
   if (status.kind === "unavailable") {
     return config.claimToken !== undefined
-      ? "unknown (claim URL saved locally)"
-      : "unknown";
+      ? t(loc, "status.profile.unknown_saved")
+      : t(loc, "status.profile.unknown");
   }
   switch (status.status) {
     case "ready":
     // "needs_official_name" is retired — claim is the only gate, so a claimed
     // agent is simply ready (handle the value for older-server back-compat).
     case "needs_official_name":
-      return "claimed, ready";
+      return t(loc, "status.profile.ready");
     case "pending_claim":
-      return "unclaimed";
+      return t(loc, "status.profile.unclaimed");
   }
 }
 
-function formatDaily(limit: number | undefined): string {
-  if (limit === undefined) return "not set";
-  if (limit === 0) return "disabled";
-  return `${limit} per day`;
+function formatDaily(loc: Locale, limit: number | undefined): string {
+  if (limit === undefined) return t(loc, "status.daily.unset");
+  if (limit === 0) return t(loc, "status.daily.off");
+  return t(loc, "status.daily.cap", { limit });
 }
 
 function runtimeLabel(runtimeType: ReturnType<typeof redactBridgeConfig>["runtimeType"]): string {

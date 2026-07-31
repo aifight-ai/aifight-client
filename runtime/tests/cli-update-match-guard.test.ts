@@ -194,4 +194,30 @@ describe("aifight update — match-in-progress guard", () => {
     expect(rc).toBe(0);
     expect(out.join("")).toContain("aifight.service restarted.");
   });
+
+  // V2 (2026-07-31): the update-completed line leads with a green ✓ (ASCII
+  // "OK" when colors are off); --json never carries it.
+  it("leads the completed update with ✓ in human output, never in --json", async () => {
+    const home = freshHomeWithControlFiles();
+    const calls: string[][] = [];
+    const out: string[] = [];
+    const deps = installedServiceDeps(home, calls);
+
+    const env: HandlerEnv = {
+      ...makeEnv(out, deps, "connected", "9.9.9"),
+      statusIcons: { ok: "✓", warn: "⚠" },
+    };
+    const rc = await runBridgeUpdate(ARGS, env);
+    expect(rc).toBe(0);
+    expect(out.join("")).toContain("✓ AIFight CLI package updated.");
+
+    const jsonOut: string[] = [];
+    const jsonRc = await runBridgeUpdate(
+      { ...ARGS, jsonMode: true },
+      { ...makeEnv(jsonOut, deps, "connected", "9.9.9"), statusIcons: { ok: "✓", warn: "⚠" } },
+    );
+    expect(jsonRc).toBe(0);
+    expect(jsonOut.join("")).not.toContain("✓");
+    expect(JSON.parse(jsonOut.join("").trim())).toMatchObject({ status: "updated" });
+  });
 });
