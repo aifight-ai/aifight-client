@@ -229,8 +229,8 @@ describe("bridge CLI commands", () => {
       if (textUrl.endsWith("/api/bridge/version")) {
         return new Response(JSON.stringify({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.2.0-beta.5",
-          latest_version: "0.2.0-beta.5",
+          recommended_version: "0.2.0-beta.6",
+          latest_version: "0.2.0-beta.6",
           update_command: "npm install -g @aifight/aifight",
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }

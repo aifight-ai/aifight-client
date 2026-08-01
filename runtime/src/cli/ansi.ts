@@ -19,6 +19,8 @@ export interface Ansi {
   readonly cyan: (s: string) => string;
   readonly green: (s: string) => string;
   readonly yellow: (s: string) => string;
+  /** AIFight brand orange — see brandOpen for the degradation ladder. */
+  readonly brand: (s: string) => string;
 }
 
 export interface AnsiGate {
@@ -49,7 +51,19 @@ export function createAnsi(gate: AnsiGate = {}): Ansi {
     cyan: wrap(enabled, "36", "39"),
     green: wrap(enabled, "32", "39"),
     yellow: wrap(enabled, "33", "39"),
+    brand: wrap(enabled, brandOpen(gate), "39"),
   };
+}
+
+/** AIFight brand orange (#FF700A), degraded to what the terminal can show:
+ *  truecolor when COLORTERM says so, xterm-256 208 (dark orange) on 256-color
+ *  TERMs, plain yellow elsewhere. Close is the standard 39 either way. */
+function brandOpen(gate: AnsiGate): string {
+  const env = gate.env ?? process.env;
+  const colorterm = (env.COLORTERM ?? "").toLowerCase();
+  if (colorterm.includes("truecolor") || colorterm.includes("24bit")) return "38;2;255;112;10";
+  if ((env.TERM ?? "").includes("256color")) return "38;5;208";
+  return "33";
 }
 
 function detectColor(gate: AnsiGate): boolean {

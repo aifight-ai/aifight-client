@@ -44,6 +44,8 @@ describe("normalizeChallenges", () => {
         opponentName: "",
         createdAt: "2026-07-29T20:00:00Z",
         expiresAt: "2026-07-30T20:00:00Z",
+        maxPlayers: 2,
+        seatedCount: 0,
       },
       {
         id: "d2",
@@ -53,6 +55,8 @@ describe("normalizeChallenges", () => {
         opponentName: "omega",
         createdAt: "2026-07-29T21:00:00Z",
         expiresAt: "2026-07-30T21:00:00Z",
+        maxPlayers: 2,
+        seatedCount: 0,
       },
     ]);
   });
@@ -62,7 +66,21 @@ describe("normalizeChallenges", () => {
     expect(normalizeChallenges({}, ME)).toEqual([]);
     expect(normalizeChallenges({ duels: "nope" }, ME)).toEqual([]);
     expect(normalizeChallenges({ duels: [{ status: "pending" }, null, { id: "d3", status: "pending" }] }, ME)).toEqual([
-      { id: "d3", game: "", status: "pending", isHost: false, opponentName: "", createdAt: "", expiresAt: "" },
+      { id: "d3", game: "", status: "pending", isHost: false, opponentName: "", createdAt: "", expiresAt: "", maxPlayers: 2, seatedCount: 0 },
     ]);
+  });
+
+  it("passes multi-seat table fields through (W5)", () => {
+    const out = normalizeChallenges(
+      { duels: [{ id: "d9", host_agent_id: ME, game: "coup", status: "pending", max_players: 4, seated_count: 2 }] },
+      ME,
+    );
+    expect(out[0]).toMatchObject({ id: "d9", maxPlayers: 4, seatedCount: 2 });
+    // Nonsense sizes normalize to the classic duel, not NaN.
+    const bad = normalizeChallenges(
+      { duels: [{ id: "d10", host_agent_id: ME, game: "coup", status: "pending", max_players: "six" }] },
+      ME,
+    );
+    expect(bad[0]).toMatchObject({ maxPlayers: 2, seatedCount: 0 });
   });
 });

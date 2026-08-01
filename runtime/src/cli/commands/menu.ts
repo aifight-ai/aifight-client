@@ -36,7 +36,7 @@ export interface MenuDeps {
   /** Read one line of input (main wires createOnboardIO(env).promptLine). */
   readonly prompt: (question: string) => Promise<string>;
   /** The chooser: given the freshly-built frame, resolve the key of the row
-   *  the user picked ("1".."16" or "q"). main.ts wires the arrow-key chooser
+   *  the user picked ("1".."18" or "q"). main.ts wires the arrow-key chooser
    *  (menu-select.ts) — the panel only ever opens on a TTY, so that is the
    *  production path. When absent the panel falls back to printing the frame
    *  and reading a number line-by-line (today's tests, and any future host
@@ -63,11 +63,11 @@ export interface MenuDeps {
    *  dispatched command rewrote the config, without rebuilding the panel.
    *  Optional so tests and non-configured hosts can omit it (= not paused). */
   readonly matchingPaused?: () => boolean;
-  /** Live read of the daily cap (bridge.json autoDailyLimit) for item 6's
+  /** Live read of the daily cap (bridge.json autoDailyLimit) for item 7's
    *  hint. Optional; absent = "not set". */
   readonly dailyCap?: () => number | undefined;
   /** Live read of the auto-play game selection (bridge.json autoGames) for
-   *  item 7's hint. Optional; absent = the supported default list. */
+   *  item 8's hint. Optional; absent = the supported default list. */
   readonly autoGames?: () => readonly string[];
   /** The checkbox games picker (V3, design §1): main.ts wires the raw-mode
    *  multi-select; absent in tests/chooser-less hosts → item 7 falls back to
@@ -99,7 +99,7 @@ interface MenuItem {
   /** The short dim description after the main word, translated; carries live
    *  state for the cap/games/update rows. */
   readonly hint?: (loc: Locale, deps: MenuDeps) => string;
-  /** Yellow instead of dim while an update is known-newer (item 13). */
+  /** Yellow instead of dim while an update is known-newer (item 14). */
   readonly hintTone?: (deps: MenuDeps) => "dim" | "yellow";
   readonly run: (deps: MenuDeps) => Promise<void>;
 }
@@ -141,9 +141,10 @@ function errorHint(cause: unknown): string | undefined {
 // nudge) flip on the repaint right after the underlying value changed.
 // i18n (same day): every label goes through t(locale, …); item 15 (Language)
 // flips bridge.json and the next frame repaints in the new language.
-// V3 (2026-07-31, owner decision ②): the FINAL 17-row layout — Profile
-// (identity manage) inserted at 9, Rename→16 shifting one down; 1-8 left,
-// 9-16 + Quit right. V2 never shipped, so the renumber costs nothing.
+// V3 (2026-07-31, owner decision ②): 17 rows — Profile
+// (identity manage) inserted at 9, Rename→16 shifting one down; V2 never
+// shipped, so the renumber cost nothing. V4 (2026-08-01, owner ask): the
+// Challenge submenu (friendly duels) inserted at 5 — 18 rows, 6-17 shifted.
 
 /** The locale for this render — re-read on every build (AIFIGHT_LANG >
  *  bridge.json > "en"), so the Language toggle repaints immediately. */
@@ -194,7 +195,26 @@ const ITEMS: readonly MenuItem[] = [
     run: ({ dispatch }) => dispatch("record", []).then(() => undefined),
   },
   {
+    // Challenge (约战) — friendly duels lived only behind `aifight challenge`
+    // / `aifight accept`, and the owner hit the wall on a fresh install:
+    // "cli主菜单甚至没有约战子选项" (2026-08-01). The submenu gathers the
+    // arguments and dispatches to those same commands.
     key: "5",
+    main: (loc) => t(loc, "menu.item.challenge.main"),
+    hint: (loc) => t(loc, "menu.item.challenge.hint"),
+    run: async (deps) => {
+      const { runChallengeMenu } = await import("./challenge-menu.js");
+      await runChallengeMenu({
+        env: deps.env,
+        locale: () => localeOf(deps),
+        prompt: deps.prompt,
+        dispatch: deps.dispatch,
+        ...(deps.choose !== undefined ? { choose: deps.choose } : {}),
+      });
+    },
+  },
+  {
+    key: "6",
     // `config llm`, not bare `config`: bare config opens its own hub, so this
     // used to drop the user into a SECOND menu one level down — which is the
     // "why are there two different menus" the owner ran into (2026-07-29).
@@ -203,7 +223,7 @@ const ITEMS: readonly MenuItem[] = [
     run: ({ dispatch }) => dispatch("config", ["llm"]).then(() => undefined),
   },
   {
-    key: "6",
+    key: "7",
     // The daily item delegates to the prompt the old `aifight config` hub
     // used: it shows the CURRENT value, treats a blank answer as "keep it",
     // and validates against the setup wizard's ceiling (V3: re-asking after
@@ -224,7 +244,7 @@ const ITEMS: readonly MenuItem[] = [
     },
   },
   {
-    key: "7",
+    key: "8",
     main: (loc) => t(loc, "menu.item.games.main"),
     hint: (loc, deps) =>
       t(loc, "menu.item.games.hint", { count: (deps.autoGames?.() ?? SUPPORTED_GAMES).length }),
@@ -244,7 +264,7 @@ const ITEMS: readonly MenuItem[] = [
     },
   },
   {
-    key: "8",
+    key: "9",
     main: (loc) => t(loc, "menu.item.strategy.main"),
     hint: (loc) => t(loc, "menu.item.strategy.hint"),
     run: ({ dispatch }) => dispatch("strategy", ["path"]).then(() => undefined),
@@ -253,7 +273,7 @@ const ITEMS: readonly MenuItem[] = [
     // Profile Manage (V3 ④): multiple agent identities on this machine, one
     // active. The submenu lives in profile-menu.ts; after a switch the panel's
     // identity-carrying decorations refresh via onIdentitySwitched.
-    key: "9",
+    key: "10",
     main: (loc) => t(loc, "menu.item.profile.main"),
     hint: (loc) => t(loc, "menu.item.profile.hint"),
     run: async (deps) => {
@@ -268,7 +288,7 @@ const ITEMS: readonly MenuItem[] = [
     },
   },
   {
-    key: "10",
+    key: "11",
     main: (loc) => t(loc, "menu.item.rename.main"),
     hint: (loc) => t(loc, "menu.item.rename.hint"),
     run: async ({ env, prompt, dispatch }) => {
@@ -282,13 +302,13 @@ const ITEMS: readonly MenuItem[] = [
   },
   {
     // Not "0" — that is the quit key.
-    key: "11",
+    key: "12",
     main: (loc) => t(loc, "menu.item.telegram.main"),
     hint: (loc) => t(loc, "menu.item.telegram.hint"),
     run: ({ dispatch }) => dispatch("telegram", []).then(() => undefined),
   },
   {
-    key: "12",
+    key: "13",
     main: (loc) => t(loc, "menu.item.claim.main"),
     hint: (loc) => t(loc, "menu.item.claim.hint"),
     run: async ({ env, claim }) => {
@@ -301,7 +321,7 @@ const ITEMS: readonly MenuItem[] = [
     },
   },
   {
-    key: "13",
+    key: "14",
     main: (loc) => t(loc, "menu.item.update.main"),
     // Yellow with the version only while the banner's update check has landed
     // a known-newer release; a quiet dim "check & update" otherwise.
@@ -316,7 +336,7 @@ const ITEMS: readonly MenuItem[] = [
   },
   {
     // Carried over from the old `aifight config` hub, which is now this panel.
-    key: "14",
+    key: "15",
     main: (loc) => t(loc, "menu.item.config.main"),
     hint: (loc) => t(loc, "menu.item.config.hint"),
     run: ({ dispatch }) => dispatch("config", ["show"]).then(() => undefined),
@@ -328,7 +348,7 @@ const ITEMS: readonly MenuItem[] = [
     // bridge never reads locale, so the write preserves the file mtime and
     // no restart offer fires on the way out. The confirmation prints in the
     // NEW language, same as `aifight set language`.
-    key: "15",
+    key: "16",
     main: (loc) => t(loc, "menu.item.language.main"),
     hint: (loc) => t(loc, "menu.item.language.hint"),
     run: async (deps) => {
@@ -347,7 +367,30 @@ const ITEMS: readonly MenuItem[] = [
     },
   },
   {
-    key: "16",
+    // Service — install/manage aifight.service. The panel BANNER has nagged
+    // about a missing service since V3, but there was no row to act on it
+    // (menu-completeness sweep, owner ask 2026-08-01). The hint follows the
+    // live probe: yellow "not installed" when the banner is showing.
+    key: "17",
+    main: (loc) => t(loc, "menu.item.service.main"),
+    hint: (loc, deps) =>
+      t(loc, deps.serviceInstalled === false ? "menu.item.service.hint.missing" : "menu.item.service.hint"),
+    hintTone: (deps) => (deps.serviceInstalled === false ? "yellow" : "dim"),
+    run: async (deps) => {
+      const loc = localeOf(deps);
+      const action = deps.serviceInstalled === false
+        ? "install"
+        : (await deps.prompt(t(loc, "menu.service.action_prompt"))).trim().toLowerCase();
+      if (action === "") return;
+      if (!["install", "status", "start", "stop", "restart", "uninstall"].includes(action)) {
+        deps.env.stdout(`${t(loc, "menu.service.action_invalid")}\n`);
+        return;
+      }
+      await deps.dispatch("service", [action]);
+    },
+  },
+  {
+    key: "18",
     main: (loc) => t(loc, "menu.item.help.main"),
     hint: (loc) => t(loc, "menu.item.help.hint"),
     run: async ({ showHelp }) => {

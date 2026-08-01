@@ -90,6 +90,19 @@ describe("argvForCliOp — fixed argv templates", () => {
     expect(argvForCliOp({ kind: "challenge", game: "x".repeat(33) })).toBeNull();
   });
 
+  it("challenge: optional table size rides as one positional, bounds enforced", () => {
+    expect(argvForCliOp({ kind: "challenge", game: "coup", players: 4 })).toEqual([
+      "challenge",
+      "coup",
+      "4",
+      "--json",
+    ]);
+    // The CLI's own format check is 2-6; per-game legality stays the server's.
+    expect(argvForCliOp({ kind: "challenge", game: "coup", players: 1 })).toBeNull();
+    expect(argvForCliOp({ kind: "challenge", game: "coup", players: 7 })).toBeNull();
+    expect(argvForCliOp({ kind: "challenge", game: "coup", players: 3.5 })).toBeNull();
+  });
+
   it("accept: only http/https URLs within the length cap", () => {
     expect(argvForCliOp({ kind: "accept", url: "https://aifight.ai/challenge/tok" })).toEqual([
       "accept",

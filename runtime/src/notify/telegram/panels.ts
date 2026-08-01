@@ -265,6 +265,9 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
       case "challenge":
         await sendPanel(chatId, duelPanel());
         return;
+      case "record":
+        await sendPanel(chatId, await recordPanel());
+        return;
       default: {
         // The smoothest way to accept a challenge is to forward the link
         // straight to the bot, so any message carrying one offers to take it.
@@ -329,6 +332,9 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
         return show(settingsPanel());
       case "links:open":
         return show(linksPanel());
+      case "record:open":
+      case "record:refresh":
+        return show(await recordPanel());
 
       // ── play ──
       case "play:ask_start": {
@@ -615,8 +621,9 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
       ].join("\n"),
       keyboard: [
         [button(t(l, "btn_status"), { panel: "status", action: "open" }), button(t(l, "btn_play"), { panel: "play", action: "open" })],
-        [button(t(l, "btn_duel"), { panel: "duel", action: "open" }), button(t(l, "btn_notify"), { panel: "notify", action: "open" })],
-        [button(t(l, "btn_settings"), { panel: "settings", action: "open" }), button(t(l, "btn_links"), { panel: "links", action: "open" })],
+        [button(t(l, "btn_duel"), { panel: "duel", action: "open" }), button(t(l, "btn_record"), { panel: "record", action: "open" })],
+        [button(t(l, "btn_notify"), { panel: "notify", action: "open" }), button(t(l, "btn_settings"), { panel: "settings", action: "open" })],
+        [button(t(l, "btn_links"), { panel: "links", action: "open" })],
       ],
     };
   }
@@ -888,6 +895,90 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     } catch {
       return null; // the panel says "unavailable" rather than failing to open
     }
+  }
+
+  /** The competitive record panel (owner ask 2026-08-01): ratings per game,
+   *  the last few matches WITH their replay links, achievements count. Same
+   *  unauthenticated profile read the website / `aifight record` use. */
+  async function recordPanel(): Promise<Panel> {
+    const l = locale();
+    const config = deps.config();
+    const base = config.baseUrl.replace(/\/+$/, "");
+    const refreshRow = [
+      button(t(l, "btn_refresh"), { panel: "record", action: "refresh" }),
+      homeButton(l),
+    ];
+    let body: Record<string, unknown> | null = null;
+    try {
+      const res = await fetchNoFollow(
+        `${base}/api/agents/${encodeURIComponent(config.agentId)}/profile`,
+        { method: "GET", signal: AbortSignal.timeout(STATUS_TIMEOUT_MS) },
+        { fetchImpl: deps.fetchImpl },
+      );
+      if (res.ok) body = (await res.json()) as Record<string, unknown>;
+    } catch {
+      body = null;
+    }
+    if (body === null) {
+      return { text: t(l, "record_unavailable"), keyboard: [refreshRow] };
+    }
+
+    const asObj = (v: unknown): Record<string, unknown> =>
+      v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+    const asArr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+    const agent = asObj(body.agent);
+    const name = typeof agent.name === "string" && agent.name !== "" ? agent.name : config.agentName;
+
+    const lines: string[] = [`🏅 <b>${escapeHtml(name)}</b> — ${t(l, "record_title")}`];
+
+    const ratings = asArr(body.ratings)
+      .map(asObj)
+      .filter((r) => typeof r.game === "string" && typeof (r.games_played) === "number" && (r.games_played as number) > 0);
+    if (ratings.length === 0) {
+      lines.push("", t(l, "record_empty"));
+    } else {
+      lines.push("");
+      for (const r of ratings) {
+        const rating = typeof r.display_rating === "number" ? r.display_rating : (typeof r.rating === "number" ? r.rating : 0);
+        const wins = typeof r.wins === "number" ? r.wins : 0;
+        const losses = typeof r.losses === "number" ? r.losses : 0;
+        const rate = typeof r.win_rate === "number" ? Math.round(r.win_rate * 100) : 0;
+        lines.push(t(l, "record_rating_line", {
+          game: gameName(l, r.game as string),
+          rating: String(Math.round(rating)),
+          wins: String(wins),
+          losses: String(losses),
+          rate: String(rate),
+        }));
+      }
+    }
+
+    const recent = asArr(body.recent_matches).map(asObj).slice(0, 5);
+    if (recent.length > 0) {
+      lines.push("", `<b>${t(l, "record_recent_title")}</b>`);
+      for (const m of recent) {
+        const game = typeof m.game === "string" ? gameName(l, m.game) : "—";
+        const result = typeof m.agent_result === "string" ? m.agent_result : "—";
+        const opps = asArr(m.opponent_names).filter((o) => typeof o === "string" && o !== "").slice(0, 3);
+        const date = typeof m.finished_at === "string" ? m.finished_at.slice(5, 10) : "";
+        const label = `${game} · ${result}${opps.length > 0 ? ` · vs ${opps.map((o) => escapeHtml(o as string)).join(", ")}` : ""}${date !== "" ? ` · ${date}` : ""}`;
+        const replayId = typeof m.public_replay_id === "string" && m.public_replay_id !== "" ? m.public_replay_id : null;
+        lines.push(replayId !== null ? `🎬 <a href="${base}/replay/${encodeURIComponent(replayId)}">${label}</a>` : `· ${label}`);
+      }
+    }
+
+    const achievements = asArr(body.achievements);
+    if (achievements.length > 0) {
+      lines.push("", t(l, "record_achievements", { count: String(achievements.length) }));
+    }
+
+    return {
+      text: lines.join("\n"),
+      keyboard: [
+        refreshRow,
+        [{ text: t(l, "btn_agent_page"), url: `${base}/agents/${encodeURIComponent(config.agentId)}` }],
+      ],
+    };
   }
 
   async function fetchRatings(): Promise<Array<{ game: string; rating: number }>> {

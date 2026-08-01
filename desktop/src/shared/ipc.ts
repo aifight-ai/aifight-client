@@ -285,7 +285,7 @@ export type CliOp =
   | { readonly kind: "setup"; readonly replaceLocalIdentity?: boolean }
   | { readonly kind: "connect"; readonly code: string; readonly replaceLocalIdentity?: boolean }
   | { readonly kind: "status" }
-  | { readonly kind: "challenge"; readonly game: string }
+  | { readonly kind: "challenge"; readonly game: string; readonly players?: number }
   | { readonly kind: "accept"; readonly url: string }
   | { readonly kind: "configReviewGet" }
   | { readonly kind: "configReviewSet"; readonly mode: "off" | "all" | "losses_only" }
@@ -380,6 +380,10 @@ export interface ChallengeInfo {
   readonly opponentName: string;
   readonly createdAt: string;
   readonly expiresAt: string;
+  /** Table size (2 = classic duel; 3-6 = multi-seat friendly, W5/R5). */
+  readonly maxPlayers: number;
+  /** Seats taken so far — meaningful only when maxPlayers > 2 (host holds seat 0). */
+  readonly seatedCount: number;
 }
 
 // ── Strategy editor (D8.5) ───────────────────────────────────────────────────

@@ -22,6 +22,7 @@ export type AgentActionCode =
   | "challenge_create_failed"
   | "challenge_response_invalid"
   | "challenge_accept_failed"
+  | "challenge_list_failed"
   | "rename_cooldown"
   | "rename_invalid"
   | "rename_failed"
@@ -122,6 +123,78 @@ function withAcceptHint(status: number, message: string): string {
     return `${message}. Ask the challenge creator to keep aifight.service running.`;
   }
   return message;
+}
+
+/** One row of `GET /api/agents/me/challenges` — duels this agent hosts, has
+ *  accepted, or holds a seat in. Field presence mirrors the server's
+ *  omitempty JSON; the share link itself is NOT here by design (only the
+ *  token's digest is stored server-side — C07), so the join URL exists only
+ *  in the create response. */
+export interface MyChallenge {
+  readonly id: string;
+  readonly game: string;
+  readonly status: string;
+  /** Table size (2 = classic duel; 3-6 = multi-seat friendly table). */
+  readonly maxPlayers: number;
+  /** Seats taken so far — only meaningful (and only sent) for multi-seat. */
+  readonly seatedCount?: number;
+  readonly hostAgentName?: string;
+  readonly guestAgentName?: string;
+  /** True when THIS agent created the challenge. */
+  readonly hosted: boolean;
+  readonly matchId?: string;
+  readonly createdAt?: string;
+  readonly expiresAt?: string;
+}
+
+export interface MyChallengeList {
+  readonly duels: readonly MyChallenge[];
+  /** The raw response, for `aifight challenge list --json`. */
+  readonly raw: unknown;
+}
+
+export async function listMyChallenges(
+  config: BridgeConfig,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<MyChallengeList> {
+  const res = await fetchNoFollow(`${base(config)}/api/agents/me/challenges`, {
+    method: "GET",
+    headers: { "X-API-Key": config.apiKey },
+    signal: AbortSignal.timeout(ACTION_TIMEOUT_MS),
+  }, { fetchImpl });
+  if (!res.ok) {
+    throw new AgentActionError(
+      "challenge_list_failed",
+      await readAPIError(res, `challenge list failed with HTTP ${res.status}`),
+      res.status,
+    );
+  }
+  const raw = (await res.json().catch(() => undefined)) as { duels?: unknown } | undefined;
+  const rows = Array.isArray(raw?.duels) ? raw.duels : [];
+  const duels: MyChallenge[] = [];
+  for (const row of rows) {
+    if (row === null || typeof row !== "object") continue;
+    const r = row as Record<string, unknown>;
+    if (typeof r.id !== "string" || typeof r.game !== "string" || typeof r.status !== "string") continue;
+    duels.push({
+      id: r.id,
+      game: r.game,
+      status: r.status,
+      maxPlayers: typeof r.max_players === "number" && r.max_players >= 2 ? r.max_players : 2,
+      ...(typeof r.seated_count === "number" ? { seatedCount: r.seated_count } : {}),
+      ...(typeof r.host_agent_name === "string" && r.host_agent_name !== ""
+        ? { hostAgentName: r.host_agent_name }
+        : {}),
+      ...(typeof r.guest_agent_name === "string" && r.guest_agent_name !== ""
+        ? { guestAgentName: r.guest_agent_name }
+        : {}),
+      hosted: typeof r.host_agent_id === "string" && r.host_agent_id === config.agentId,
+      ...(typeof r.match_id === "string" ? { matchId: r.match_id } : {}),
+      ...(typeof r.created_at === "string" ? { createdAt: r.created_at } : {}),
+      ...(typeof r.expires_at === "string" ? { expiresAt: r.expires_at } : {}),
+    });
+  }
+  return { duels, raw };
 }
 
 export interface RenamedAgent {

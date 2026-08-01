@@ -127,11 +127,58 @@ const ACTIVITY_TONE: Record<Activity, string> = {
 // localStorage so the cap survives an app restart. The time-sensitive
 // games_today is NOT persisted — it must always come fresh from the server.
 type ClaimState = "unknown" | "claimed" | "unclaimed";
-/** A challenge the user created this session (URL to share). */
+/** A challenge the user created (URL to share). Backed by localStorage so it
+ *  survives tab switches and app restarts — the server only stores a DIGEST
+ *  of the join token (C07), so this local record is the ONLY place the share
+ *  URL still exists after creation. */
 interface CreatedChallenge {
   game: string;
   url: string;
+  /** Table size it was created with (2 = classic duel). */
+  players: number;
+  /** pending_duels.id from the create response — joins this record to the
+   *  polled challenge list (and prunes it when that duel ends). */
+  duelId: string;
+  at: string;
 }
+
+const CHALLENGE_URLS_KEY = "aifight.play.challengeUrls";
+
+/** duelId → created-challenge record, newest kept, capped at 50. */
+function loadChallengeUrls(): Record<string, CreatedChallenge> {
+  try {
+    if (typeof localStorage === "undefined") return {};
+    const raw = localStorage.getItem(CHALLENGE_URLS_KEY);
+    const parsed = raw === null ? {} : (JSON.parse(raw) as Record<string, CreatedChallenge>);
+    return parsed !== null && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveChallengeUrls(map: Record<string, CreatedChallenge>): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    const entries = Object.entries(map)
+      .sort((a, b) => (a[1].at < b[1].at ? 1 : -1))
+      .slice(0, 50);
+    localStorage.setItem(CHALLENGE_URLS_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // Quota/serialization failures only cost the convenience copy buttons.
+  }
+}
+
+/** Friendly table sizes per game (W5 multi-seat). The SERVER is the authority
+ *  (match.FriendlyPlayerCountAllowed) — these mirror it for the picker, and a
+ *  drift only costs one round-trip to a clear server error. texas [2,6] is the
+ *  owner-ruled heads-up exemption; dice/coup are the engine Min..Max. */
+const TABLE_SIZES: Record<string, { min: number; max: number }> = {
+  texas_holdem: { min: 2, max: 6 },
+  liars_dice: { min: 2, max: 4 },
+  coup: { min: 3, max: 4 },
+};
+const tableSizesOf = (game: string): { min: number; max: number } =>
+  TABLE_SIZES[game] ?? { min: 2, max: 2 };
 /** Bottom-of-dashboard action feedback. `err` renders red (styled-as-error);
  *  `action: "claim"` adds a "set the name" button right at the failure point
  *  (the claim/official-name gate, D4). Replaced on every action → self-clearing. */
@@ -825,13 +872,20 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   // One game selector drives BOTH play-now and create-challenge (D5 — they used
   // to have two identical pickers).
   const [game, setGame] = useState<string>(() => games[0] ?? "texas_holdem");
+  // Challenge table size (W5): per-game range, reset to the game's minimum on
+  // every game switch so a coup pick never inherits texas's heads-up 2.
+  const [tableSize, setTableSize] = useState<number>(() => tableSizesOf(games[0] ?? "texas_holdem").min);
+  const pickGame = (g: string) => {
+    setGame(g);
+    setTableSize(tableSizesOf(g).min);
+  };
   const [acceptUrl, setAcceptUrl] = useState("");
   // Transient "已排队…" flash after a manual match request — gives in-flight
   // feedback and briefly disables the button so a user can't double-request.
   const [matchFlash, setMatchFlash] = useState(false);
   useEffect(() => {
     if (games.length === 0) return;
-    if (!games.includes(game)) setGame(games[0]!);
+    if (!games.includes(game)) pickGame(games[0]!);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [games]);
   const [claim, setClaim] = useState<ClaimState>(() => cachedClaim);
@@ -846,7 +900,11 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   const [avatarOpen, setAvatarOpen] = useState(false);
   const [usage, setUsage] = useState<UsageOverview | null>(() => cachedUsage);
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
-  const [challenges, setChallenges] = useState<CreatedChallenge[]>([]);
+  const [challenges, setChallenges] = useState<CreatedChallenge[]>(() =>
+    Object.values(loadChallengeUrls()).sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, 8));
+  // duelId → local create record; the join that puts copy/share buttons on the
+  // polled list rows below (the server cannot return the URL — C07).
+  const [urlMap, setUrlMap] = useState<Record<string, CreatedChallenge>>(loadChallengeUrls);
   // Own challenges (约战) from the server — polled; null until the first answer.
   const [myDuels, setMyDuels] = useState<readonly ChallengeInfo[] | null>(null);
 
@@ -888,7 +946,30 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
     });
   };
   const loadChallenges = () => {
-    void getChallenges().then(setMyDuels);
+    void getChallenges().then((list) => {
+      setMyDuels(list);
+      if (list === null) return;
+      // The polled list is the truth for lifecycle: once a duel it knows about
+      // leaves the open set, its share URL is dead weight — drop the local
+      // record (the create-response is the only place the URL ever existed).
+      const openIds = new Set(
+        list.filter((d) => d.status === "pending" || d.status === "accepted" || d.status === "waiting_online").map((d) => d.id),
+      );
+      const known = new Set(list.map((d) => d.id));
+      const map = loadChallengeUrls();
+      let changed = false;
+      for (const id of Object.keys(map)) {
+        if (known.has(id) && !openIds.has(id)) {
+          delete map[id];
+          changed = true;
+        }
+      }
+      if (changed) {
+        saveChallengeUrls(map);
+        setUrlMap({ ...map });
+      }
+      setChallenges((cs) => cs.filter((c) => !known.has(c.duelId) || openIds.has(c.duelId)));
+    });
   };
   const checkClaim = () => {
     void runCli({ kind: "status" }).then((r) => {
@@ -1073,11 +1154,19 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   const doChallenge = async () => {
     setBusy("challenge");
     setFeedback(null);
-    const r = await runCli({ kind: "challenge", game });
+    const r = await runCli({ kind: "challenge", game, players: tableSize });
     setBusy(null);
-    const url = (r.json as { join_url?: string } | undefined)?.join_url;
+    const json = r.json as { join_url?: string; duel?: { id?: string } } | undefined;
+    const url = json?.join_url;
     if (typeof url === "string" && url.length > 0) {
-      setChallenges((cs) => [{ game, url }, ...cs.filter((c) => c.url !== url)].slice(0, 8));
+      const duelId = typeof json?.duel?.id === "string" ? json.duel.id : url;
+      const entry: CreatedChallenge = { game, url, players: tableSize, duelId, at: new Date().toISOString() };
+      const map = loadChallengeUrls();
+      map[duelId] = entry;
+      saveChallengeUrls(map);
+      setUrlMap({ ...map });
+      setChallenges((cs) => [entry, ...cs.filter((c) => c.duelId !== duelId)].slice(0, 8));
+      loadChallenges();
     } else {
       const raw = resultText(r);
       setFeedback({ tone: "err", text: localizeServerError(raw, "challengeCreate"), action: isClaimNameError(raw) ? "claim" : undefined });
@@ -1547,7 +1636,29 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
           <div id="play-quick-actions" className="v3-dv-card space-y-4 px-5 py-4">
             <div>
               <div className="v3-dv-hd mb-2">{t("play.actions.title")}</div>
-              <GamePicker value={game} onChange={setGame} />
+              <GamePicker value={game} onChange={pickGame} />
+              {tableSizesOf(game).max > 2 && (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span className="text-[10.5px] text-[var(--text-faint)]">{t("play.challenge.tableSize")}</span>
+                  <div className="v3-dv-seg">
+                    {Array.from(
+                      { length: tableSizesOf(game).max - tableSizesOf(game).min + 1 },
+                      (_, i) => tableSizesOf(game).min + i,
+                    ).map((n) => (
+                      <button
+                        key={n}
+                        onClick={() => setTableSize(n)}
+                        className={"v3-dv-seg-btn" + (tableSize === n ? " on" : "")}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                  {tableSize > 2 && (
+                    <span className="text-[10.5px] text-[var(--text-faint)]">{t("play.challenge.tableSizeHint", { count: tableSize - 1 })}</span>
+                  )}
+                </div>
+              )}
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <Btn busy={busy === "match"} disabled={!connected || matchFlash} onClick={doRequest}>
                   {t("play.match.btn")}
@@ -1571,12 +1682,18 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                     <div key={c.url}>
                       <div className="mb-1 flex items-center gap-2 text-[11px]">
                         <span className="font-medium text-[var(--text)]">{gameLabel(c.game)}</span>
+                        {c.players > 2 && (
+                          <span className="text-[10.5px] text-[var(--text-faint)]">{t("play.challenge.tableTag", { count: c.players })}</span>
+                        )}
                         <span className="v3-dv-chip" data-tone="accent">
                           <i className="dot pulse" />
                           {t("home.challengeWaiting")}
                         </span>
                       </div>
                       <CopyRow text={c.url} />
+                      <div className="mt-1 flex justify-end">
+                        <ShareInviteBtn text={inviteText(t, c.game, c.players, c.url)} label={t("play.invite.btn")} />
+                      </div>
                     </div>
                   ))}
                   <p className="text-[10.5px] text-[var(--text-faint)]">{t("home.challengeAccepted")}</p>
@@ -1602,14 +1719,19 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                   the match to start. Hidden entirely when nothing is open. */}
               {openDuels.length > 0 && (
                 <div className="mt-3 space-y-1.5">
-                  {openDuels.map((d) => (
-                    <div key={d.id} className="v3-dv-inset flex flex-wrap items-center gap-x-2.5 gap-y-0.5 px-3 py-2">
+                  {openDuels.map((d) => {
+                    const local = d.isHost ? urlMap[d.id] : undefined;
+                    return (
+                    <div key={d.id} className="v3-dv-inset px-3 py-2">
+                    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5">
                       <span className="text-[12px] font-medium text-[var(--text)]">{gameLabel(d.game)}</span>
                       {d.status === "pending" ? (
                         <>
                           <span className="v3-dv-chip" data-tone="warn">
                             <i className="dot pulse" />
-                            {t("play.duels.pending")}
+                            {d.maxPlayers > 2
+                              ? t("play.duels.seats", { seated: Math.max(d.seatedCount, 1), max: d.maxPlayers })
+                              : t("play.duels.pending")}
                           </span>
                           <span className="ml-auto font-mono text-[10.5px] tabular-nums text-[var(--text-faint)]">
                             {fmtTimePoint(d.createdAt, i18n.language)} · {t("play.duels.expiresIn", { time: formatRemaining(d.expiresAt) })}
@@ -1624,7 +1746,15 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                         </>
                       )}
                     </div>
-                  ))}
+                    {local !== undefined && (
+                      <div className="mt-1 flex flex-wrap items-center justify-end gap-1">
+                        <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-[var(--text-faint)]">{local.url}</span>
+                        <ShareInviteBtn text={local.url} label={t("play.invite.copyUrl")} />
+                        <ShareInviteBtn text={inviteText(t, d.game, local.players, local.url)} label={t("play.invite.btn")} />
+                      </div>
+                    )}
+                    </div>
+                  );})}
                 </div>
               )}
             </div>
@@ -1950,11 +2080,39 @@ function GamePicker({ value, onChange }: { value: string; onChange: (g: string) 
   );
 }
 
+/** The ready-to-paste invite message (owner ask 2026-08-01): a warm one-liner
+ *  around the URL so the recipient knows what it is and where to paste it. */
+function inviteText(t: (k: string, o?: Record<string, unknown>) => string, game: string, players: number, url: string): string {
+  const label = players > 2 ? t("play.invite.gameMulti", { game: gameLabel(game), count: players }) : gameLabel(game);
+  return t("play.invite.text", { game: label, url });
+}
+
+/** "Copy invite" — copies the full invite message, with the same 1.5s check
+ *  feedback as CopyRow. */
+function ShareInviteBtn({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard?.writeText(text);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <button
+      onClick={copy}
+      className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text)]"
+    >
+      {copied ? <Check size={12} className="v3-dv-ok" /> : <Copy size={12} />}
+      {label}
+    </button>
+  );
+}
+
 function CopyRow({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
     void navigator.clipboard?.writeText(text);
     setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
   };
   return (
     <div className="v3-dv-inset flex items-center gap-2 px-3 py-2">

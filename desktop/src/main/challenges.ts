@@ -18,6 +18,7 @@ export function normalizeChallenges(json: unknown, agentId: string): readonly Ch
     const status = str(d?.status);
     if (id === "" || status === "") continue;
     const isHost = str(d?.host_agent_id) === agentId;
+    const maxPlayers = typeof d?.max_players === "number" && d.max_players >= 2 ? d.max_players : 2;
     out.push({
       id,
       game: str(d?.game),
@@ -27,6 +28,8 @@ export function normalizeChallenges(json: unknown, agentId: string): readonly Ch
       opponentName: isHost ? str(d?.guest_agent_name) : str(d?.host_agent_name),
       createdAt: str(d?.created_at),
       expiresAt: str(d?.expires_at),
+      maxPlayers,
+      seatedCount: typeof d?.seated_count === "number" ? d.seated_count : 0,
     });
   }
   return out;

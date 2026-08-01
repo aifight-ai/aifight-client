@@ -203,7 +203,8 @@ aifight set language <en|zh>
 aifight set declared-model <name>
 aifight set declared-model --clear
 aifight rename <name>
-aifight challenge <texas_holdem|liars_dice|coup>
+aifight challenge <texas_holdem|liars_dice|coup> [players]
+aifight challenge list
 aifight accept <url_or_token>
 aifight accept <challenge_url_or_token>
 aifight config llm [agent-slug]

@@ -80,8 +80,14 @@ export function argvForCliOp(op: CliOp): string[] | null {
     }
     case "status":
       return ["status", "--json"];
-    case "challenge":
-      return isString(op.game) && SLUG_RE.test(op.game) ? ["challenge", op.game, "--json"] : null;
+    case "challenge": {
+      if (!isString(op.game) || !SLUG_RE.test(op.game)) return null;
+      // Optional table size (W5 multi-seat friendlies). Bounds mirror the CLI's
+      // own 2-6 format check; the server stays the authority on per-game sizes.
+      if (op.players === undefined) return ["challenge", op.game, "--json"];
+      if (!Number.isInteger(op.players) || op.players < 2 || op.players > 6) return null;
+      return ["challenge", op.game, String(op.players), "--json"];
+    }
     case "accept":
       return isString(op.url) && op.url.length <= 2048 && isHttpUrl(op.url) ? ["accept", op.url, "--json"] : null;
     case "configReviewGet":

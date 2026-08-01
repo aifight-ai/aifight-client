@@ -223,7 +223,7 @@ export function renderMenuFrame(
   }
   for (const b of frame.banner) lines.push(ansi.yellow(fit(`  ${b}`)));
   if (frame.banner.length > 0) lines.push("");
-  lines.push(ansi.bold(fit(frame.title)));
+  lines.push(ansi.bold(ansi.brand(fit(frame.title))));
   lines.push("");
   if (frame.subheader !== undefined && frame.subheader.length > 0) {
     for (const s of frame.subheader) lines.push(fit(s));
@@ -283,7 +283,7 @@ function renderSingleColumnRow(
   const pointer = selected ? "▸" : " ";
   const num = choice.key.padStart(2);
   const labelBudget = width > 0 ? Math.max(1, width - CELL_PREFIX_LENGTH) : 0;
-  const row = ` ${pointer} ${ansi.cyan(num)}) ${styleChoiceLabel(choice, labelBudget, ansi)}`;
+  const row = ` ${pointer === " " ? " " : ansi.brand(pointer)} ${ansi.cyan(num)}) ${styleChoiceLabel(choice, labelBudget, ansi)}`;
   return selected ? ansi.inverse(row) : row;
 }
 
@@ -331,7 +331,7 @@ function renderTwoColumns(
     // must fill to the column width in terminal cells, whatever the label's
     // mix of narrow and wide characters ended up as after truncation.
     const pad = " ".repeat(Math.max(0, colWidth - CELL_PREFIX_LENGTH - visibleWidth(label)));
-    const text = ` ${c.pointer} ${ansi.cyan(c.num)}) ${label}${pad}`;
+    const text = ` ${c.pointer === " " ? " " : ansi.brand(c.pointer)} ${ansi.cyan(c.num)}) ${label}${pad}`;
     return index === selected ? ansi.inverse(text) : text;
   };
 

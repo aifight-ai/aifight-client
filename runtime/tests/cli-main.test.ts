@@ -652,8 +652,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.2.0-beta.5",
-          latest_version: "0.2.0-beta.5",
+          recommended_version: "0.2.0-beta.6",
+          latest_version: "0.2.0-beta.6",
           update_command: "npm install -g @aifight/aifight",
         });
       }
@@ -692,8 +692,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.2.0-beta.5",
-          latest_version: "0.2.0-beta.5",
+          recommended_version: "0.2.0-beta.6",
+          latest_version: "0.2.0-beta.6",
           update_command: "npm install -g @aifight/aifight",
         });
       }
@@ -1174,6 +1174,92 @@ describe("challenge and accept", () => {
     expect(r.stderr).toContain("challenge_accept_failed");
     expect(r.stderr).toContain("aifight service start");
     expect(r.stderr).not.toContain("client_unexpected_error");
+  });
+
+  it("lists own challenges: active with seats, history capped, host link note", async () => {
+    const config = configuredBridge();
+    let calledURL = "";
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calledURL = String(input);
+      expect((init?.headers as Record<string, string>)["X-API-Key"]).toBe(config.apiKey);
+      // 90.5 minutes, so the floor-to-minutes render is a stable "1h 30m"
+      // regardless of the few ms between fixture build and render.
+      const inTwoHours = new Date(Date.now() + 90.5 * 60_000).toISOString();
+      return jsonResp({
+        count: 4,
+        duels: [
+          // Hosted multi-seat coup, half full.
+          { id: "d1", game: "coup", status: "pending", host_agent_id: "agent-1",
+            host_agent_name: "alpha", max_players: 4, seated_count: 2, expires_at: inTwoHours },
+          // A classic duel this agent ACCEPTED, now playing.
+          { id: "d2", game: "texas_holdem", status: "in_match", host_agent_id: "agent-9",
+            host_agent_name: "Rival", max_players: 2, match_id: "m-7" },
+          // History rows.
+          { id: "d3", game: "liars_dice", status: "expired", host_agent_id: "agent-1", max_players: 2 },
+          { id: "d4", game: "coup", status: "finished", host_agent_id: "agent-9",
+            host_agent_name: "Rival", max_players: 3, seated_count: 3 },
+        ],
+      });
+    };
+
+    const r = await runCapture(["challenge", "list"], { fetchImpl });
+    expect(r.code).toBe(0);
+    expect(calledURL).toBe(`${config.baseUrl}/api/agents/me/challenges`);
+    expect(r.stdout).toContain("Active challenges (2):");
+    expect(r.stdout).toContain("Coup · hosted by you · 2 of 4 seats taken · expires in 1h 30m");
+    expect(r.stdout).toContain("Texas Hold'em · vs Rival · playing now");
+    // No local create record on this machine → the list explains where links
+    // live instead of leaving a host hunting for one it cannot have.
+    expect(r.stdout).toContain("Links are stored on the machine that created the challenge");
+    expect(r.stdout).toContain("Recent (2 of 2):");
+    expect(r.stdout).toContain("Liar's Dice · hosted by you · expired");
+  });
+
+  it("challenge list resurfaces the URL for challenges created on THIS machine", async () => {
+    const config = configuredBridge();
+    const joinUrl = "https://beta.aifight.ai/challenge/dl_fedcba9876543210fedcba9876543210";
+    const inTwoHours = new Date(Date.now() + 90.5 * 60_000).toISOString();
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/challenges")) {
+        return jsonResp({ duel: { id: "duel-local-1", game: "coup", status: "pending" }, join_url: joinUrl });
+      }
+      return jsonResp({
+        count: 1,
+        duels: [
+          { id: "duel-local-1", game: "coup", status: "pending", host_agent_id: config.agentId,
+            max_players: 4, seated_count: 1, expires_at: inTwoHours },
+        ],
+      });
+    };
+
+    const created = await runCapture(["challenge", "coup", "4"], { fetchImpl });
+    expect(created.code).toBe(0);
+    // The ready-to-forward invite rides the create output.
+    expect(created.stdout).toContain("Invite message (copy & send to a friend):");
+    expect(created.stdout).toContain("(4-player table)");
+    expect(created.stdout).toContain(joinUrl);
+
+    const listed = await runCapture(["challenge", "list"], { fetchImpl });
+    expect(listed.code).toBe(0);
+    // The local record brings the share URL back — no "links are shown once" dead end.
+    expect(listed.stdout).toContain(joinUrl);
+    expect(listed.stdout).not.toContain("Links are stored on the machine");
+  });
+
+  it("challenge list speaks plainly when there is nothing yet, and --json passes raw", async () => {
+    configuredBridge();
+    const raw = { count: 0, duels: [] };
+    const fetchImpl: typeof fetch = async () => jsonResp(raw);
+
+    const empty = await runCapture(["challenge", "list"], { fetchImpl });
+    expect(empty.code).toBe(0);
+    expect(empty.stdout).toContain("No friendly challenges yet.");
+    expect(empty.stdout).toContain("aifight challenge <game> [players]");
+
+    const json = await runCapture(["challenge", "list", "--json"], { fetchImpl });
+    expect(json.code).toBe(0);
+    expect(JSON.parse(json.stdout)).toEqual(raw);
   });
 });
 

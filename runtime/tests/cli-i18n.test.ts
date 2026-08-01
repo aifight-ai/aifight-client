@@ -267,18 +267,20 @@ describe("menu in zh", () => {
       "2) 暂停匹配 — 暂停自动匹配",
       "3) 本机状态 — 本机与 agent 状态",
       "4) 战绩积分 — 积分·排名·战绩",
-      "5) 模型 — 模型·密钥·路由",
-      "6) 每日上限 — 自动对局 [5/天]",
-      "7) 参赛游戏 — 自动参赛 [已选 3 个]",
-      "8) 策略文件 — 你的 agent 怎么打",
-      "9) 身份管理 — 多 agent 身份切换",
-      "10) 改名 — 公开显示名",
-      "11) Telegram — 手机通知与遥控",
-      "12) 认领 — 绑定到你的账号",
-      "13) 检查更新 — 检查并更新",
-      "14) 当前配置 — 查看当前配置",
-      "15) 语言 — 切换到 English",
-      "16) 全部命令 — 全部命令与说明",
+      "5) 约战 — 友谊对局——发起·查看·应战",
+      "6) 模型 — 模型·密钥·路由",
+      "7) 每日上限 — 自动对局 [5/天]",
+      "8) 参赛游戏 — 自动参赛 [已选 3 个]",
+      "9) 策略文件 — 你的 agent 怎么打",
+      "10) 身份管理 — 多 agent 身份切换",
+      "11) 改名 — 公开显示名",
+      "12) Telegram — 手机通知与遥控",
+      "13) 认领 — 绑定到你的账号",
+      "14) 检查更新 — 检查并更新",
+      "15) 当前配置 — 查看当前配置",
+      "16) 语言 — 切换到 English",
+      "17) 常驻服务 — 管理 aifight.service（状态·重启）",
+      "18) 全部命令 — 全部命令与说明",
       "q) 退出",
     ]) {
       expect(text, line).toContain(line);
@@ -301,9 +303,9 @@ describe("menu in zh", () => {
     expect(readBridgeConfig().locale).toBeUndefined();
   });
 
-  it("item 15 flips bridge.json and the NEXT frame is already Chinese", async () => {
+  it("item 16 flips bridge.json and the NEXT frame is already Chinese", async () => {
     seedBridge();
-    const h = menuHarness(["15", "q"]);
+    const h = menuHarness(["16", "q"]);
     await runInteractiveMenu(h.deps);
     expect(readBridgeConfig().locale).toBe("zh");
     // The confirmation printed in the NEW language…
@@ -314,12 +316,12 @@ describe("menu in zh", () => {
     expect(mains(h.frames[0]!)).toContain("Play");
     expect(mains(h.frames[1]!)).toContain("请求对局");
     expect(mains(h.frames[1!] as MenuFrame)).toContain("语言");
-    expect(h.out()).toContain("15) 语言 — 切换到 English");
+    expect(h.out()).toContain("16) 语言 — 切换到 English");
   });
 
   it("toggling twice comes back to English", async () => {
     seedBridge();
-    const h = menuHarness(["15", "15", "q"]);
+    const h = menuHarness(["16", "16", "q"]);
     await runInteractiveMenu(h.deps);
     expect(readBridgeConfig().locale).toBe("en");
     expect(h.out()).toContain("Language set to English.");

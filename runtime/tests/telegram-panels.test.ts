@@ -300,6 +300,49 @@ describe("panel navigation", () => {
     expect(h.logs).toHaveLength(0);
   });
 
+  it("record panel renders ratings, replay links, and achievements", async () => {
+    const recordFetch: typeof fetch = (async (url: string | URL) => {
+      const text = String(url);
+      if (text.includes("/profile")) {
+        return new Response(JSON.stringify({
+          agent: { name: "PokerMind" },
+          ratings: [
+            { game: "coup", rating: 1560.2, display_rating: 1520.4, games_played: 12, wins: 8, losses: 4, win_rate: 0.667 },
+          ],
+          recent_matches: [
+            { game: "coup", agent_result: "1st", opponent_names: ["Rival", "Sage"], finished_at: "2026-07-31T10:00:00Z", public_replay_id: "rep-123" },
+            { game: "liars_dice", agent_result: "2nd", opponent_names: [], finished_at: "2026-07-30T10:00:00Z" },
+          ],
+          achievements: [{ title: "First Blood" }, { title: "Streak" }],
+        }), { status: 200 });
+      }
+      return new Response("{}", { status: 404 });
+    }) as typeof fetch;
+
+    const h = harness({ fetchImpl: recordFetch });
+    await h.handle(command("/record"));
+    const text = h.lastText();
+    expect(text).toContain("PokerMind");
+    expect(text).toContain("1520");            // display_rating, not raw Glicko
+    expect(text).toContain("8W 4L");
+    expect(text).toContain("67% win rate");
+    expect(text).toContain('href="https://aifight.ai/replay/rep-123"'); // replay deep link
+    expect(text).toContain("vs Rival, Sage");
+    expect(text).toContain("2 achievements");
+    // The row without a replay id renders as plain text, not a dead link.
+    expect(text).not.toContain('href="https://aifight.ai/replay/undefined"');
+
+    // The record button also rides the home grid.
+    await h.handle(command("/menu"));
+    expect(h.buttons()).toContain("v1:record:open");
+  });
+
+  it("record panel degrades to a retry note when the profile is unreachable", async () => {
+    const h = harness({ fetchImpl: (async () => new Response("{}", { status: 500 })) as typeof fetch });
+    await h.handle(tap("v1:record:open"));
+    expect(h.lastText()).toContain("unavailable right now");
+  });
+
   it("shows today's count, phase and ratings on the status panel", async () => {
     const h = harness({ fetchImpl: statusFetch() });
     await h.handle(command("/status"));

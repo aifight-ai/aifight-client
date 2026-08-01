@@ -207,7 +207,7 @@ describe("interactive menu", () => {
   });
 
   it("rename prompts for a name and dispatches it joined", async () => {
-    const h = harness(["10", "Dark Knight", "q"]);
+    const h = harness(["11", "Dark Knight", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "rename", positional: ["Dark Knight"] }]);
   });
@@ -225,7 +225,7 @@ describe("interactive menu", () => {
   });
 
   it("daily cap without an agent on this machine says so instead of prompting", async () => {
-    const h = harness(["6", "q"]);
+    const h = harness(["7", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.out()).toContain("No agent on this machine yet");
     expect(h.dispatched).toEqual([]);
@@ -233,21 +233,21 @@ describe("interactive menu", () => {
 
   it("rejects a non-numeric daily cap without writing anything", async () => {
     seedBridge();
-    const h = harness(["6", "lots", "q"]);
+    const h = harness(["7", "lots", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.out()).toContain("Enter a whole number");
     expect(h.dispatched).toEqual([]);
   });
 
   it("update dispatches the update command", async () => {
-    const h = harness(["13", "q"]);
+    const h = harness(["14", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "update", positional: [] }]);
     expect(h.helpShown).toBe(false);
   });
 
-  it("telegram is item 11 (not 0, which quits) and dispatches bare", async () => {
-    const h = harness(["11", "q"]);
+  it("telegram is item 12 (not 0, which quits) and dispatches bare", async () => {
+    const h = harness(["12", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "telegram", positional: [] }]);
   });
@@ -259,15 +259,15 @@ describe("interactive menu", () => {
     expect(h.dispatched).toEqual([]);
   });
 
-  it("help (item 16) calls showHelp", async () => {
-    const h = harness(["16", "q"]);
+  it("help (item 18) calls showHelp", async () => {
+    const h = harness(["18", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.helpShown).toBe(true);
     expect(h.dispatched).toEqual([]);
   });
 
-  it("config (item 14) shows the current settings", async () => {
-    const h = harness(["14", "q"]);
+  it("config (item 15) shows the current settings", async () => {
+    const h = harness(["15", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "config", positional: ["show"] }]);
   });
@@ -283,13 +283,13 @@ describe("interactive menu", () => {
   // so picking "LLM" dropped the user into a second, different menu one level
   // down. That is the "why are there two menus" the owner ran into (2026-07-29).
   it("LLM goes straight to the LLM wizard, not into the config hub", async () => {
-    const h = harness(["5", "q"]);
+    const h = harness(["6", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "config", positional: ["llm"] }]);
   });
 
   it("strategy dispatches `strategy path`", async () => {
-    const h = harness(["8", "q"]);
+    const h = harness(["9", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "strategy", positional: ["path"] }]);
   });
@@ -372,7 +372,7 @@ describe("claim reminder", () => {
   });
 
   it("the claim item hands back the link", async () => {
-    const h = harness(["12", "q"], { claim: PENDING });
+    const h = harness(["13", "q"], { claim: PENDING });
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([]); // purely local — no command to run
     expect(h.out()).toContain("https://aifight.ai/claim/abc123");
@@ -385,7 +385,7 @@ describe("claim reminder", () => {
   });
 
   it("a claimed agent picking the claim item is pointed at the Dashboard", async () => {
-    const h = harness(["12", "q"], { claim: { pending: false } });
+    const h = harness(["13", "q"], { claim: { pending: false } });
     await runInteractiveMenu(h.deps);
     expect(h.out()).toContain("already claimed");
     expect(h.out()).toContain("/dashboard");
@@ -461,7 +461,7 @@ describe("one menu, two doors", () => {
 
   it("the LLM item opens the LLM step directly, not bare `config`", async () => {
     seedBridge();
-    const h = harness(["5", "q"]);
+    const h = harness(["6", "q"]);
     await runInteractiveMenu(h.deps);
     // `config` with no subcommand would re-open this very panel — one level
     // deeper, forever. It must be `config llm`.
@@ -507,7 +507,7 @@ describe("one menu, two doors", () => {
     const before = new Date("2020-01-01T00:00:00Z");
     fs.utimesSync(path.join(dir, "bridge.json"), before, before);
 
-    const h = harness(["7", "texas_holdem", "q"]);
+    const h = harness(["8", "texas_holdem", "q"]);
     await runInteractiveMenu(h.deps);
 
     expect(h.out()).toContain("Automatic match games set to: texas_holdem");
@@ -615,7 +615,7 @@ describe("live hints (V2)", () => {
     const h = harness(["q"]);
     await runInteractiveMenu(h.deps);
     const frame = h.frames[0]!;
-    const update = frame.choices.find((c) => c.key === "13")!;
+    const update = frame.choices.find((c) => c.key === "14")!;
     expect(update.main).toBe("Update");
     expect(update.hint).toBe("check & update");
     expect(update.hintTone ?? "dim").toBe("dim");
@@ -630,10 +630,10 @@ describe("live hints (V2)", () => {
     };
     const h = harness(["q"], { statusBox: provider });
     await runInteractiveMenu(h.deps);
-    const update = h.frames[0]!.choices.find((c) => c.key === "13")!;
+    const update = h.frames[0]!.choices.find((c) => c.key === "14")!;
     expect(update.hint).toBe("↑ 0.1.0-beta.41 available");
     expect(update.hintTone).toBe("yellow");
-    expect(h.out()).toContain("13) Update — ↑ 0.1.0-beta.41 available");
+    expect(h.out()).toContain("14) Update — ↑ 0.1.0-beta.41 available");
   });
 });
 
@@ -641,15 +641,15 @@ describe("live hints (V2)", () => {
 // These pin its shape so the interactive presentation cannot quietly lose the
 // Quit row or stale a dynamic label.
 describe("menu frame handed to the chooser", () => {
-  it("offers Quit as the last selectable row, after all 16 actions", async () => {
+  it("offers Quit as the last selectable row, after all 18 actions", async () => {
     const h = harness(["q"]);
     await runInteractiveMenu(h.deps);
     expect(h.frames).toHaveLength(1);
     const choices = h.frames[0]!.choices;
-    expect(choices).toHaveLength(17);
-    expect(choices[16]).toEqual({ key: "q", main: "Quit" });
+    expect(choices).toHaveLength(19);
+    expect(choices[18]).toEqual({ key: "q", main: "Quit" });
     expect(choices.map((c) => c.key)).toEqual([
-      "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "q",
+      "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "q",
     ]);
   });
 
@@ -659,16 +659,18 @@ describe("menu frame handed to the chooser", () => {
     await runInteractiveMenu(h.deps);
     const mains = h.frames[0]!.choices.map((c) => c.main);
     expect(mains).toEqual([
-      "Play", "Pause", "Status", "Record", "LLM", "Daily cap", "Games",
-      "Strategy", "Profile", "Rename", "Telegram", "Claim", "Update", "Config", "Language", "Help", "Quit",
+      "Play", "Pause", "Status", "Record", "Challenge", "LLM", "Daily cap", "Games",
+      "Strategy", "Profile", "Rename", "Telegram", "Claim", "Update", "Config", "Language", "Service", "Help", "Quit",
     ]);
     const byKey = new Map(h.frames[0]!.choices.map((c) => [c.key, c]));
     expect(byKey.get("1")).toMatchObject({ main: "Play", hint: "request a ranked match" });
-    expect(byKey.get("6")).toMatchObject({ main: "Daily cap", hint: "auto matches [5/day]" });
-    expect(byKey.get("7")).toMatchObject({ main: "Games", hint: "auto-play [1 selected]" });
-    expect(byKey.get("9")).toMatchObject({ main: "Profile", hint: "switch agent identity" });
-    expect(byKey.get("15")).toMatchObject({ main: "Language", hint: "switch to 中文" });
-    expect(byKey.get("16")).toMatchObject({ main: "Help", hint: "full command list" });
+    expect(byKey.get("5")).toMatchObject({ main: "Challenge", hint: "friendly duels — create, view, accept" });
+    expect(byKey.get("7")).toMatchObject({ main: "Daily cap", hint: "auto matches [5/day]" });
+    expect(byKey.get("8")).toMatchObject({ main: "Games", hint: "auto-play [1 selected]" });
+    expect(byKey.get("10")).toMatchObject({ main: "Profile", hint: "switch agent identity" });
+    expect(byKey.get("16")).toMatchObject({ main: "Language", hint: "switch to 中文" });
+    expect(byKey.get("17")).toMatchObject({ main: "Service", hint: "manage aifight.service (status, restart)" });
+    expect(byKey.get("18")).toMatchObject({ main: "Help", hint: "full command list" });
   });
 
   it("carries the NOT CLAIMED banner in the frame, not just in text", async () => {

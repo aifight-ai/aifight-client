@@ -89,7 +89,7 @@ describe("composeMenuStatusLines", () => {
       data(),
       data({ claimed: false }),
       data({ paused: true }),
-      data({ updateVersion: "0.2.0-beta.5" }),
+      data({ updateVersion: "0.2.0-beta.6" }),
       data({ dailyCap: undefined }),
       data({ matching: { state: "not_running" } }),
       data({ matching: { state: "unknown" } }),
@@ -100,18 +100,18 @@ describe("composeMenuStatusLines", () => {
   });
 
   it("styles: name bold, ✓ green, ● green when online, update hint yellow", () => {
-    const lines = composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.5" }));
+    const lines = composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.6" }));
     const styleOf = (text: string): string | undefined =>
       lines.flat().find((s) => s.text === text)?.style;
     expect(styleOf("Phantom Maverick")).toBe("bold");
     expect(styleOf("✓ claimed")).toBe("green");
     expect(styleOf("● online")).toBe("green");
-    expect(styleOf("↑ 0.2.0-beta.5")).toBe("yellow");
+    expect(styleOf("↑ 0.2.0-beta.6")).toBe("yellow");
   });
 
   it("puts the update hint before the games list, so truncation never eats the version", () => {
-    const [, , l3] = plain(composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.5" })));
-    expect(l3).toBe("claude-opus-4-6 · ↑ 0.2.0-beta.5 · games: texas_holdem, coup");
+    const [, , l3] = plain(composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.6" })));
+    expect(l3).toBe("claude-opus-4-6 · ↑ 0.2.0-beta.6 · games: texas_holdem, coup");
   });
 
   it("unclaimed warns in yellow on line 1", () => {
@@ -260,7 +260,7 @@ describe("createMenuStatusBox", () => {
   it("enriches with the remote answers: server name, claim state, update hint", async () => {
     seedBridge();
     const box = createMenuStatusBox({
-      fetchImpl: remoteFetch({ claimed: true, name: "Server Name", npmLatest: "0.2.0-beta.5" }),
+      fetchImpl: remoteFetch({ claimed: true, name: "Server Name", npmLatest: "0.2.0-beta.6" }),
       seatHolderPid: () => undefined, // no local bridge process
     })!;
     const refresh = box.refreshed();
@@ -271,9 +271,9 @@ describe("createMenuStatusBox", () => {
     expect(l1).toContain("✓ claimed");
     expect(l1).toContain("○ offline");
     expect(l2).toBe("matching: bridge not running · auto: 2/day");
-    expect(l3).toContain("↑ 0.2.0-beta.5");
+    expect(l3).toContain("↑ 0.2.0-beta.6");
     // The menu's Update item reads the same fact.
-    expect(box.updateVersion?.()).toBe("0.2.0-beta.5");
+    expect(box.updateVersion?.()).toBe("0.2.0-beta.6");
     // Settled: no second repaint hook.
     expect(box.refreshed()).toBeUndefined();
   });
