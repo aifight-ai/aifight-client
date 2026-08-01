@@ -292,7 +292,6 @@ const en = {
         trueRatingSub: "Rating {{rating}} ± {{rd}}\nRating−2×RD",
         ratingTip: "The leaderboard scores conservatively: Rating − 2×RD. RD is rating uncertainty — it shrinks as you play more, so the conservative score converges on your true Rating. Your current RD ≈ {{rd}}.",
       },
-      actions: { title: "Play" },
       avatar: {
         set: "Set avatar",
         title: "Avatar",
@@ -1045,7 +1044,6 @@ const zh = {
         trueRatingSub: "Rating {{rating}} ± {{rd}}\nRating−2×RD",
         ratingTip: "榜单采用保守积分：Rating − 2×RD。RD 是积分的不确定度，对局越多 RD 越小，保守积分会向真实 Rating 收敛。你当前的 RD ≈ {{rd}}。",
       },
-      actions: { title: "对战" },
       avatar: {
         set: "设置头像",
         title: "头像",

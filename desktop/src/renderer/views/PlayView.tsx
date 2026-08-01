@@ -869,14 +869,16 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   const [nameDraft, setNameDraft] = useState("");
   // Main-process truth (persisted across launches — spend safety, 连接审计 #13).
   const paused = status.matchingPaused === true;
-  // One game selector drives BOTH play-now and create-challenge (D5 — they used
-  // to have two identical pickers).
-  const [game, setGame] = useState<string>(() => games[0] ?? "texas_holdem");
+  // Request-match and create-challenge are separate sections with separate game
+  // choices, so the table-size pills can never read as applying to a plain
+  // match request (匹配的桌子人数由平台定,约战的由发起人定).
+  const [matchGame, setMatchGame] = useState<string>(() => games[0] ?? "texas_holdem");
+  const [challengeGame, setChallengeGame] = useState<string>(() => games[0] ?? "texas_holdem");
   // Challenge table size (W5): per-game range, reset to the game's minimum on
   // every game switch so a coup pick never inherits texas's heads-up 2.
   const [tableSize, setTableSize] = useState<number>(() => tableSizesOf(games[0] ?? "texas_holdem").min);
-  const pickGame = (g: string) => {
-    setGame(g);
+  const pickChallengeGame = (g: string) => {
+    setChallengeGame(g);
     setTableSize(tableSizesOf(g).min);
   };
   const [acceptUrl, setAcceptUrl] = useState("");
@@ -885,7 +887,8 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   const [matchFlash, setMatchFlash] = useState(false);
   useEffect(() => {
     if (games.length === 0) return;
-    if (!games.includes(game)) pickGame(games[0]!);
+    if (!games.includes(matchGame)) setMatchGame(games[0]!);
+    if (!games.includes(challengeGame)) pickChallengeGame(games[0]!);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [games]);
   const [claim, setClaim] = useState<ClaimState>(() => cachedClaim);
@@ -1154,13 +1157,13 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   const doChallenge = async () => {
     setBusy("challenge");
     setFeedback(null);
-    const r = await runCli({ kind: "challenge", game, players: tableSize });
+    const r = await runCli({ kind: "challenge", game: challengeGame, players: tableSize });
     setBusy(null);
     const json = r.json as { join_url?: string; duel?: { id?: string } } | undefined;
     const url = json?.join_url;
     if (typeof url === "string" && url.length > 0) {
       const duelId = typeof json?.duel?.id === "string" ? json.duel.id : url;
-      const entry: CreatedChallenge = { game, url, players: tableSize, duelId, at: new Date().toISOString() };
+      const entry: CreatedChallenge = { game: challengeGame, url, players: tableSize, duelId, at: new Date().toISOString() };
       const map = loadChallengeUrls();
       map[duelId] = entry;
       saveChallengeUrls(map);
@@ -1189,7 +1192,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   const doRequest = async () => {
     setBusy("match");
     setFeedback(null);
-    const r = await requestMatches(game, 1);
+    const r = await requestMatches(matchGame, 1);
     setBusy(null);
     if (r.ok) {
       // Inline transient feedback + brief disable (via matchFlash in the button
@@ -1635,15 +1638,31 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
           {/* Quick actions: one game selector → play now / create challenge; then accept */}
           <div id="play-quick-actions" className="v3-dv-card space-y-4 px-5 py-4">
             <div>
-              <div className="v3-dv-hd mb-2">{t("play.actions.title")}</div>
-              <GamePicker value={game} onChange={pickGame} />
-              {tableSizesOf(game).max > 2 && (
+              <div className="v3-dv-hd mb-2">{t("play.match.title")}</div>
+              <GamePicker value={matchGame} onChange={setMatchGame} />
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Btn busy={busy === "match"} disabled={!connected || matchFlash} onClick={doRequest}>
+                  {t("play.match.btn")}
+                </Btn>
+                {matchFlash && (
+                  <span className="v3-dv-ok flex items-center gap-1 text-[11px] font-medium">
+                    <Check size={12} /> {t("play.match.queued")}
+                  </span>
+                )}
+              </div>
+              <div className="mt-2 text-[10.5px] leading-snug text-[var(--text-faint)]">· {t("play.match.hint")}</div>
+            </div>
+
+            <div className="border-t border-[var(--v3-hairline)] pt-3.5">
+              <div className="v3-dv-hd mb-2">{t("play.challenge.title")}</div>
+              <GamePicker value={challengeGame} onChange={pickChallengeGame} />
+              {tableSizesOf(challengeGame).max > 2 && (
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   <span className="text-[10.5px] text-[var(--text-faint)]">{t("play.challenge.tableSize")}</span>
                   <div className="v3-dv-seg">
                     {Array.from(
-                      { length: tableSizesOf(game).max - tableSizesOf(game).min + 1 },
-                      (_, i) => tableSizesOf(game).min + i,
+                      { length: tableSizesOf(challengeGame).max - tableSizesOf(challengeGame).min + 1 },
+                      (_, i) => tableSizesOf(challengeGame).min + i,
                     ).map((n) => (
                       <button
                         key={n}
@@ -1660,22 +1679,11 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                 </div>
               )}
               <div className="mt-2 flex flex-wrap items-center gap-2">
-                <Btn busy={busy === "match"} disabled={!connected || matchFlash} onClick={doRequest}>
-                  {t("play.match.btn")}
-                </Btn>
                 <Btn busy={busy === "challenge"} disabled={!connected} onClick={doChallenge}>
                   {t("play.challenge.btn")}
                 </Btn>
-                {matchFlash && (
-                  <span className="v3-dv-ok flex items-center gap-1 text-[11px] font-medium">
-                    <Check size={12} /> {t("play.match.queued")}
-                  </span>
-                )}
               </div>
-              <div className="mt-2 space-y-0.5 text-[10.5px] leading-snug text-[var(--text-faint)]">
-                <div>· {t("play.match.hint")}</div>
-                <div>· {t("play.challenge.hint")}</div>
-              </div>
+              <div className="mt-2 text-[10.5px] leading-snug text-[var(--text-faint)]">· {t("play.challenge.hint")}</div>
               {challenges.length > 0 && (
                 <div className="mt-3 space-y-2 border-t border-[var(--v3-hairline)] pt-3">
                   {challenges.map((c) => (

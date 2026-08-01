@@ -84,7 +84,10 @@ function harness(answers: string[]): Harness {
       env,
       prompt: (question: string) => {
         asked.push(question);
-        return Promise.resolve(answers[i++] ?? "");
+        // Exhausted script = quit. "" would make the panel loop forever (it
+        // `continue`s on empty input) — that exact drift OOM'd a worker when
+        // the menu renumbered (2026-08-01).
+        return Promise.resolve(answers[i++] ?? "q");
       },
       dispatch: (cmd, positional) => {
         dispatched.push({ cmd, positional });
@@ -185,7 +188,7 @@ describe("panel — settings items carried over from the config hub", () => {
   it("games is editable and writes through to bridge.json", async () => {
     useTempHome();
     seed({ autoGames: ["coup"] });
-    const h = harness(["7", "texas_holdem,liars_dice", "q"]);
+    const h = harness(["8", "texas_holdem,liars_dice", "q"]);
 
     await runInteractiveMenu(h.deps);
 
@@ -195,7 +198,7 @@ describe("panel — settings items carried over from the config hub", () => {
   it("blank keeps the current games rather than clearing them", async () => {
     useTempHome();
     seed({ autoGames: ["coup"] });
-    const h = harness(["7", "", "q"]);
+    const h = harness(["8", "", "q"]);
 
     await runInteractiveMenu(h.deps);
 
@@ -206,7 +209,7 @@ describe("panel — settings items carried over from the config hub", () => {
   it("daily cap shows the current value and blank keeps it", async () => {
     useTempHome();
     seed({ autoDailyLimit: 4 });
-    const h = harness(["6", "", "q"]);
+    const h = harness(["7", "", "q"]);
 
     await runInteractiveMenu(h.deps);
 
@@ -218,7 +221,7 @@ describe("panel — settings items carried over from the config hub", () => {
   it("show-current-config is reachable from the panel", async () => {
     useTempHome();
     seed();
-    const h = harness(["14", "q"]);
+    const h = harness(["15", "q"]);
 
     await runInteractiveMenu(h.deps);
 
@@ -238,7 +241,7 @@ describe("panel — settings items carried over from the config hub", () => {
     fs.utimesSync(path.join(dir, "port"), started, started);
     const before = new Date("2020-01-01T00:00:00Z");
     fs.utimesSync(path.join(dir, "bridge.json"), before, before);
-    const h = harness(["7", "texas_holdem", "7", "coup,liars_dice", "q"]);
+    const h = harness(["8", "texas_holdem", "8", "coup,liars_dice", "q"]);
 
     await runInteractiveMenu(h.deps);
 
@@ -250,7 +253,7 @@ describe("panel — settings items carried over from the config hub", () => {
   it("a failing step is caught and the panel stays open", async () => {
     useTempHome();
     seed();
-    const h = harness(["7", "chess", "q"]);
+    const h = harness(["8", "chess", "q"]);
 
     const code = await runInteractiveMenu(h.deps);
 

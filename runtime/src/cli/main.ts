@@ -227,6 +227,33 @@ export async function run(
       }
       configured = false;
     }
+    // First run (owner ask 2026-08-01): bare `aifight` on a fresh machine
+    // walks straight into the setup wizard and, once configured, lands in the
+    // main panel — the website's install hint is now just `aifight`, so this
+    // door must carry a newcomer the whole way. Only the true "not set up
+    // yet" state comes here (damaged config already returned above); both
+    // panel doors are TTY-gated, so the wizard can prompt freely.
+    if (!configured) {
+      const a = createAnsi();
+      const zh = resolveLocale() === "zh";
+      env.stdout("\n  " + a.bold(a.brand(zh ? "首次使用 AIFight" : "Welcome to AIFight")) + "\n");
+      env.stdout(
+        zh
+          ? "  这台机器还没完成初始配置——现在带你走一遍：创建 agent → 接上你的大模型 →\n  （可选）装成后台服务。配置完成后直接进入主菜单。\n\n"
+          : "  This machine isn't set up yet — let's walk through it: create your agent →\n  connect your LLM → (optionally) install the background service. You'll land\n  in the main menu right after.\n\n",
+      );
+      const setupCode = await runSetup({ positional: [], flags: {}, jsonMode: false }, env);
+      if (setupCode !== 0) return setupCode;
+      try {
+        readBridgeConfig();
+      } catch {
+        // The wizard exited cleanly without creating an identity (user chose
+        // to quit) — it printed its own guidance; don't open a hollow panel.
+        return 0;
+      }
+      configured = true;
+      env.stdout("\n  " + a.brand("▸") + " " + (zh ? "配置完成，进入主菜单…" : "Setup complete — opening the main menu…") + "\n\n");
+    }
     // Resolved once, before the panel opens: an unclaimed agent cannot play at
     // all, so the banner is worth one short request (offline-safe — see
     // claim-state.ts). Held in a `let` + exposed through getters so the
