@@ -22,7 +22,7 @@ import {
 import {
   useBridgeStatus, runCli, bridgeStart, requestMatches, setMatchingPaused, openClaim, openDashboard,
   acceptLegal, openLegal,
-  getAgentProfile, getOwnProfileRaw, getAgentPolicy, setAgentPolicy, setAgentName, getUsageOverview, resultText,
+  getAgentProfile, getOwnProfileRaw, getAgentPolicy, setAgentPolicy, setAutoGames, setAgentName, getUsageOverview, resultText,
   getChallenges, getLLMConfig, desktopAvatarActions,
 } from "../useBridge";
 import { localizeServerError, isClaimNameError } from "../errors";
@@ -903,8 +903,6 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
   const [avatarOpen, setAvatarOpen] = useState(false);
   const [usage, setUsage] = useState<UsageOverview | null>(() => cachedUsage);
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
-  const [challenges, setChallenges] = useState<CreatedChallenge[]>(() =>
-    Object.values(loadChallengeUrls()).sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, 8));
   // duelId → local create record; the join that puts copy/share buttons on the
   // polled list rows below (the server cannot return the URL — C07).
   const [urlMap, setUrlMap] = useState<Record<string, CreatedChallenge>>(loadChallengeUrls);
@@ -971,7 +969,6 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
         saveChallengeUrls(map);
         setUrlMap({ ...map });
       }
-      setChallenges((cs) => cs.filter((c) => !known.has(c.duelId) || openIds.has(c.duelId)));
     });
   };
   const checkClaim = () => {
@@ -1154,6 +1151,27 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
     setBusy(null);
   };
 
+  // Which games auto-match / standby may enter. Selection truth is the shared
+  // bridge.json `autoGames` echoed back through BridgeStatus.config (unset or
+  // empty = every live game, same reading as the CLI picker + pickAutoGame).
+  const autoGamesSel =
+    cfg.autoGames === undefined || cfg.autoGames.length === 0
+      ? games
+      : cfg.autoGames.filter((g) => games.includes(g));
+  const toggleAutoGame = async (g: string) => {
+    const next = games.filter((x) => (x === g ? !autoGamesSel.includes(x) : autoGamesSel.includes(x)));
+    if (next.length === 0) {
+      // Zero games is not a selection — pausing is the off switch (CLI rule).
+      setFeedback({ tone: "err", text: t("play.auto.games.needOne") });
+      return;
+    }
+    setBusy("games");
+    setFeedback(null);
+    const r = await setAutoGames(next);
+    setBusy(null);
+    if (!r.ok) setFeedback({ tone: "err", text: r.error ?? t("play.auto.games.failed") });
+  };
+
   const doChallenge = async () => {
     setBusy("challenge");
     setFeedback(null);
@@ -1168,7 +1186,6 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
       map[duelId] = entry;
       saveChallengeUrls(map);
       setUrlMap({ ...map });
-      setChallenges((cs) => [entry, ...cs.filter((c) => c.duelId !== duelId)].slice(0, 8));
       loadChallenges();
     } else {
       const raw = resultText(r);
@@ -1342,7 +1359,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <ActivityPill activity={activity} connecting={connecting} queuedGame={status?.queued?.game ?? null} />
+            <ActivityPill activity={activity} connecting={connecting} queued={status?.queued ?? null} />
             {!connected && !connecting && (
               <button
                 onClick={retry}
@@ -1606,6 +1623,35 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
               </div>
             </div>
 
+            {/* Which games this agent plays (bridge.json autoGames = the R2
+                standby declaration source). Click-to-toggle, saved on the spot;
+                the last lit game can't be turned off — pausing is the off
+                switch. */}
+            <div className="mt-3 border-t border-[var(--v3-hairline)] pt-3">
+              <div className="mb-1.5 flex items-center gap-2">
+                <span className="text-[11px] text-[var(--text-muted)]">{t("play.auto.games.label")}</span>
+                {busy === "games" && <Loader2 size={11} className="animate-spin text-[var(--text-faint)]" />}
+              </div>
+              <div className="v3-dv-seg">
+                {games.map((g) => {
+                  const on = autoGamesSel.includes(g);
+                  return (
+                    <button
+                      key={g}
+                      onClick={() => void toggleAutoGame(g)}
+                      disabled={busy === "games"}
+                      className={"v3-dv-seg-btn" + (on ? " on" : "")}
+                      title={on ? t("play.auto.games.onTip") : t("play.auto.games.offTip")}
+                    >
+                      {on && <Check size={11} />}
+                      {gameLabel(g)}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="mt-1.5 text-[10.5px] leading-snug text-[var(--text-faint)]">· {t("play.auto.games.hint")}</div>
+            </div>
+
             {capConfirming && (
               <div className="v3-dv-card v3-dv-card--warn mt-3 px-3.5 py-3">
                 <div className="flex items-start gap-2">
@@ -1684,29 +1730,6 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                 </Btn>
               </div>
               <div className="mt-2 text-[10.5px] leading-snug text-[var(--text-faint)]">· {t("play.challenge.hint")}</div>
-              {challenges.length > 0 && (
-                <div className="mt-3 space-y-2 border-t border-[var(--v3-hairline)] pt-3">
-                  {challenges.map((c) => (
-                    <div key={c.url}>
-                      <div className="mb-1 flex items-center gap-2 text-[11px]">
-                        <span className="font-medium text-[var(--text)]">{gameLabel(c.game)}</span>
-                        {c.players > 2 && (
-                          <span className="text-[10.5px] text-[var(--text-faint)]">{t("play.challenge.tableTag", { count: c.players })}</span>
-                        )}
-                        <span className="v3-dv-chip" data-tone="accent">
-                          <i className="dot pulse" />
-                          {t("home.challengeWaiting")}
-                        </span>
-                      </div>
-                      <CopyRow text={c.url} />
-                      <div className="mt-1 flex justify-end">
-                        <ShareInviteBtn text={inviteText(t, c.game, c.players, c.url)} label={t("play.invite.btn")} />
-                      </div>
-                    </div>
-                  ))}
-                  <p className="text-[10.5px] text-[var(--text-faint)]">{t("home.challengeAccepted")}</p>
-                </div>
-              )}
             </div>
 
             <div className="border-t border-[var(--v3-hairline)] pt-3.5">
@@ -1763,6 +1786,7 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
                     )}
                     </div>
                   );})}
+                  <p className="text-[10.5px] text-[var(--text-faint)]">{t("home.challengeAccepted")}</p>
                 </div>
               )}
             </div>
@@ -1939,12 +1963,12 @@ function UsageMini({
 function ActivityPill({
   activity,
   connecting,
-  queuedGame,
+  queued,
 }: {
   activity: Activity;
   connecting: boolean;
   /** SERVER-confirmed queue membership from BridgeStatus.queued (审计 #3/#12). */
-  queuedGame?: string | null;
+  queued?: { readonly game: string; readonly oneShot?: boolean } | null;
 }) {
   const { t } = useTranslation();
   if (connecting) {
@@ -1955,19 +1979,25 @@ function ActivityPill({
       </span>
     );
   }
+  // Standby is game-agnostic — the platform decides the next game, so being
+  // enrolled in a queue the server picked is NOT worth naming (owner ruling
+  // 2026-08-01). Only an explicit manual request (the one_shot echo, 审计
+  // #3/#12: server echoes only) names its game, whatever the auto-match cap
+  // says. The host clears `queued` on disconnect and on game_start, so the
+  // guard against those two phases is belt-and-braces.
+  if (queued?.oneShot === true && activity !== "offline" && activity !== "in_match") {
+    return (
+      <span className="v3-dv-pill" data-tone={ACTIVITY_TONE.matching}>
+        <i className="dot pulse" />
+        {t("play.activity.matchingGame", { game: gameLabel(queued.game) })}
+      </span>
+    );
+  }
   const pulse = activity === "in_match" || activity === "matching";
-  // 候战 claims come from the server's queue_joined echo, not local heuristics:
-  // queued → name the game; deriving "matching" without the echo → 入队中…
-  const label =
-    activity === "matching"
-      ? queuedGame
-        ? t("play.activity.matchingGame", { game: gameLabel(queuedGame) })
-        : t("play.activity.enrolling")
-      : t(`play.activity.${activity}`);
   return (
     <span className="v3-dv-pill" data-tone={ACTIVITY_TONE[activity]}>
       <i className={"dot" + (pulse ? " pulse" : "")} />
-      {label}
+      {t(`play.activity.${activity}`)}
     </span>
   );
 }
@@ -2095,8 +2125,7 @@ function inviteText(t: (k: string, o?: Record<string, unknown>) => string, game:
   return t("play.invite.text", { game: label, url });
 }
 
-/** "Copy invite" — copies the full invite message, with the same 1.5s check
- *  feedback as CopyRow. */
+/** "Copy invite" — copies the given text, with a 1.5s check feedback. */
 function ShareInviteBtn({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
@@ -2112,26 +2141,6 @@ function ShareInviteBtn({ text, label }: { text: string; label: string }) {
       {copied ? <Check size={12} className="v3-dv-ok" /> : <Copy size={12} />}
       {label}
     </button>
-  );
-}
-
-function CopyRow({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    void navigator.clipboard?.writeText(text);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
-  };
-  return (
-    <div className="v3-dv-inset flex items-center gap-2 px-3 py-2">
-      <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-[var(--text)]">{text}</span>
-      <button
-        onClick={copy}
-        className="flex shrink-0 items-center gap-1.5 rounded px-2 py-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text)]"
-      >
-        {copied ? <Check size={13} className="v3-dv-ok" /> : <Copy size={13} />}
-      </button>
-    </div>
   );
 }
 

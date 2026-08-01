@@ -195,7 +195,7 @@ export class BridgeHost {
   /** Last INBOUND protocol frame (连接审计 #9 — logs/snapshots do NOT count). */
   #lastInboundAt: number | null = null;
   /** Server-confirmed queue membership (连接审计 #3/#12) — see queueTruth.ts. */
-  #queued: { game: string; mode: string } | null = null;
+  #queued: { game: string; mode: string; oneShot: boolean } | null = null;
   /** Reconnect progress for the UI (连接审计 #8), from the facade snapshot. */
   #connInfo: NonNullable<BridgeStatus["conn"]> | null = null;
   /** The runner saw a protocol-version close this run (连接审计 #6) — the
@@ -1594,6 +1594,63 @@ export class BridgeHost {
         message: describeError(cause),
       });
     }
+  }
+
+  /**
+   * Set which games this agent auto-matches / stands by for. The selection
+   * lives in the shared bridge.json (`autoGames` — same field `aifight set
+   * game` writes): preserveMtime because a running bridge re-reads the list at
+   * every (re)connect edge, so the write must not read as "restart pending".
+   * After the local write we best-effort re-declare standby_games to the
+   * platform (R2 orchestration) so the running declaration catches up NOW
+   * rather than at the next reconnect; a PATCH failure is logged, never
+   * surfaced — the local write already succeeded and the next connect edge
+   * re-declares anyway. Desktop's own pickAutoGame reads the fresh list via
+   * the readConfigSummary() push. Empty selection is rejected here too (the
+   * renderer guards first): "no games at all" is what pause / daily-cap-0 are
+   * for, mirroring the CLI picker's rule.
+   */
+  async setAutoGames(games: unknown): Promise<{ ok: boolean; error?: string }> {
+    const live = this.liveGamesSync();
+    const unique: string[] = [];
+    for (const g of Array.isArray(games) ? games : []) {
+      if (typeof g !== "string" || !live.includes(g)) {
+        return { ok: false, error: `unsupported game: ${String(g)}` };
+      }
+      if (!unique.includes(g)) unique.push(g);
+    }
+    if (unique.length === 0) {
+      return { ok: false, error: "at least one game is required — pause matching to stop auto-play" };
+    }
+    try {
+      const config = readBridgeConfig();
+      writeBridgeConfig(
+        { ...config, autoGames: unique, updatedAt: new Date().toISOString() },
+        { preserveMtime: true },
+      );
+    } catch (cause) {
+      return { ok: false, error: describeError(cause) };
+    }
+    this.readConfigSummary();
+    const ep = this.#meEndpoint("/api/agents/me/policy");
+    if (ep !== null) {
+      try {
+        const res = await fetch(ep.url, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", "X-API-Key": ep.apiKey },
+          body: JSON.stringify({ standby_games: unique }),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      } catch (cause) {
+        this.#callbacks.onLog?.({
+          level: "warning",
+          code: "desktop.standby_redeclare_failed",
+          message: `standby_games not re-declared (${describeError(cause)}); the next connect edge declares the fresh list.`,
+        });
+      }
+    }
+    return { ok: true };
   }
 
   /**

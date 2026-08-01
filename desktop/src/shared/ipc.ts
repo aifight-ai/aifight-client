@@ -76,7 +76,7 @@ export interface BridgeStatus {
    * Null/absent = not in any queue — the pill must not claim 候战 from local
    * heuristics.
    */
-  readonly queued?: { readonly game: string; readonly mode: string } | null;
+  readonly queued?: { readonly game: string; readonly mode: string; readonly oneShot?: boolean } | null;
   /**
    * Live reconnect progress projected from the facade snapshot (连接审计 #8),
    * so the UI can say「重连中 · 第 N 次 · Xs 后」instead of a frozen 连接中.
@@ -789,6 +789,7 @@ export const IPC = {
   getOwnRadar: "bridge:get-own-radar",
   getPolicy: "bridge:get-policy",
   setPolicy: "bridge:set-policy",
+  setAutoGames: "bridge:set-auto-games",
   setAgentName: "bridge:set-agent-name",
   setDeclaredModel: "bridge:set-declared-model",
   avatarSet: "avatar:set",
@@ -890,6 +891,11 @@ export interface AifightBridgeApi {
   /** Write the daily auto-match cap to the server (last-write-wins). The desktop's
    * only rate knob — hourly cap is gone; cooldown is a server default (Dashboard-set). */
   setAgentPolicy(patch: { maxGamesPerDay: number }): Promise<{ ok: boolean; error?: string }>;
+  /** Set which games this agent auto-matches / stands by for. Persists `autoGames`
+   * to the shared bridge.json (same field as `aifight set game`; a running bridge
+   * re-reads it at every connect edge) and best-effort re-declares standby_games
+   * to the platform. Empty selection is rejected — pausing is the off switch. */
+  setAutoGames(games: readonly string[]): Promise<{ ok: boolean; error?: string }>;
   /** Change the agent's free-form display name (agent-key PATCH /api/agents/me/name).
    * Server is the source of truth; returns the reconciled name + numeric public ID.
    * On the rename cooldown it returns ok:false with the server message + nextRenameAllowedAt. */

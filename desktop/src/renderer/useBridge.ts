@@ -176,6 +176,11 @@ export async function setAgentPolicy(patch: { maxGamesPerDay: number }): Promise
   if (api === undefined) return { ok: false, error: "desktop bridge unavailable" };
   return api.setAgentPolicy(patch);
 }
+export async function setAutoGames(games: readonly string[]): Promise<{ ok: boolean; error?: string }> {
+  const api = window.aifight;
+  if (api === undefined) return { ok: false, error: "desktop bridge unavailable" };
+  return api.setAutoGames(games);
+}
 export async function setAgentName(
   patch: { name: string },
 ): Promise<{ ok: boolean; error?: string; name?: string; publicNo?: number; nextRenameAllowedAt?: string }> {

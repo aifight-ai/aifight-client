@@ -1279,6 +1279,9 @@
   display: flex;
   flex-direction: column;
   align-items: center;
+  /* Cells in a grid row stretch to the tallest sibling (the one with a sub
+     line); center so shorter cells don't hug the top edge. */
+  justify-content: center;
   gap: 4px;
   padding: 14px 12px;
   background: var(--v3-panel);
@@ -1303,7 +1306,7 @@
   text-transform: uppercase;
   color: var(--v3-t3);
 }
-.v3-dv-kpi .k-sub { font-family: var(--font-mono); font-size: 9.5px; color: var(--v3-t3); white-space: pre-line; }
+.v3-dv-kpi .k-sub { font-family: var(--font-mono); font-size: 9.5px; color: var(--v3-t3); white-space: pre-line; text-align: center; }
 
 /* ─── 预设选择卡(setup guide 每日上限;选中 = 橘边橘 tint) ─── */
 .v3-dv-preset {

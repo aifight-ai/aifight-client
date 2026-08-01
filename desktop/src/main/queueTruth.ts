@@ -11,6 +11,11 @@
 export interface QueuedInfo {
   readonly game: string;
   readonly mode: string;
+  /** True when the server echoed one_shot — an explicit manual match request.
+   *  Server-side enrollment (orchestrator sweep, auto-requeue) echoes false,
+   *  so this is the only queue entry the UI may name a game for (owner ruling
+   *  2026-08-01: standby is game-agnostic; the platform picks the game). */
+  readonly oneShot: boolean;
 }
 
 export function queueTransitionOf(message: unknown): QueuedInfo | null | undefined {
@@ -18,7 +23,11 @@ export function queueTransitionOf(message: unknown): QueuedInfo | null | undefin
   const m = message as { type?: unknown; data?: unknown };
   if (m.type === "queue_left" || m.type === "game_start") return null;
   if (m.type !== "queue_joined") return undefined;
-  const d = (m.data ?? {}) as { game?: unknown; mode?: unknown };
+  const d = (m.data ?? {}) as { game?: unknown; mode?: unknown; one_shot?: unknown };
   if (typeof d.game !== "string" || d.game === "") return undefined;
-  return { game: d.game, mode: typeof d.mode === "string" ? d.mode : "ranked" };
+  return {
+    game: d.game,
+    mode: typeof d.mode === "string" ? d.mode : "ranked",
+    oneShot: d.one_shot === true,
+  };
 }

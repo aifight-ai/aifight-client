@@ -32,8 +32,10 @@ let STATUS: BridgeStatus = {
     // fallback, exactly like a real unpinned agent.
     profileModel: "claude-opus-5",
   },
-  // 连接审计 #12/#8 — demo the queue-truth pill ("in queue (Texas Hold'em)") and
-  // give the conn field a connected snapshot so the StatusPill code path runs.
+  // 连接审计 #12/#8 — demo the queue-truth pill and give the conn field a
+  // connected snapshot so the StatusPill code path runs. No one_shot: this is a
+  // server-side enrollment echo, so the pill shows the game-agnostic 在线 · 候战
+  // (owner ruling 2026-08-01 — only an explicit manual request names its game).
   queued: { game: "texas_holdem", mode: "ranked" },
   conn: { state: "connected", attempt: 0, nextRetryAt: null, authFailures: 0 },
 };
@@ -335,6 +337,13 @@ export function installDemoBridge(): void {
       demoPolicy = { ...demoPolicy, maxGamesPerDay: patch.maxGamesPerDay };
       return Promise.resolve({ ok: true });
     },
+    // Demo: the games selection round-trips through the status push like the
+    // real host (bridge.json write → readConfigSummary broadcast).
+    setAutoGames: (games) => {
+      STATUS = { ...STATUS, config: { ...STATUS.config!, autoGames: [...games] } };
+      for (const fn of statusListeners) fn(STATUS);
+      return Promise.resolve({ ok: true });
+    },
     setAgentName: (patch) => {
       demoPolicy = { ...demoPolicy, name: patch.name };
       return Promise.resolve({ ok: true, name: patch.name, publicNo: demoPolicy.publicNo });
@@ -355,7 +364,22 @@ export function installDemoBridge(): void {
     getLeaderboard: () => Promise.resolve(null),
     getReplayTail: () => Promise.resolve(null),
     getEvents: () => Promise.resolve(null),
-    getChallenges: () => Promise.resolve(null),
+    // One open hosted duel so ?demo shows the polled 约战 list (the single
+    // place a created challenge appears — owner ruling 2026-08-01).
+    getChallenges: () =>
+      Promise.resolve([
+        {
+          id: "demo-duel-1",
+          game: "texas_holdem",
+          status: "pending",
+          isHost: true,
+          opponentName: "",
+          createdAt: new Date(Date.now() - 8 * 60_000).toISOString(),
+          expiresAt: new Date(Date.now() + 22 * 3_600_000).toISOString(),
+          maxPlayers: 2,
+          seatedCount: 1,
+        },
+      ]),
     setMatchingPaused: (paused: boolean) => {
       STATUS = { ...STATUS, matchingPaused: paused };
       for (const fn of statusListeners) fn(STATUS);

@@ -93,6 +93,7 @@ export function registerBridgeIpc(host: BridgeHost): void {
   // Rate policy (server is the source of truth; reflects Dashboard edits).
   handle(IPC.getPolicy, () => host.getAgentPolicy());
   handle(IPC.setPolicy, (_e, patch: unknown) => host.setAgentPolicy((patch ?? {}) as never));
+  handle(IPC.setAutoGames, (_e, games: unknown) => host.setAutoGames(games));
   // Display-name rename (agent-key PATCH; server enforces cooldown + audit).
   handle(IPC.setAgentName, (_e, patch: unknown) => host.setAgentName((patch ?? {}) as never));
   // Leaderboard declared-model pin (bridge.json + best-effort platform PATCH).

@@ -12,6 +12,7 @@ describe("queueTransitionOf", () => {
     expect(queueTransitionOf({ type: "queue_joined", data: { game: "texas_holdem", mode: "friendly" } })).toEqual({
       game: "texas_holdem",
       mode: "friendly",
+      oneShot: false,
     });
   });
 
@@ -19,7 +20,22 @@ describe("queueTransitionOf", () => {
     expect(queueTransitionOf({ type: "queue_joined", data: { game: "coup" } })).toEqual({
       game: "coup",
       mode: "ranked",
+      oneShot: false,
     });
+  });
+
+  it("one_shot echo survives; anything but literal true reads as false", () => {
+    // The UI names a game ONLY for an explicit manual request (owner ruling
+    // 2026-08-01) — a server-side enrollment echo (one_shot:false or absent,
+    // hub.NotifyQueueJoined) must never masquerade as one.
+    expect(queueTransitionOf({ type: "queue_joined", data: { game: "coup", mode: "ranked", one_shot: true } })).toEqual({
+      game: "coup",
+      mode: "ranked",
+      oneShot: true,
+    });
+    expect(
+      queueTransitionOf({ type: "queue_joined", data: { game: "coup", mode: "ranked", one_shot: "true" } })?.oneShot,
+    ).toBe(false);
   });
 
   it("queue_left and game_start both end the belief (null)", () => {
