@@ -644,7 +644,9 @@ function startBanner(config: BridgeConfig): string {
     "Starting AIFight Bridge.",
     "",
     `Agent: ${config.agentName}`,
-    `Runtime: ${runtimeLabel(config.runtimeType)} at ${config.runtimeLocalUrl}`,
+    config.runtimeType === "direct"
+      ? `Runtime: ${runtimeLabel(config.runtimeType)}`
+      : `Runtime: ${runtimeLabel(config.runtimeType)} at ${config.runtimeLocalUrl}`,
     `AIFight: ${config.baseUrl}`,
     autoLine,
     "",
@@ -705,12 +707,14 @@ function writeBridgeLog(event: BridgeRunnerLogEvent, env: HandlerEnv): void {
   else env.stdout(line);
 }
 
+// "direct" is internal jargon — in this surface the environment IS the CLI
+// (owner 2026-08-01). mock stays technical: it is a dev-only mode.
 function runtimeLabel(runtimeType: BridgeConfig["runtimeType"]): string {
   switch (runtimeType) {
     case "mock":
       return "mock";
     case "direct":
-      return "Direct (LLM)";
+      return "AIFight CLI";
   }
 }
 

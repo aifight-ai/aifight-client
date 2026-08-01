@@ -97,7 +97,10 @@ export async function runBridgeStatus(
     env.stdout(`${out.kv(t(loc, "status.label.update_manual"), update.policy?.updateCommand ?? "npm install -g @aifight/aifight")}\n`);
     env.stdout(`${out.note(t(loc, "status.update.note"))}\n`);
   }
-  env.stdout(`${out.kv(t(loc, "status.label.runtime"), `${runtimeLabel(redacted.runtimeType)} · ${redacted.runtimeLocalUrl}`)}\n`);
+  // "direct" / "direct://local" are internal runtime-mode jargon (owner
+  // 2026-08-01): in this surface the environment IS the CLI, so say that.
+  // Non-direct modes (mock, dev-only) keep the full technical form.
+  env.stdout(`${out.kv(t(loc, "status.label.runtime"), redacted.runtimeType === "direct" ? runtimeLabel(redacted.runtimeType) : `${runtimeLabel(redacted.runtimeType)} · ${redacted.runtimeLocalUrl}`)}\n`);
   // What the leaderboard/profile shows as this agent's model, and why.
   env.stdout(`${out.kv(t(loc, "status.label.declared"), `${declaredModel.value} (${declaredModelOriginLabel(declaredModel.origin)})`, { tone: "cyan" })}\n`);
   env.stdout(`${out.kv(t(loc, "status.label.daily"), formatDaily(loc, redacted.autoDailyLimit))}\n`);
@@ -227,7 +230,7 @@ function runtimeLabel(runtimeType: ReturnType<typeof redactBridgeConfig>["runtim
     case "mock":
       return "mock";
     case "direct":
-      return "Direct (LLM)";
+      return "AIFight CLI";
   }
 }
 

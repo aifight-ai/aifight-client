@@ -191,9 +191,18 @@ function Body({ data }: { data: StatusJson }) {
       : data.config.autoDailyLimit === 0
         ? t("diagnostics.daily.off")
         : String(data.config.autoDailyLimit);
+  // "direct" is internal runtime-mode jargon (owner 2026-08-01): in this
+  // surface the environment IS the desktop app, so say that. Unknown future
+  // modes pass through untouched rather than being mislabeled.
+  const runtimeDisplay =
+    data.config?.runtimeType === undefined
+      ? "—"
+      : data.config.runtimeType === "direct"
+        ? t("diagnostics.runtimeDesktop")
+        : data.config.runtimeType;
   const rows: Array<[string, string]> = [
     [t("diagnostics.agent"), data.config?.agentName ?? "—"],
-    [t("diagnostics.runtime"), data.config?.runtimeType ?? "—"],
+    [t("diagnostics.runtime"), runtimeDisplay],
     [t("diagnostics.claim"), claim],
     [t("diagnostics.dailyLabel"), daily],
     [t("diagnostics.games"), (data.config?.autoGames ?? liveGames).join(", ")],
