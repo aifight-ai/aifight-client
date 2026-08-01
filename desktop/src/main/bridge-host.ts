@@ -1344,13 +1344,12 @@ export class BridgeHost {
       case "connected": {
         this.#connectedAt = snap.connectedAt ?? Date.now();
         this.#setStatus({ phase: "running", config: this.#status.config, message: undefined });
-        // The connected edge is the SINGLE owner of automatic enrollment —
-        // first connect, seat-retry, Retry button, and every reconnect all
-        // pass through here (审查 F9 + 连接审计 #1). Only an explicit pause
-        // stops it; the server's daily cap stays the final gate inside.
-        if (prev !== "connected" && !this.#matchingPaused) {
-          void this.joinAutoMatch();
-        }
+        // Enrollment moved into the shared runner (R2, 2026-07-31): every
+        // connected edge now DECLARES standby games and arms the self-join
+        // fallback there, so the platform can assign the game. The desktop's
+        // own join here would double-enroll (the old two-path first-connect
+        // bug); it survives only behind the explicit resume button
+        // (setMatchingPaused(false) → joinAutoMatch).
         break;
       }
       case "connecting":
@@ -1427,6 +1426,18 @@ export class BridgeHost {
     // offline would silently drop a pause the user just asked for.)
     this.#matchingPaused = paused;
     setFlag(MATCHING_PAUSED_FLAG, paused);
+    // Mirror into the SHARED bridge.json (the CLI's pause flag): the runner's
+    // standby declaration + fallback self-join read matchingPaused from there,
+    // so a desktop pause must be visible to them or a reconnect edge would
+    // quietly re-enter matchmaking (R2; pre-existing gap, now closed).
+    try {
+      const config = readBridgeConfig();
+      if ((config.matchingPaused === true) !== paused) {
+        writeBridgeConfig({ ...config, matchingPaused: paused, updatedAt: new Date().toISOString() });
+      }
+    } catch (cause) {
+      this.#callbacks.onLog?.({ level: "warning", code: "desktop.pause_persist_failed", message: describeError(cause) });
+    }
     this.#reemitStatus();
     if (this.#runner === null) return;
     if (paused) {

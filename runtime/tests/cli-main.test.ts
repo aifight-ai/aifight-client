@@ -652,8 +652,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.2.0-beta.4",
-          latest_version: "0.2.0-beta.4",
+          recommended_version: "0.2.0-beta.5",
+          latest_version: "0.2.0-beta.5",
           update_command: "npm install -g @aifight/aifight",
         });
       }
@@ -692,8 +692,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.2.0-beta.4",
-          latest_version: "0.2.0-beta.4",
+          recommended_version: "0.2.0-beta.5",
+          latest_version: "0.2.0-beta.5",
           update_command: "npm install -g @aifight/aifight",
         });
       }

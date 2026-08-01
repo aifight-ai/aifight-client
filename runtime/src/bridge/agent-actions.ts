@@ -53,11 +53,17 @@ export async function createChallenge(
   config: BridgeConfig,
   game: ChallengeGame,
   fetchImpl: typeof fetch = globalThis.fetch,
+  playerCount?: number,
 ): Promise<CreatedChallenge> {
+  // player_count omitted → the server seats the game's smallest legal friendly
+  // table (texas 2, coup 3, dice 2). Tables above 2 fill seat by seat and start
+  // automatically when full (server-side duel matchmaker).
+  const body: Record<string, unknown> = { game, accept_mode: "single" };
+  if (playerCount !== undefined) body.player_count = playerCount;
   const res = await fetchNoFollow(`${base(config)}/api/challenges`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-API-Key": config.apiKey },
-    body: JSON.stringify({ game, accept_mode: "single" }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(ACTION_TIMEOUT_MS),
   }, { fetchImpl });
   if (!res.ok) {

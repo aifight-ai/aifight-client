@@ -9,6 +9,15 @@ import type { BridgeConfig } from "./config";
 
 export type SupportedGame = "texas_holdem" | "liars_dice" | "coup";
 
+/** The full standby declaration: every game the user enabled (or all of them
+ *  when unset). This is what the bridge PATCHes to the platform so the supply
+ *  sweep can assign a game (R2); pickAutomaticGame stays the FALLBACK's way of
+ *  choosing one when the platform has not assigned anything in time. */
+export function standbyGamePool(configured: readonly string[] | undefined): SupportedGame[] {
+  const games = (configured ?? SUPPORTED_GAMES).filter(isSupportedGame);
+  return (games.length > 0 ? games : [...SUPPORTED_GAMES]) as SupportedGame[];
+}
+
 /** One game out of the user's preference list (or all of them when unset).
  *  Random on purpose: a fixed order would starve the later games. */
 export function pickAutomaticGame(configured: readonly string[] | undefined): SupportedGame {

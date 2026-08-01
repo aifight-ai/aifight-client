@@ -56,7 +56,12 @@ async function withColors<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } finally {
+    // isTTY normally has NO own descriptor (undefined off-TTY); restoring
+    // means DELETING the property we defined, not skipping — a leaked
+    // isTTY:true turns every later plain-output assertion in this file into
+    // ANSI-colored output on machines where the runner exports no NO_COLOR.
     if (prevTTY !== undefined) Object.defineProperty(process.stdout, "isTTY", prevTTY);
+    else delete (process.stdout as { isTTY?: boolean }).isTTY;
     if (prevNoColor === undefined) delete process.env.NO_COLOR;
     else process.env.NO_COLOR = prevNoColor;
     if (prevTerm === undefined) delete process.env.TERM;

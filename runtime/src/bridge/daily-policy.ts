@@ -56,6 +56,32 @@ export interface DailyPolicyResult {
  * Push the cap to the platform. 0 is not "zero matches per day" to the server —
  * it is auto_requeue:false, i.e. the agent stops queueing itself at all.
  */
+/**
+ * Declare which games this agent stands by for (R2 platform orchestration).
+ * Fire-and-forget from the bridge's connect edge: a failure (old server that
+ * rejects the unknown field, transient network) only means the platform cannot
+ * assign a game — the local fallback join covers exactly that case, so errors
+ * are the caller's to log, never to retry hot.
+ */
+export async function declareStandbyGames(
+  config: BridgeConfig,
+  games: readonly string[],
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<void> {
+  const res = await fetchNoFollow(`${config.baseUrl.replace(/\/+$/, "")}/api/agents/me/policy`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-Key": config.apiKey,
+    },
+    body: JSON.stringify({ standby_games: games }),
+    signal: AbortSignal.timeout(POLICY_TIMEOUT_MS),
+  }, { fetchImpl });
+  if (!res.ok) {
+    throw new DailyPolicySyncError(await readAPIError(res, `standby declaration failed with HTTP ${res.status}`), res.status);
+  }
+}
+
 export async function syncDailyPolicy(
   config: BridgeConfig,
   limit: number,

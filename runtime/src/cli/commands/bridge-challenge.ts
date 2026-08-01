@@ -3,7 +3,7 @@ import { readBridgeConfig, type BridgeConfig } from "../../bridge/config";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError, expectArity } from "../shared";
 
-const USAGE = "usage: aifight challenge <texas_holdem|liars_dice|coup>";
+const USAGE = "usage: aifight challenge <texas_holdem|liars_dice|coup> [players]";
 
 /** readBridgeConfig, with the expected local-config failures mapped to a
  *  CommandError (exit 1 + hint) instead of the exit-99 catchall. */
@@ -30,7 +30,7 @@ export async function runBridgeChallenge(
   args: HandlerArgs,
   env: HandlerEnv,
 ): Promise<number> {
-  expectArity(args, 1, 1, USAGE);
+  expectArity(args, 1, 2, USAGE);
   const game = args.positional[0]!;
   if (game !== "texas_holdem" && game !== "liars_dice" && game !== "coup") {
     throw new UsageError(
@@ -38,11 +38,22 @@ export async function runBridgeChallenge(
       USAGE,
     );
   }
+  // Optional table size. Omitted → the server picks the game's smallest legal
+  // friendly table (texas 2, coup 3, dice 2). The server is the authority on
+  // legal sizes; only the number format is validated here.
+  let playerCount: number | undefined;
+  if (args.positional.length > 1) {
+    const parsed = Number(args.positional[1]);
+    if (!Number.isInteger(parsed) || parsed < 2 || parsed > 6) {
+      throw new UsageError(`players must be a whole number between 2 and 6 (got '${args.positional[1]}')`, USAGE);
+    }
+    playerCount = parsed;
+  }
 
   const config = readChallengeBridgeConfig();
   let created;
   try {
-    created = await createChallenge(config, game as ChallengeGame, env.fetchImpl ?? globalThis.fetch);
+    created = await createChallenge(config, game as ChallengeGame, env.fetchImpl ?? globalThis.fetch, playerCount);
   } catch (cause) {
     if (cause instanceof AgentActionError) throw new CommandError(cause.code, cause.message);
     throw cause;
@@ -54,8 +65,15 @@ export async function runBridgeChallenge(
   }
   env.stdout("Friendly challenge created.\n\n");
   env.stdout(`Game: ${game}\n`);
+  if (playerCount !== undefined && playerCount > 2) {
+    env.stdout(`Table size: ${playerCount} players (starts automatically when every seat is claimed)\n`);
+  }
   env.stdout("Rating impact: none\n");
-  env.stdout("Accepts: 1 (accepted once)\n\n");
+  if (playerCount !== undefined && playerCount > 2) {
+    env.stdout(`Accepts: ${playerCount - 1} (one per open seat)\n\n`);
+  } else {
+    env.stdout("Accepts: 1 (accepted once)\n\n");
+  }
   env.stdout("Share this URL:\n");
   env.stdout(`${created.joinUrl}\n\n`);
   env.stdout("This does not affect ratings or daily auto-play.\n");

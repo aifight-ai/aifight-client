@@ -21,7 +21,8 @@ import {
 } from "../session/local-match-session-store";
 import type { AgentDecisionProvider } from "../agents/agent";
 import { readBridgeConfig, type BridgeConfig } from "./config";
-import { pickAutomaticGame } from "./auto-join";
+import { pickAutomaticGame, standbyGamePool } from "./auto-join";
+import { declareStandbyGames } from "./daily-policy";
 import {
   buildBridgeDecisionProvider,
   createMockRuntimeProvider,
@@ -293,6 +294,8 @@ export class BridgeRunner {
   #matchContext = new MatchContextTracker();
   /** R13-F08: last credential observed on disk — logs rotation exactly once. */
   #lastKnownApiKey: string;
+  /** R2 standby fallback: self-join when the platform assigns nothing in time. */
+  #standbyFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   /** R15 (2026-07-26): connection-state subscribers registered before start()
    *  produced a connected agent. They used to get a no-op unsubscribe and never
    *  a snapshot; now start() attaches them once the reconnect client exists. */
@@ -459,6 +462,14 @@ export class BridgeRunner {
             "Automatic matching is paused — staying out of the queue (`aifight resume` re-enables it).",
           );
         }
+      } else if (edge !== null && !oneShot && this.#standbyFallbackMinutes() > 0) {
+        // R2 platform orchestration (owner ruling 2026-07-31): instead of
+        // self-queueing into a random game, DECLARE the standby set and let the
+        // platform's supply sweep assign one. The fallback timer preserves the
+        // legacy behavior end-to-end: old server, sweep knob off, or an idle
+        // platform all resolve to a normal self-join a few minutes later.
+        this.#declareStandby();
+        this.#armStandbyFallback(agent);
       } else if (edge !== null) {
         agent.joinQueue(edge.game, this.#opts.autoJoinMode, { oneShot });
         this.#log(
@@ -514,6 +525,13 @@ export class BridgeRunner {
             }
             return;
           }
+          if (this.#standbyFallbackMinutes() > 0) {
+            // Same R2 posture as the first connect: re-declare (the server may
+            // have restarted) and re-arm the fallback instead of self-joining.
+            this.#declareStandby();
+            this.#armStandbyFallback(agent);
+            return;
+          }
           try {
             agent.joinQueue(reEdge.game, this.#opts.autoJoinMode, { oneShot: false });
             this.#log(
@@ -559,6 +577,7 @@ export class BridgeRunner {
   }
 
   async stop(): Promise<void> {
+    this.#clearStandbyFallback();
     if (this.#agent === null) return;
     await this.#agent.stop("bridge stop");
     this.#agent = null;
@@ -764,6 +783,112 @@ export class BridgeRunner {
       return { game: pickAutomaticGame(games) };
     }
     return this.#opts.autoJoinGame !== undefined ? { game: this.#opts.autoJoinGame } : null;
+  }
+
+  /**
+   * How long to wait for the platform to assign a game before self-joining
+   * (R2). Fresh from disk like every other standby knob; default 5 minutes.
+   * 0 = self-join immediately at the connect edge (the pre-R2 behavior).
+   */
+  #standbyFallbackMinutes(): number {
+    let minutes = this.#opts.config.standbyFallbackJoinMinutes;
+    try {
+      minutes = readBridgeConfig().standbyFallbackJoinMinutes ?? minutes;
+    } catch {
+      // Frozen snapshot fallback — see #matchingPaused.
+    }
+    if (minutes === undefined || !Number.isFinite(minutes) || minutes < 0) return 5;
+    return minutes;
+  }
+
+  /**
+   * Declare the standby set to the platform (fire-and-forget): the games list
+   * the supply sweep may assign this agent to. A failure only means the
+   * platform cannot orchestrate — the fallback timer covers exactly that, so
+   * this logs once and never retries hot. Re-reads the games from disk so a
+   * mid-run `aifight set game` reaches the next declaration.
+   */
+  #declareStandby(): void {
+    let games = this.#opts.config.autoGames;
+    try {
+      games = readBridgeConfig().autoGames ?? games;
+    } catch {
+      // Frozen snapshot fallback.
+    }
+    const pool = standbyGamePool(games);
+    void declareStandbyGames(this.#opts.config, pool)
+      .then(() => {
+        this.#log(
+          "info",
+          "bridge.standby_declared",
+          `Standing by for ${pool.join(", ")} — the platform assigns the game (self-join fallback in ${this.#standbyFallbackMinutes()}min).`,
+        );
+      })
+      .catch((cause) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        this.#log(
+          "info",
+          "bridge.standby_declare_failed",
+          `Standby declaration not accepted (${message}) — the self-join fallback will queue normally.`,
+        );
+      });
+  }
+
+  /**
+   * Arm (or re-arm) the standby fallback: after #standbyFallbackMinutes with
+   * no platform-assigned activity, self-join one game the legacy way. The
+   * timer re-arms itself, so a long idle stretch keeps retrying instead of
+   * going quiet after one attempt.
+   */
+  #armStandbyFallback(agent: AgentInstance): void {
+    this.#clearStandbyFallback();
+    const minutes = this.#standbyFallbackMinutes();
+    if (minutes <= 0) return;
+    this.#standbyFallbackTimer = setTimeout(() => {
+      this.#standbyFallbackTimer = null;
+      if (this.#agent === null) return; // stopped
+
+      if (this.#matchingPaused()) {
+        this.#armStandbyFallback(agent);
+        return;
+      }
+      const edge = this.#autoJoinDecision();
+      if (edge === null) {
+        this.#armStandbyFallback(agent);
+        return;
+      }
+      const phase = agent.snapshot().state?.phase;
+      if (
+        phase === "confirming" ||
+        phase === "matching" ||
+        phase === "in_match" ||
+        phase === "deciding" ||
+        phase === "reporting"
+      ) {
+        // The platform DID orchestrate (queued or playing) — nothing to rescue.
+        this.#armStandbyFallback(agent);
+        return;
+      }
+      try {
+        agent.joinQueue(edge.game, this.#opts.autoJoinMode, { oneShot: false });
+        this.#log(
+          "info",
+          "bridge.standby_fallback_join",
+          `No platform assignment after ${minutes}min — self-joined the ${edge.game} queue (legacy behavior).`,
+        );
+      } catch {
+        // Socket mid-reconnect: the next connect edge re-declares and re-arms.
+      }
+      this.#armStandbyFallback(agent);
+    }, minutes * 60_000);
+    this.#standbyFallbackTimer.unref?.();
+  }
+
+  #clearStandbyFallback(): void {
+    if (this.#standbyFallbackTimer !== null) {
+      clearTimeout(this.#standbyFallbackTimer);
+      this.#standbyFallbackTimer = null;
+    }
   }
 
   /** R13-F08: re-read the bridge config after a 401 reconnect failure so a

@@ -79,6 +79,11 @@ export interface BridgeConfig {
    * without a restart). Manual matches and challenges are unaffected.
    */
   readonly matchingPaused?: boolean;
+  /** Minutes the bridge waits after declaring standby before it falls back to
+   *  the legacy self-join (random enabled game). Default 5. 0 = self-join
+   *  immediately at the connect edge (the pre-R2 behavior, kept as an escape
+   *  hatch). */
+  readonly standbyFallbackJoinMinutes?: number;
   /**
    * CLI display language ("en" default, "zh" 中文). Display-only: the bridge
    * runner never reads it, so writes go through writeBridgeConfig with
@@ -648,6 +653,9 @@ function isBridgeConfig(value: unknown): value is BridgeConfig {
     (v.autoDailyLimit === undefined || (typeof v.autoDailyLimit === "number" && Number.isInteger(v.autoDailyLimit) && v.autoDailyLimit >= 0)) &&
     (v.autoGames === undefined || (Array.isArray(v.autoGames) && v.autoGames.every((g) => typeof g === "string"))) &&
     (v.matchingPaused === undefined || typeof v.matchingPaused === "boolean") &&
+    (v.standbyFallbackJoinMinutes === undefined ||
+      (typeof v.standbyFallbackJoinMinutes === "number" && Number.isFinite(v.standbyFallbackJoinMinutes) &&
+        v.standbyFallbackJoinMinutes >= 0 && v.standbyFallbackJoinMinutes <= 120)) &&
     (v.locale === undefined || v.locale === "en" || v.locale === "zh") &&
     // On disk this is the "enc:" reference, in memory the plaintext token —
     // both are strings, so one check covers pre- and post-decrypt validation.

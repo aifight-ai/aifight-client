@@ -122,6 +122,10 @@ function bridgeConfig(): BridgeConfig {
     runtimeLocalUrl: "mock://local",
     runtimeModel: "mock",
     updatedAt: "2026-05-06T00:00:00.000Z",
+    // These tests pin the LEGACY self-join behavior; 0 opts out of the R2
+    // standby declaration + fallback (its own tests live in
+    // bridge-standby-declare.test.ts).
+    standbyFallbackJoinMinutes: 0,
   };
 }
 
