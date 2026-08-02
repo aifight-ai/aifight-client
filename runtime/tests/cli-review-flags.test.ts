@@ -87,3 +87,60 @@ describe("review command flags (H1 — Kimi K3 review)", () => {
     expect(r.stderr).toMatch(/local match session not found/);
   });
 });
+
+// ── Markdown output (2026-08-02): --md prints, --out writes ──────────
+describe("review --md / --out", () => {
+  function storedReview(): unknown {
+    return {
+      schema: 1, generated_at: "2026-08-02T13:05:00.000Z", trigger: "manual",
+      model: "test-model", locale: "en", prompt_version: "sr-v1",
+      report_text: "A stored review.", suggestion: { scope: "liars_dice", text: "Bid later." },
+      token_usage: { input: 10, output: 20 }, source_strategy_hashes: [],
+    };
+  }
+  function seedReviewed(matchId: string): void {
+    seedSession(matchId);
+    const store = new LocalMatchSessionStore({ runtimeHome: path.join(tmpDir, "runtime"), now: () => new Date("2026-05-18T01:00:00Z") });
+    const item = store.getSession(matchId)!;
+    store.writeSelfReview(item.session_id, storedReview());
+  }
+
+  it("--md prints the stored review as Markdown without any LLM call", async () => {
+    seedReviewed("sess-md-1");
+    const r = await runCapture(["review", "sess-md-1", "--md"]);
+    expect(r.stderr).toBe("");
+    expect(r.code).toBe(0);
+    expect(r.stdout.startsWith("---\n")).toBe(true);
+    expect(r.stdout).toContain('model: "test-model"');
+    expect(r.stdout).toContain("A stored review.");
+    expect(r.stdout).toContain("## Suggested improvement (scope: liars_dice)");
+  });
+
+  it("--out <dir> writes a dated file and prints its path", async () => {
+    seedReviewed("sess-md-2");
+    const outDir = path.join(tmpDir, "exports");
+    const r = await runCapture(["review", "sess-md-2", "--out", outDir]);
+    expect(r.stderr).toBe("");
+    expect(r.code).toBe(0);
+    const file = r.stdout.trim();
+    expect(file.startsWith(outDir)).toBe(true);
+    expect(file.endsWith(".md")).toBe(true);
+    expect(fs.readFileSync(file, "utf8")).toContain("A stored review.");
+  });
+
+  it("--out <file.md> writes exactly that file", async () => {
+    seedReviewed("sess-md-3");
+    const outFile = path.join(tmpDir, "deep", "one.md");
+    const r = await runCapture(["review", "sess-md-3", "--out", outFile]);
+    expect(r.code).toBe(0);
+    expect(r.stdout.trim()).toBe(outFile);
+    expect(fs.existsSync(outFile)).toBe(true);
+  });
+
+  it("refuses --md together with --json", async () => {
+    seedReviewed("sess-md-4");
+    const r = await runCapture(["review", "sess-md-4", "--md", "--json"]);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toMatch(/--md\/--out cannot be combined with --json/);
+  });
+});

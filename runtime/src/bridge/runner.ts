@@ -34,6 +34,7 @@ import { MatchContextTracker } from "./match-context-tracker";
 import { appendUsageRecord } from "../usage/usage-log";
 import { loadAgentProfile, resolveAgentDir } from "../profile/profile-loader";
 import { runSelfReview } from "../review/self-review";
+import { exportReviewMarkdown, reviewMetaFromExport } from "../review/review-markdown";
 import { fetchNoFollow } from "../net/guarded-fetch";
 import { envNotifyLocale } from "../notify/locale";
 import type { LLMConfig } from "../profile/config-schema";
@@ -1100,6 +1101,25 @@ export class BridgeRunner {
     });
     store.writeSelfReview(sessionId, review);
     this.#log("info", "bridge.self_review", `Saved auto self-review for ${sessionId}`);
+    // Owner opt-in Markdown copy (selfReview.exportDir). Best-effort on top of
+    // the JSON above — a failed export must not cost the review, let alone a match.
+    const exportDir = config.selfReview?.exportDir;
+    if (exportDir !== undefined && exportDir.trim() !== "") {
+      try {
+        const file = exportReviewMarkdown(
+          exportDir,
+          review,
+          reviewMetaFromExport(exported, this.#opts.config.baseUrl),
+        );
+        this.#log("info", "bridge.self_review_export", `Exported the review as ${file}`);
+      } catch (cause) {
+        this.#log(
+          "warning",
+          "bridge.self_review_export_failed",
+          `Could not export the review to ${exportDir}: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      }
+    }
   }
 
   async #buildRuntimeStatus(provider: BridgeRuntimeProvider, data: unknown): Promise<Record<string, unknown>> {

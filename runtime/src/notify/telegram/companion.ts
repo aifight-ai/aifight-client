@@ -16,13 +16,16 @@ import {
   type NotifyChannel,
   type NotifyEvent,
 } from "../events";
+import { readSelfReviewAutoMode, writeSelfReviewAutoMode } from "../../review/auto-mode";
 import { TELEGRAM_DEFAULT_DIGEST_AT, isMuted } from "./settings";
 import { buildDailyDigest, startDigestScheduler, type DigestDeps } from "./digest";
 import { createChallengeWatcher } from "./challenge-watch";
 import { createTelegramApi, type TelegramApi, type TelegramUpdate } from "./api";
+import { enrichMatchResult, type MatchReportEnrichmentDeps } from "./match-report";
 import { createPanelHandler, type PanelRunner } from "./panels";
 import { startTelegramPoller, type TelegramPollerHandle } from "./poller";
-import { renderNotifyEvent } from "./render";
+import { botCommands, renderNotifyEvent } from "./render";
+import type { NotifyLocale } from "../locale";
 
 /** Longest we hold up bridge shutdown waiting for queued messages. */
 const FLUSH_BUDGET_MS = 1_500;
@@ -39,6 +42,14 @@ export interface TelegramChannelOptions {
   /** Also read fresh: a rename made from the chat has to show up in the very
    *  next report, not after a restart. */
   readonly agentName: () => string;
+  /** The AIFight origin, for the report's leaderboard button. */
+  readonly baseUrl?: string;
+  /**
+   * Fill in what only a network read can know (the match report's rating
+   * line). Runs INSIDE the send chain so the chat keeps its event order; a
+   * failed or slow enrichment falls back to the plain event.
+   */
+  readonly enrich?: (event: NotifyEvent) => Promise<NotifyEvent>;
   readonly onLog?: (event: BridgeLogEvent) => void;
   readonly now?: () => number;
 }
@@ -108,9 +119,17 @@ export function createTelegramChannel(opts: TelegramChannelOptions): NotifyChann
   }
 
   async function send(event: NotifyEvent): Promise<void> {
+    // Not while stopping: enrichment waits on the network, and the shutdown
+    // flush budget is short — a plain report beats a dropped one.
+    if (opts.enrich !== undefined && !stopped) {
+      event = await opts.enrich(event).catch(() => event);
+    }
     const settings = opts.settings();
     const locale = resolveNotifyLocale(settings.locale);
-    const message = renderNotifyEvent(locale, event, { agentName: opts.agentName() });
+    const message = renderNotifyEvent(locale, event, {
+      agentName: opts.agentName(),
+      ...(opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {}),
+    });
 
     if (message.photoUrl !== undefined) {
       try {
@@ -194,10 +213,14 @@ export interface TelegramCompanionDeps {
   readonly poll?: boolean;
   /** Test seam: digest data sources (sessions, usage ledger, snapshot file). */
   readonly digest?: Partial<DigestDeps>;
+  /** Test seam: rating-line enrichment knobs (delay, snapshot file, fetch). */
+  readonly matchReport?: Partial<MatchReportEnrichmentDeps>;
 }
 
 /** The only bridge-config fields the in-chat panel may write. */
-type ConfigPatch = Partial<Pick<BridgeConfig, "autoDailyLimit" | "telegram" | "agentName">>;
+type ConfigPatch = Partial<
+  Pick<BridgeConfig, "autoDailyLimit" | "telegram" | "agentName" | "autoGames" | "matchingPaused">
+>;
 
 export interface TelegramCompanion extends BridgeNotifier {
   /** Feed one Telegram update by hand (the poller does this on its own). */
@@ -264,9 +287,29 @@ export function startTelegramCompanion(deps: TelegramCompanionDeps): TelegramCom
     api,
     settings: () => settings,
     agentName: () => config.agentName,
+    baseUrl: config.baseUrl,
+    enrich: (event) =>
+      event.kind === "match.result"
+        ? enrichMatchResult(event, {
+            baseUrl: config.baseUrl,
+            agentId: config.agentId,
+            ...(deps.fetchImpl !== undefined ? { fetchImpl: deps.fetchImpl } : {}),
+            ...(deps.matchReport ?? {}),
+          })
+        : Promise.resolve(event),
     ...(deps.onLog !== undefined ? { onLog: deps.onLog } : {}),
     ...(deps.now !== undefined ? { now: deps.now } : {}),
   });
+
+  /** Best-effort: the command menu mirrors the chat's language. Never blocks
+   *  and never throws — a stub API without setMyCommands just logs. */
+  function registerCommands(locale: NotifyLocale): void {
+    void Promise.resolve()
+      .then(() => api.setMyCommands(botCommands(locale)))
+      .catch((cause) => {
+        deps.onLog?.({ level: "info", code: "telegram.commands_failed", message: describe(cause) });
+      });
+  }
 
   const notifier = createBridgeNotifier({
     agentId: config.agentId,
@@ -379,6 +422,8 @@ export function startTelegramCompanion(deps: TelegramCompanionDeps): TelegramCom
       ...(next.autoDailyLimit !== config.autoDailyLimit ? { autoDailyLimit: next.autoDailyLimit } : {}),
       ...(next.agentName !== config.agentName ? { agentName: next.agentName } : {}),
       ...(next.telegram !== config.telegram ? { telegram: next.telegram } : {}),
+      ...(next.matchingPaused !== config.matchingPaused ? { matchingPaused: next.matchingPaused } : {}),
+      ...(JSON.stringify(next.autoGames) !== JSON.stringify(config.autoGames) ? { autoGames: next.autoGames } : {}),
     }),
     runner: deps.runner ?? null,
     lastReplayUrl: () => lastReplayUrl,
@@ -388,6 +433,21 @@ export function startTelegramCompanion(deps: TelegramCompanionDeps): TelegramCom
     onRenamed: (name) => {
       config = { ...config, agentName: name };
     },
+    // The persisted pause truth, read from disk so a pause made from the CLI
+    // or the desktop app while this bridge runs still shows correctly here.
+    pauseState: () => {
+      try {
+        return readBridgeConfig().matchingPaused === true;
+      } catch {
+        return config.matchingPaused === true;
+      }
+    },
+    // Self-review is a direct-LLM feature; a mock bridge hides the row.
+    reviewMode: config.runtimeType === "direct"
+      ? () => readSelfReviewAutoMode(config.directAgentSlug ?? "default")
+      : () => Promise.resolve(null),
+    setReviewMode: (mode) => writeSelfReviewAutoMode(config.directAgentSlug ?? "default", mode),
+    onLocaleChanged: (locale) => registerCommands(locale),
     ...(deps.fetchImpl !== undefined ? { fetchImpl: deps.fetchImpl } : {}),
     ...(deps.onLog !== undefined ? { onLog: deps.onLog } : {}),
     ...(deps.now !== undefined ? { now: deps.now } : {}),
@@ -417,6 +477,10 @@ export function startTelegramCompanion(deps: TelegramCompanionDeps): TelegramCom
   // network chatter, no surface. Turning it back on is a CLI action.
   let poller: TelegramPollerHandle | null = null;
   if (settings.control && deps.poll !== false) {
+    // Idempotent per start: keeps the command menu in the chat's language even
+    // when the locale was changed from the CLI (which cannot re-register a
+    // menu on a bot it is not polling).
+    registerCommands(resolveNotifyLocale(settings.locale));
     poller = startTelegramPoller({
       api,
       onUpdate: (update) => panel.handleUpdate(update),

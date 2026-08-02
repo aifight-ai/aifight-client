@@ -92,6 +92,8 @@ describe("bridge notifier — match results", () => {
       replayUrl: "https://aifight.ai/replay/abc123",
       playerCount: 2,
       matchId: "match-1",
+      // game_start → game_over on the same (frozen) test clock.
+      durationMs: 0,
     });
   });
 
@@ -457,7 +459,15 @@ describe("telegram channel", () => {
     expect(c.sent[0]!.text).toContain("Win");
     expect(c.sent[0]!.text).toContain("Texas Hold'em");
     expect(c.sent[0]!.text).toContain("GPTShark");
-    expect(c.sent[0]!.keyboard).toEqual([[{ text: "🎬 Watch replay", url: "https://aifight.ai/replay/abc" }]]);
+    // Row 1 links out; row 2 opens panels as NEW messages (arg "new"), so a
+    // tap can never edit the report away.
+    expect(c.sent[0]!.keyboard).toEqual([
+      [{ text: "🎬 Watch replay", url: "https://aifight.ai/replay/abc" }],
+      [
+        { text: "🏅 Record", callback_data: "v1:record:open:new" },
+        { text: "🔔 Notifications", callback_data: "v1:notify:open:new" },
+      ],
+    ]);
   });
 
   it("speaks Chinese when the section says so", async () => {
@@ -711,6 +721,10 @@ describe("startTelegramCompanion", () => {
       }),
       apiFactory: () => stub.api,
       poll: false,
+      // No real network and no settle delay in a unit test: the enrichment's
+      // profile read fails fast and the report goes out plain.
+      fetchImpl: (() => Promise.reject(new Error("offline"))) as unknown as typeof fetch,
+      matchReport: { delayMs: 0, readState: () => null, writeState: () => {} },
     });
 
     companion!.observeServerMessage(gameStart("sess-1", "coup"));

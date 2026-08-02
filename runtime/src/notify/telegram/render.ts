@@ -7,7 +7,8 @@
 
 import type { NotifyEvent } from "../events";
 import type { NotifyLocale } from "../locale";
-import { escapeHtml, type TelegramInlineKeyboard } from "./api";
+import { escapeHtml, type TelegramInlineButton, type TelegramInlineKeyboard } from "./api";
+import { encodeCallback } from "./callback";
 
 type Vars = Readonly<Record<string, string | number>>;
 
@@ -25,8 +26,11 @@ const STRINGS = {
   // ── Command menu (setMyCommands) ───────────────────────────────────
   cmd_menu: { zh: "主面板", en: "Main panel" },
   cmd_status: { zh: "状态速览", en: "Status at a glance" },
+  cmd_play: { zh: "对局：手动开局、暂停/恢复", en: "Play: start, pause or resume" },
   cmd_daily: { zh: "查看/修改每日对局上限", en: "View or change the daily match cap" },
-  cmd_challenge: { zh: "发起约战", en: "Create a challenge" },
+  cmd_challenge: { zh: "发起或接受约战", en: "Create or accept a challenge" },
+  cmd_notify: { zh: "通知偏好", en: "Notification preferences" },
+  cmd_settings: { zh: "设置：上限/游戏/摘要/复盘/改名", en: "Settings: cap, games, digest, review, rename" },
   cmd_links: { zh: "常用链接", en: "Useful links" },
   cmd_mute: { zh: "静音通知", en: "Mute notifications" },
   cmd_help: { zh: "帮助", en: "Help" },
@@ -46,7 +50,15 @@ const STRINGS = {
   label_completed: { zh: "已结束", en: "completed" },
   result_line_opponents: { zh: "对手：{names}", en: "Opponents: {names}" },
   result_line_forfeit_reason: { zh: "判负原因：{reason}", en: "Forfeit reason: {reason}" },
+  result_duration: { zh: "{minutes} 分钟", en: "{minutes} min" },
+  // The rating line is composed from these four: base + optional delta,
+  // optional rank + optional rank change. Chinese uses full-width parentheses.
+  result_rating: { zh: "📈 {game} {rating} 分{delta}{rank}", en: "📈 {game} {rating}{delta}{rank}" },
+  result_rating_delta: { zh: "（{signed}）", en: " ({signed})" },
+  result_rating_rank: { zh: " · 第 {rank} 名{change}", en: " · #{rank}{change}" },
+  result_rating_rank_change: { zh: "（{arrow}{n}）", en: " ({arrow}{n})" },
   button_replay: { zh: "🎬 看回放", en: "🎬 Watch replay" },
+  btn_report_notify: { zh: "🔔 通知设置", en: "🔔 Notifications" },
 
   // ── Alerts ─────────────────────────────────────────────────────────
   alert_header: { zh: "🚨 <b>需要你处理</b>", en: "🚨 <b>Needs your attention</b>" },
@@ -178,7 +190,7 @@ const STRINGS = {
 
   play_title: { zh: "对局", en: "Play" },
   play_state_running: { zh: "自动匹配：▶️ 运行中", en: "Auto-matching: ▶️ running" },
-  play_state_paused: { zh: "自动匹配：⏸ 已暂停（重启桥后按配置恢复）", en: "Auto-matching: ⏸ paused (a bridge restart resumes it per your settings)" },
+  play_state_paused: { zh: "自动匹配：⏸ 已暂停（持久——在这里、CLI 或桌面 app 都能恢复）", en: "Auto-matching: ⏸ paused (persistent — resume here, from the CLI, or in the desktop app)" },
   play_state_manual: {
     zh: "自动匹配：⏹ 未开启（每日上限 0,只手动开局；去设置改上限）",
     en: "Auto-matching: ⏹ off (daily cap is 0 — manual only; raise it in Settings)",
@@ -215,6 +227,29 @@ const STRINGS = {
 
   settings_title: { zh: "设置", en: "Settings" },
   settings_daily_current: { zh: "每日自动对局上限：{limit}", en: "Daily automatic match cap: {limit}" },
+  settings_games_current: { zh: "参与游戏：{games}", en: "Games: {games}" },
+  settings_digest_current: { zh: "每日摘要时间：{time}", en: "Daily digest at: {time}" },
+  settings_review_current: { zh: "自动复盘：{mode}", en: "Auto-review: {mode}" },
+  review_mode_off: { zh: "关", en: "off" },
+  review_mode_losses: { zh: "只复盘败局", en: "losses only" },
+  review_mode_all: { zh: "每局", en: "every match" },
+  btn_review_off: { zh: "复盘:关", en: "Review: off" },
+  btn_review_losses: { zh: "复盘:败局", en: "Review: losses" },
+  btn_review_all: { zh: "复盘:每局", en: "Review: all" },
+  confirm_review_all: {
+    zh: "每局结束都自动复盘？每次复盘都是一次真实的模型调用，用你自己的 key 花钱。",
+    en: "Auto-review every match? Each review is a real model call on your own key.",
+  },
+  settings_review_unavailable: {
+    zh: "自动复盘设置暂时读不到（本机还没配置好 LLM）。",
+    en: "Auto-review settings are unavailable right now (no usable LLM config on this machine).",
+  },
+  settings_games_last: { zh: "至少保留一个游戏。", en: "At least one game must stay on." },
+  settings_digest_prompt: {
+    zh: "回复摘要发送时间，24 小时制 HH:MM（本机当地时间），例如 21:30。",
+    en: "Reply with the digest time as 24-hour HH:MM (this machine's local time), e.g. 21:30.",
+  },
+  settings_digest_invalid: { zh: "格式要是 HH:MM（24 小时制），再回复一次。", en: "That has to be HH:MM on a 24-hour clock — reply again." },
   settings_language: { zh: "语言：{language}", en: "Language: {language}" },
   settings_daily_set: { zh: "每日上限已设为 {limit}。", en: "Daily cap set to {limit}." },
   // The server clamps to the admin ceiling and answers with what it stored, so
@@ -249,14 +284,14 @@ const STRINGS = {
 
   duel_title: { zh: "约战", en: "Challenges" },
   duel_body: {
-    zh: "选一个游戏生成约战链接,转发给朋友即可开战(友谊赛不计分,链接一次有效)。\n收到别人的链接?直接发给我就行。",
-    en: "Pick a game to create a challenge link and forward it to a friend (friendly, unrated, one use).\nGot someone else's link? Just send it to me.",
+    zh: "选一个游戏生成约战链接,转发给朋友即可开战(友谊赛不计分,链接一次有效)。\n\n📥 <b>收到别人的约战链接？直接粘贴或转发到这个聊天</b>,我会带确认按钮帮你接受。",
+    en: "Pick a game to create a challenge link and forward it to a friend (friendly, unrated, one use).\n\n📥 <b>Got someone else's challenge link? Paste or forward it into this chat</b> and I will offer to accept it.",
   },
   challenge_share: {
     zh: "⚔️ <b>{game} 约战</b>\n{url}\n友谊赛不计分 · 链接一次有效",
     en: "⚔️ <b>{game} challenge</b>\n{url}\nFriendly, unrated · one use only",
   },
-  challenge_accepted_ok: { zh: "已接受,对局马上开始。", en: "Accepted — the match starts now." },
+  challenge_accepted_ok: { zh: "已接受,对局马上开始。打完战报会发到这里。", en: "Accepted — the match starts now. The report lands here when it ends." },
   challenge_was_accepted: {
     zh: "⚔️ 你的 {game} 约战被 {guest} 接受了,对局开始。",
     en: "⚔️ {guest} accepted your {game} challenge — the match is starting.",
@@ -291,8 +326,8 @@ const STRINGS = {
     en: "Start a <b>{game}</b> match? It makes real model calls on your own key.",
   },
   confirm_pause: {
-    zh: "暂停自动匹配?这只对当前进程有效,桥重启后按配置恢复。",
-    en: "Pause automatic matching? This lasts until the bridge restarts, then your settings apply again.",
+    zh: "暂停自动匹配?会一直保持暂停,直到你在这里、CLI(aifight resume)或桌面 app 里恢复。",
+    en: "Pause automatic matching? It stays paused until you resume — here, with `aifight resume`, or in the desktop app.",
   },
   confirm_resume: { zh: "恢复自动匹配?", en: "Resume automatic matching?" },
   confirm_daily: { zh: "把每日自动对局上限改为 {limit}?", en: "Set the daily automatic match cap to {limit}?" },
@@ -308,16 +343,50 @@ const STRINGS = {
   word_off: { zh: "关", en: "off" },
   help_body: {
     zh: [
-      "AIFight bot 能做的事:",
-      "/menu 主面板 · /status 状态 · /daily 每日上限 · /links 常用链接 · /mute 静音",
+      "🤖 <b>AIFight bot 指南</b>",
       "",
-      "它<b>不能</b>改你的模型配置、API key 或策略文件 —— 那些只在你自己的机器上改。",
+      "<b>命令</b>",
+      "/menu 主面板 · /status 状态速览",
+      "/play 对局 —— 手动开一局、暂停/恢复自动匹配",
+      "/challenge 约战 —— 生成约战链接、接受约战",
+      "/record 战绩 —— 各游戏评分、近 5 场与回放",
+      "/notify 通知偏好 · /mute 静音",
+      "/settings 设置 —— 每日上限、参与游戏、摘要时间、自动复盘、改名、语言",
+      "/links 常用链接 · /help 本说明",
+      "",
+      "<b>你会收到</b>",
+      "每局战报（当前：{results}）· 每日摘要（{digest}）",
+      "桥掉线 / 模型故障 / 判负告警 · 约战被接受通知",
+      "",
+      "<b>小技巧</b>",
+      "⭐ 收到别人的约战链接？直接转发或粘贴到这里，我会带确认按钮帮你接受。",
+      "被问数字时（如每日上限）直接回复数字即可。",
+      "",
+      "<b>这里改不了的</b>",
+      "模型配置、API key、策略文件只能在你自己的机器上改。",
     ].join("\n"),
     en: [
-      "What this bot can do:",
-      "/menu panel · /status status · /daily match cap · /links links · /mute quiet hours",
+      "🤖 <b>AIFight bot guide</b>",
       "",
-      "It <b>cannot</b> touch your model configuration, API keys, or strategy files — those stay on your machine.",
+      "<b>Commands</b>",
+      "/menu main panel · /status at a glance",
+      "/play matches — start one manually, pause/resume auto-matching",
+      "/challenge — create a challenge link, accept one",
+      "/record — per-game ratings, last 5 matches, replays",
+      "/notify notification preferences · /mute quiet hours",
+      "/settings — daily cap, games, digest time, auto-review, rename, language",
+      "/links useful links · /help this guide",
+      "",
+      "<b>What you will receive</b>",
+      "Match reports (now: {results}) · daily digest ({digest})",
+      "Offline / model-failure / forfeit alerts · challenge-accepted notices",
+      "",
+      "<b>Tips</b>",
+      "⭐ Got someone's challenge link? Forward or paste it here and I will offer to accept it.",
+      "When asked for a number (like the daily cap), just reply with the number.",
+      "",
+      "<b>What stays on your machine</b>",
+      "Model configuration, API keys and strategy files can only be changed there.",
     ].join("\n"),
   },
 
@@ -362,15 +431,22 @@ export interface RenderedMessage {
   readonly photoUrl?: string;
 }
 
+export interface RenderContext {
+  readonly agentName: string;
+  /** The AIFight origin, for the report's leaderboard button. Absent (the
+   *  pre-companion fatal-alert path) just means no such button. */
+  readonly baseUrl?: string;
+}
+
 /** One notification → one Telegram message. Pure: no I/O, no clock. */
 export function renderNotifyEvent(
   locale: NotifyLocale,
   event: NotifyEvent,
-  context: { readonly agentName: string },
+  context: RenderContext,
 ): RenderedMessage {
   switch (event.kind) {
     case "match.result":
-      return renderMatchResult(locale, event, context.agentName);
+      return renderMatchResult(locale, event, context);
     case "alert.llm_failure":
       return alert(
         locale,
@@ -411,7 +487,7 @@ export function renderNotifyEvent(
 function renderMatchResult(
   locale: NotifyLocale,
   event: Extract<NotifyEvent, { kind: "match.result" }>,
-  agentName: string,
+  context: RenderContext,
 ): RenderedMessage {
   const label = escapeHtml(resultLabelText(locale, event.selfLabel));
   const headline = event.forfeitedSelf
@@ -422,30 +498,73 @@ function renderMatchResult(
         ? t(locale, "result_win", { label })
         : t(locale, "result_other", { label });
 
-  const lines = [
-    `${headline} · ${t(locale, "result_line_meta", {
-      game: gameName(locale, event.game),
-      players: event.playerCount,
-    })}`,
-    escapeHtml(agentName),
-  ];
+  let meta = t(locale, "result_line_meta", {
+    game: gameName(locale, event.game),
+    players: event.playerCount,
+  });
+  if (event.durationMs !== undefined) {
+    meta += ` · ${t(locale, "result_duration", { minutes: Math.max(1, Math.round(event.durationMs / 60_000)) })}`;
+  }
+  const lines = [`${headline} · ${meta}`, escapeHtml(context.agentName)];
   if (event.opponents.length > 0) {
     // 、 is the Chinese list comma; an English sentence takes ", ".
     lines.push(t(locale, "result_line_opponents", { names: escapeHtml(event.opponents.join(locale === "zh" ? "、" : ", ")) }));
   }
+  const rating = ratingLine(locale, event.rating);
+  if (rating !== undefined) lines.push(rating);
   if (event.forfeitedSelf && event.forfeitReason !== undefined) {
     lines.push(t(locale, "result_line_forfeit_reason", { reason: escapeHtml(event.forfeitReason) }));
   }
 
+  // Row 1: links out (replay when published, the leaderboard). Row 2: panel
+  // shortcuts — the record panel, and the notification settings the owner
+  // asked for right under the report. The callbacks carry arg:"new" so the
+  // panel opens as a NEW message instead of editing the report away.
+  const row1: TelegramInlineButton[] = [
+    ...(event.replayUrl !== undefined ? [{ text: t(locale, "button_replay"), url: event.replayUrl }] : []),
+    ...(context.baseUrl !== undefined
+      ? [{ text: t(locale, "btn_leaderboard"), url: `${context.baseUrl.replace(/\/+$/, "")}/leaderboard` }]
+      : []),
+  ];
+  const row2: TelegramInlineButton[] = [
+    { text: t(locale, "btn_record"), callback_data: encodeCallback({ panel: "record", action: "open", arg: "new" }) },
+    { text: t(locale, "btn_report_notify"), callback_data: encodeCallback({ panel: "notify", action: "open", arg: "new" }) },
+  ];
+  const keyboard = [row1, row2].filter((row) => row.length > 0);
+
   const photoUrl = event.replayUrl === undefined ? undefined : ogCardUrl(event.replayUrl);
   return {
     text: lines.join("\n"),
-    // A forfeited match has no published replay, so there is no button to show.
-    ...(event.replayUrl !== undefined
-      ? { keyboard: [[{ text: t(locale, "button_replay"), url: event.replayUrl }]] }
-      : {}),
+    ...(keyboard.length > 0 ? { keyboard } : {}),
     ...(photoUrl !== undefined ? { photoUrl } : {}),
   };
+}
+
+/** "📈 德州扑克 1512 分（+14）· 第 23 名（↑2）" — every part optional except
+ *  the rating itself; absent enrichment yields no line at all. */
+function ratingLine(
+  locale: NotifyLocale,
+  rating: Extract<NotifyEvent, { kind: "match.result" }>["rating"],
+): string | undefined {
+  if (rating === undefined) return undefined;
+  const deltaText = rating.delta === undefined
+    ? ""
+    : t(locale, "result_rating_delta", { signed: `${rating.delta >= 0 ? "+" : "−"}${Math.abs(Math.round(rating.delta))}` });
+  const changeText = rating.rankDelta === undefined || rating.rankDelta === 0
+    ? ""
+    : t(locale, "result_rating_rank_change", {
+        arrow: rating.rankDelta > 0 ? "↑" : "↓",
+        n: Math.abs(rating.rankDelta),
+      });
+  const rankText = rating.rank === undefined
+    ? ""
+    : t(locale, "result_rating_rank", { rank: rating.rank, change: changeText });
+  return t(locale, "result_rating", {
+    game: gameName(locale, rating.game),
+    rating: Math.round(rating.rating),
+    delta: deltaText,
+    rank: rankText,
+  });
 }
 
 /**
@@ -577,9 +696,12 @@ export function botCommands(locale: NotifyLocale): ReadonlyArray<{ command: stri
   return [
     { command: "menu", description: t(locale, "cmd_menu") },
     { command: "status", description: t(locale, "cmd_status") },
-    { command: "daily", description: t(locale, "cmd_daily") },
+    { command: "play", description: t(locale, "cmd_play") },
     { command: "challenge", description: t(locale, "cmd_challenge") },
     { command: "record", description: t(locale, "cmd_record") },
+    { command: "notify", description: t(locale, "cmd_notify") },
+    { command: "settings", description: t(locale, "cmd_settings") },
+    { command: "daily", description: t(locale, "cmd_daily") },
     { command: "links", description: t(locale, "cmd_links") },
     { command: "mute", description: t(locale, "cmd_mute") },
     { command: "help", description: t(locale, "cmd_help") },

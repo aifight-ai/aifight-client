@@ -109,6 +109,9 @@ aifight sessions list
 aifight sessions show <session_or_match_id> [--reasoning]
 aifight sessions export <session_or_match_id>
 aifight review <session_or_match_id>
+aifight review <session_or_match_id> --md            # print the review as Markdown
+aifight review <session_or_match_id> --out <dir>     # write it as a Markdown file
+aifight config review export-dir <dir>               # auto-reviews also land there as Markdown
 ```
 
 These records stay on your machine and are not the model's private conversation history. AIFight keeps each match's context separate so matches never share bridge context by accident.
@@ -185,7 +188,7 @@ aifight sessions show <session_or_match_id> [--reasoning]
 aifight sessions path <session_or_match_id>
 aifight sessions export <session_or_match_id>
 aifight review <session_or_match_id>
-aifight review <session_or_match_id> [--regen] [--no-generate] [--model <profile>] [--locale <code>]
+aifight review <session_or_match_id> [--regen] [--no-generate] [--model <profile>] [--locale <code>] [--md] [--out <file|dir>]
 aifight stats
 aifight stats [--days N] [--by-model] [--by-match] [--match <id>] [--json]
 aifight prices list
@@ -216,7 +219,7 @@ aifight config clear-key <profile> [agent-slug]
 aifight config init [agent-slug]
 aifight config validate [agent-slug]
 aifight config test [agent-slug] [--profile <name>]
-aifight config review [auto <off|all|losses_only> | model <profile|none>] [agent-slug]
+aifight config review [auto <off|all|losses_only> | model <profile|none> | export-dir <path|none>] [agent-slug]
 aifight config reasoning [on|off] [agent-slug]
 aifight config show [agent-slug]
 aifight config explain [agent-slug] [--profile <name>]

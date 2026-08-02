@@ -827,7 +827,7 @@ async function runConfigUse(args: HandlerArgs, env: HandlerEnv): Promise<number>
 
 async function runConfigReview(args: HandlerArgs, env: HandlerEnv): Promise<number> {
   const usage =
-    "usage: aifight config review [auto <off|all|losses_only> | model <profile|none>] [agent-slug]";
+    "usage: aifight config review [auto <off|all|losses_only> | model <profile|none> | export-dir <path|none>] [agent-slug]";
   const action = args.positional[0];
 
   if (action === "auto") {
@@ -863,6 +863,21 @@ async function runConfigReview(args: HandlerArgs, env: HandlerEnv): Promise<numb
     return printReviewConfig(env, slug, next, args.jsonMode);
   }
 
+  if (action === "export-dir") {
+    expectArity(args, 2, 3, usage);
+    const dir = (args.positional[1] as string).trim();
+    const slug = (args.positional[2] as string | undefined) ?? "default";
+    const { configPath, config } = await readConfigJson(slug);
+    const selfReview = { ...(config.selfReview ?? {}) };
+    // "none"/"" clears; anything else is stored as given ("~" expands when the
+    // export actually runs, so the config stays portable across users).
+    if (dir === "none" || dir === "") delete selfReview.exportDir;
+    else selfReview.exportDir = dir;
+    const next: LLMConfig = { ...config, selfReview };
+    await writeConfigJson(configPath, next);
+    return printReviewConfig(env, slug, next, args.jsonMode);
+  }
+
   // No action → show current settings (optional agent-slug positional).
   expectArity(args, 0, 1, usage);
   const slug = (action as string | undefined) ?? "default";
@@ -874,11 +889,12 @@ function printReviewConfig(env: HandlerEnv, slug: string, config: LLMConfig, jso
   const sr = config.selfReview ?? {};
   const autoMode = sr.autoMode ?? "off";
   const model = sr.model ?? "";
+  const exportDir = sr.exportDir ?? "";
   if (jsonMode) {
     env.stdout(
       JSON.stringify({
         agentSlug: slug,
-        selfReview: { autoMode, model, maxTurns: sr.maxTurns ?? null },
+        selfReview: { autoMode, model, maxTurns: sr.maxTurns ?? null, exportDir: exportDir !== "" ? exportDir : null },
       }) + "\n",
     );
     return 0;
@@ -886,6 +902,7 @@ function printReviewConfig(env: HandlerEnv, slug: string, config: LLMConfig, jso
   env.stdout(`aifight config review: agent "${slug}"\n`);
   env.stdout(`  auto-review  : ${autoMode}\n`);
   env.stdout(`  review model : ${model !== "" ? model : "(same model the match used)"}\n`);
+  env.stdout(`  export dir   : ${exportDir !== "" ? exportDir : "(off — reviews stay in the session dir as JSON)"}\n`);
   return 0;
 }
 

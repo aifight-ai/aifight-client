@@ -19,7 +19,8 @@ import {
 } from "../../bridge/agent-actions";
 import { findChallengeTokenInText } from "../../bridge/challenge-link";
 import type { BridgeConfig, BridgeTelegramConfig } from "../../bridge/config";
-import { pickAutomaticGame, type SupportedGame } from "../../bridge/auto-join";
+import { pickAutomaticGame, standbyGamePool, type SupportedGame } from "../../bridge/auto-join";
+import { isSelfReviewAutoMode, type SelfReviewAutoMode } from "../../review/auto-mode";
 import {
   DAILY_CAP_CONFIRM_THRESHOLD,
   DailyPolicySyncError,
@@ -33,13 +34,17 @@ import type { BridgeLogEvent } from "../events";
 import { resolveNotifyLocale, type NotifyLocale } from "../locale";
 import { escapeHtml, type TelegramApi, type TelegramInlineKeyboard, type TelegramUpdate } from "./api";
 import { connectionStateText, gameName, resultsPreferenceText, t } from "./render";
-import { applyTelegramSetting, isMuted, parseMuteSpec } from "./settings";
+import { TELEGRAM_DEFAULT_DIGEST_AT, applyTelegramSetting, isMuted, parseMuteSpec } from "./settings";
 
-export const CALLBACK_VERSION = "v1";
+import { decodeCallback, encodeCallback, type CallbackData } from "./callback";
 
-/** Telegram's hard limit on callback_data. Encoding refuses anything longer
- *  rather than shipping a button that silently fails on the phone. */
-export const CALLBACK_MAX_BYTES = 64;
+export {
+  CALLBACK_MAX_BYTES,
+  CALLBACK_VERSION,
+  decodeCallback,
+  encodeCallback,
+  type CallbackData,
+} from "./callback";
 
 /** A confirmation button is good for ten minutes, once. */
 const NONCE_TTL_MS = 10 * 60_000;
@@ -59,40 +64,6 @@ const NAME_MAX_CHARS = 50;
 const STATUS_TIMEOUT_MS = 4_000;
 
 export const PLAYABLE_GAMES: readonly SupportedGame[] = ["texas_holdem", "liars_dice", "coup"];
-
-// ── callback_data codec ──────────────────────────────────────────────
-
-export interface CallbackData {
-  readonly panel: string;
-  readonly action: string;
-  readonly arg?: string;
-  readonly nonce?: string;
-}
-
-export function encodeCallback(data: CallbackData): string {
-  const parts = [CALLBACK_VERSION, data.panel, data.action, data.arg ?? "", data.nonce ?? ""];
-  // Trailing empties are dropped so the common "just navigate" button stays short.
-  while (parts.length > 3 && parts[parts.length - 1] === "") parts.pop();
-  const encoded = parts.join(":");
-  if (Buffer.byteLength(encoded, "utf8") > CALLBACK_MAX_BYTES) {
-    throw new Error(`callback data too long for Telegram: ${encoded}`);
-  }
-  return encoded;
-}
-
-export function decodeCallback(raw: string): CallbackData | null {
-  const parts = raw.split(":");
-  if (parts.length < 3 || parts.length > 5) return null;
-  if (parts[0] !== CALLBACK_VERSION) return null;
-  const [, panel, action, arg, nonce] = parts;
-  if (panel === undefined || panel === "" || action === undefined || action === "") return null;
-  return {
-    panel,
-    action,
-    ...(arg !== undefined && arg !== "" ? { arg } : {}),
-    ...(nonce !== undefined && nonce !== "" ? { nonce } : {}),
-  };
-}
 
 // ── one-shot confirmation nonces ─────────────────────────────────────
 
@@ -162,6 +133,19 @@ export interface PanelDeps {
   readonly watchChallenge?: (token: string, game: string) => void;
   /** Called after a successful rename so the process uses the new name. */
   readonly onRenamed?: (name: string) => void;
+  /**
+   * Whether automatic matching is paused — read FRESH (from disk) so a pause
+   * made from the CLI or the desktop app while this bridge runs still shows
+   * truthfully here. Falls back to this process's config snapshot.
+   */
+  readonly pauseState?: () => boolean;
+  /** Current self-review auto mode; null = no usable LLM config, so the
+   *  settings panel hides the whole row. */
+  readonly reviewMode?: () => Promise<SelfReviewAutoMode | null>;
+  /** Persist a new self-review auto mode (agent profile config.json). */
+  readonly setReviewMode?: (mode: SelfReviewAutoMode) => Promise<void>;
+  /** The chat switched language — re-register the command menu etc. */
+  readonly onLocaleChanged?: (locale: NotifyLocale) => void;
 }
 
 export interface PanelHandler {
@@ -170,7 +154,7 @@ export interface PanelHandler {
 }
 
 interface PendingInput {
-  readonly kind: "daily" | "rename";
+  readonly kind: "daily" | "rename" | "digest";
   readonly expiresAt: number;
 }
 
@@ -188,11 +172,16 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
   const nonces = deps.nonces ?? createNonceStore({ now });
   let pendingInput: PendingInput | null = null;
   let pendingRename: PendingRename | null = null;
-  /** Whether the panel believes automatic matching is paused. Best-effort: it
-   *  reflects taps made here, not a server-side truth we cannot read. */
-  let paused = false;
 
   const locale = (): NotifyLocale => resolveNotifyLocale(deps.settings().locale);
+
+  /** The persisted matchingPaused truth — the same flag `aifight pause` writes
+   *  and the runner re-reads at every connect edge. */
+  function isPaused(): boolean {
+    const fresh = safe(() => deps.pauseState?.(), undefined);
+    if (fresh !== undefined) return fresh;
+    return deps.config().matchingPaused === true;
+  }
 
   async function handle(update: TelegramUpdate): Promise<void> {
     const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id;
@@ -233,6 +222,10 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
           await handleRenameInput(chatId, text);
           return;
         }
+        if (kind === "digest") {
+          await handleCustomDigest(chatId, text);
+          return;
+        }
       }
     }
 
@@ -250,18 +243,29 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
       case "status":
         await sendPanel(chatId, await statusPanel());
         return;
+      case "play":
+        await sendPanel(chatId, playPanel());
+        return;
       case "daily":
-        await sendPanel(chatId, settingsPanel());
+      case "settings":
+        await sendPanel(chatId, await settingsPanel());
         return;
       case "links":
         await sendPanel(chatId, linksPanel());
         return;
       case "mute":
+      case "notify":
         await sendPanel(chatId, notifyPanel());
         return;
-      case "help":
-        await send(chatId, t(locale(), "help_body"));
+      case "help": {
+        const l = locale();
+        const s = deps.settings();
+        await send(chatId, t(l, "help_body", {
+          results: resultsPreferenceText(l, s.results),
+          digest: s.digestAt ?? TELEGRAM_DEFAULT_DIGEST_AT,
+        }));
         return;
+      }
       case "challenge":
         await sendPanel(chatId, duelPanel());
         return;
@@ -308,9 +312,11 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     const messageId = query.message?.message_id;
     const l = locale();
 
-    const show = async (panel: Panel): Promise<void> => {
+    const show = async (panel: Panel, opts: { fresh?: boolean } = {}): Promise<void> => {
       await answer();
-      if (messageId === undefined) {
+      // fresh: buttons under a match report open the panel as a NEW message —
+      // editing would swallow the report the user is looking at.
+      if (messageId === undefined || opts.fresh === true) {
         await sendPanel(chatId, panel);
         return;
       }
@@ -327,14 +333,14 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
       case "play:open":
         return show(playPanel());
       case "notify:open":
-        return show(notifyPanel());
+        return show(notifyPanel(), { fresh: data.arg === "new" });
       case "settings:open":
-        return show(settingsPanel());
+        return show(await settingsPanel());
       case "links:open":
         return show(linksPanel());
       case "record:open":
       case "record:refresh":
-        return show(await recordPanel());
+        return show(await recordPanel(), { fresh: data.arg === "new" });
 
       // ── play ──
       case "play:ask_start": {
@@ -369,12 +375,24 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
           await answer(t(l, "toast_expired"));
           return show(playPanel());
         }
+        // Mirror `aifight pause`: leave the queue FIRST (a failed leave changes
+        // nothing), then persist matchingPaused — the runner re-reads that flag
+        // at every connect edge, so the pause survives a bridge restart until
+        // the user resumes, from any client.
         const failure = tryRunner(() => {
           deps.runner?.leaveQueue();
         });
-        paused = failure === null;
+        let notice: string | undefined = failure ?? undefined;
+        if (failure === null) {
+          const saved = deps.updateConfig({
+            ...deps.config(),
+            matchingPaused: true,
+            updatedAt: new Date().toISOString(),
+          });
+          notice = saved ? t(l, "play_paused") : `${t(l, "play_paused")} ${t(l, "settings_unsaved")}`;
+        }
         await answer();
-        return show(playPanel(failure ?? t(l, "play_paused")));
+        return show(playPanel(notice));
       }
       case "play:ask_resume":
         return show(confirmPanel(
@@ -387,13 +405,21 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
           await answer(t(l, "toast_expired"));
           return show(playPanel());
         }
+        // Mirror `aifight resume`: clear the flag FIRST — the pause is lifted
+        // even when the re-join below cannot be delivered — then re-join the
+        // way startup would.
+        const saved = deps.updateConfig({
+          ...deps.config(),
+          matchingPaused: false,
+          updatedAt: new Date().toISOString(),
+        });
         const game = pickAutomaticGame(deps.config().autoGames);
         const failure = tryRunner(() => {
           deps.runner?.joinQueue(game, "ranked");
         });
-        if (failure === null) paused = false;
         await answer();
-        return show(playPanel(failure ?? t(l, "play_resumed")));
+        const notice = failure ?? `${t(l, "play_resumed")}${saved ? "" : ` ${t(l, "settings_unsaved")}`}`;
+        return show(playPanel(notice));
       }
 
       // ── notifications ──
@@ -437,10 +463,10 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
           !nonces.consume(data.nonce, `settings:daily:${limit}`)
         ) {
           await answer(t(l, "toast_expired"));
-          return show(settingsPanel());
+          return show(await settingsPanel());
         }
         await answer();
-        return show(settingsPanel(await applyDailyLimit(limit)));
+        return show(await settingsPanel(await applyDailyLimit(limit)));
       }
       case "settings:custom_daily": {
         await answer();
@@ -448,6 +474,56 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
         await send(chatId, t(l, "settings_custom_prompt", { max: SETUP_WIZARD_CAP_MAX }), { forceReply: true });
         return;
       }
+      case "settings:game": {
+        const game = asGame(data.arg);
+        if (game === null) return answer();
+        const config = deps.config();
+        const enabled = standbyGamePool(config.autoGames);
+        const isOn = enabled.includes(game);
+        if (isOn && enabled.length === 1) {
+          // The desktop has the same rule: an empty game list means "all",
+          // which would silently UN-pause every game — refuse instead.
+          await answer(t(l, "settings_games_last"));
+          return show(await settingsPanel());
+        }
+        const next = PLAYABLE_GAMES.filter((g) => (g === game ? !isOn : enabled.includes(g)));
+        const saved = deps.updateConfig({ ...config, autoGames: next, updatedAt: new Date().toISOString() });
+        return show(await settingsPanel(saved ? undefined : t(l, "settings_unsaved")));
+      }
+      case "settings:digest": {
+        // The arg is HHMM, not HH:MM — a colon inside callback_data would be
+        // read as the codec's own field separator and kill the button.
+        const raw = data.arg ?? "";
+        const time = /^\d{4}$/.test(raw) ? `${raw.slice(0, 2)}:${raw.slice(2)}` : raw;
+        const outcome = applyTelegramSetting(deps.settings(), "digest_at", time);
+        if (!outcome.ok) return answer();
+        if (!deps.updateSettings(outcome.section)) return show(await settingsPanel(t(l, "settings_unsaved")));
+        return show(await settingsPanel());
+      }
+      case "settings:custom_digest": {
+        await answer();
+        pendingInput = { kind: "digest", expiresAt: now() + PENDING_INPUT_TTL_MS };
+        await send(chatId, t(l, "settings_digest_prompt"), { forceReply: true });
+        return;
+      }
+      case "settings:review": {
+        const mode = data.arg ?? "";
+        if (!isSelfReviewAutoMode(mode)) return answer();
+        // "all" spends money every match, so it only arrives here through its
+        // confirmation nonce; the two cheaper modes apply on the first tap.
+        if (mode === "all" && (data.nonce === undefined || !nonces.consume(data.nonce, "settings:review:all"))) {
+          await answer(t(l, "toast_expired"));
+          return show(await settingsPanel());
+        }
+        await answer();
+        return show(await settingsPanel(await applyReviewMode(mode)));
+      }
+      case "settings:ask_review_all":
+        return show(confirmPanel(
+          t(l, "confirm_review_all"),
+          { panel: "settings", action: "review", arg: "all", nonce: nonces.issue("settings:review:all") },
+          "settings",
+        ));
       // ── duel ──
       case "duel:open":
         return show(duelPanel());
@@ -521,7 +597,7 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
           !nonces.consume(data.nonce, "settings:rename")
         ) {
           await answer(t(l, "toast_expired"));
-          return show(settingsPanel());
+          return show(await settingsPanel());
         }
         pendingRename = null;
         await answer();
@@ -530,16 +606,19 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
           const saved = deps.updateConfig({ ...deps.config(), agentName: renamed.name, updatedAt: new Date().toISOString() });
           deps.onRenamed?.(renamed.name);
           const notice = t(l, "settings_renamed", { name: escapeHtml(renamed.name) });
-          return show(settingsPanel(saved ? notice : `${notice} ${t(l, "settings_unsaved")}`));
+          return show(await settingsPanel(saved ? notice : `${notice} ${t(l, "settings_unsaved")}`));
         } catch (cause) {
-          return show(settingsPanel(actionFailure(l, cause)));
+          return show(await settingsPanel(actionFailure(l, cause)));
         }
       }
 
       case "settings:locale": {
         const outcome = applyTelegramSetting(deps.settings(), "locale", data.arg ?? "");
-        if (outcome.ok && !deps.updateSettings(outcome.section)) return show(settingsPanel(t(l, "settings_unsaved")));
-        return show(settingsPanel());
+        if (outcome.ok && !deps.updateSettings(outcome.section)) return show(await settingsPanel(t(l, "settings_unsaved")));
+        // Tell the companion, so the Telegram command menu (setMyCommands)
+        // follows the chat's language instead of staying in the pairing-time one.
+        if (outcome.ok) deps.onLocaleChanged?.(resolveNotifyLocale(outcome.section.locale));
+        return show(await settingsPanel());
       }
 
       default:
@@ -555,6 +634,28 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
       return;
     }
     await sendPanel(chatId, dailyConfirmPanel(Number.parseInt(raw, 10)));
+  }
+
+  async function handleCustomDigest(chatId: number, text: string): Promise<void> {
+    const l = locale();
+    const outcome = applyTelegramSetting(deps.settings(), "digest_at", text.trim());
+    if (!outcome.ok) {
+      await send(chatId, t(l, "settings_digest_invalid"));
+      return;
+    }
+    const saved = deps.updateSettings(outcome.section);
+    await sendPanel(chatId, await settingsPanel(saved ? undefined : t(l, "settings_unsaved")));
+  }
+
+  async function applyReviewMode(mode: SelfReviewAutoMode): Promise<string | undefined> {
+    const l = locale();
+    if (deps.setReviewMode === undefined) return t(l, "settings_review_unavailable");
+    try {
+      await deps.setReviewMode(mode);
+      return undefined;
+    } catch (cause) {
+      return actionFailure(l, cause);
+    }
   }
 
   async function handleRenameInput(chatId: number, text: string): Promise<void> {
@@ -665,6 +766,7 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     // automaticJoinOptions), so there is nothing to pause and "running" would be
     // a plain lie. Manual matches still work — that is the whole panel below.
     const automatic = (deps.config().autoDailyLimit ?? 0) > 0;
+    const paused = isPaused();
     const rows: TelegramInlineKeyboard = [
       ...(automatic
         ? [paused
@@ -735,16 +837,29 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     };
   }
 
-  function settingsPanel(notice?: string): Panel {
+  async function settingsPanel(notice?: string): Promise<Panel> {
     const l = locale();
     const config = deps.config();
     const current = config.autoDailyLimit ?? 0;
+    const enabledGames = standbyGamePool(config.autoGames);
+    const digestAt = deps.settings().digestAt ?? TELEGRAM_DEFAULT_DIGEST_AT;
+    // null = no usable LLM config on this machine → the row is simply absent
+    // rather than a dead switch.
+    const reviewMode = deps.reviewMode === undefined
+      ? null
+      : await deps.reviewMode().catch(() => null);
     const lines = [
       `⚙️ <b>${t(l, "settings_title")}</b>`,
       t(l, "settings_daily_current", { limit: current }),
+      t(l, "settings_games_current", {
+        games: PLAYABLE_GAMES.map((g) => `${gameName(l, g)} ${enabledGames.includes(g) ? "✓" : "✗"}`).join(" · "),
+      }),
+      t(l, "settings_digest_current", { time: digestAt }),
+      ...(reviewMode !== null ? [t(l, "settings_review_current", { mode: reviewModeText(l, reviewMode) })] : []),
       t(l, "settings_language", { language: l === "zh" ? "中文" : "English" }),
     ];
     if (notice !== undefined) lines.push("", notice);
+    const digestPresets = ["20:00", "21:00", "22:00", "23:00"];
     return {
       text: lines.join("\n"),
       keyboard: [
@@ -755,10 +870,35 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
           button(t(l, "btn_custom"), { panel: "settings", action: "custom_daily" }),
           button(t(l, "btn_rename"), { panel: "settings", action: "ask_rename" }),
         ],
+        PLAYABLE_GAMES.map((game) =>
+          button(`${enabledGames.includes(game) ? "✓" : "✗"} ${gameName(l, game)}`, { panel: "settings", action: "game", arg: game }),
+        ),
+        [
+          // arg is HHMM: a colon would collide with the callback codec's ":".
+          ...digestPresets.map((preset) =>
+            button(preset === digestAt ? `• ${preset}` : preset, { panel: "settings", action: "digest", arg: preset.replace(":", "") }),
+          ),
+          button(t(l, "btn_custom"), { panel: "settings", action: "custom_digest" }),
+        ],
+        ...(reviewMode !== null
+          ? [[
+              button(marked(reviewMode === "off", t(l, "btn_review_off")), { panel: "settings", action: "review", arg: "off" }),
+              button(marked(reviewMode === "losses_only", t(l, "btn_review_losses")), { panel: "settings", action: "review", arg: "losses_only" }),
+              button(marked(reviewMode === "all", t(l, "btn_review_all")), { panel: "settings", action: "ask_review_all" }),
+            ]]
+          : []),
         [button(l === "zh" ? "Switch to English" : "切换到中文", { panel: "settings", action: "locale", arg: l === "zh" ? "en" : "zh" })],
         [homeButton(l)],
       ],
     };
+  }
+
+  function reviewModeText(l: NotifyLocale, mode: SelfReviewAutoMode): string {
+    return mode === "off"
+      ? t(l, "review_mode_off")
+      : mode === "all"
+        ? t(l, "review_mode_all")
+        : t(l, "review_mode_losses");
   }
 
   function duelPanel(notice?: string): Panel {
@@ -1063,6 +1203,11 @@ function button(text: string, data: CallbackData): { text: string; callback_data
 
 function homeButton(l: NotifyLocale): { text: string; callback_data: string } {
   return button(t(l, "btn_home"), { panel: "home", action: "open" });
+}
+
+/** "• " marks the currently selected option in a row of choices. */
+function marked(on: boolean, label: string): string {
+  return on ? `• ${label}` : label;
 }
 
 function asGame(raw: string | undefined): SupportedGame | null {

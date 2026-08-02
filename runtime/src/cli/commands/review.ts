@@ -6,16 +6,31 @@
 //   aifight review <id> --regen    force a fresh review (overwrites, D9)
 //   aifight review <id> --model X  use profile X for this review only
 //   aifight review <id> --locale zh  write the report in a specific language
+//   aifight review <id> --md       print the review as Markdown (redirectable)
+//   aifight review <id> --out P    write the Markdown to a file or directory
+
+import fsSync from "node:fs";
+import path from "node:path";
 
 import { envNotifyLocale } from "../../notify/locale";
 import { readBridgeConfig } from "../../bridge/config";
 import { loadAgentProfile, resolveAgentDir } from "../../profile/profile-loader";
-import { runSelfReview, type SelfReview } from "../../review/self-review";
-import { createLocalMatchSessionStore } from "../../session/local-match-session-store";
-import { CommandError, expectArity, type HandlerArgs, type HandlerEnv } from "../shared";
+import {
+  expandHome,
+  exportReviewMarkdown,
+  renderReviewMarkdown,
+  reviewMetaFromSummary,
+  type ReviewMarkdownMeta,
+} from "../../review/review-markdown";
+import { runSelfReview, type SelfReview, type SelfReviewSuggestion } from "../../review/self-review";
+import {
+  createLocalMatchSessionStore,
+  type LocalMatchSessionSummary,
+} from "../../session/local-match-session-store";
+import { CommandError, UsageError, expectArity, type HandlerArgs, type HandlerEnv } from "../shared";
 
 const USAGE =
-  "usage: aifight review <session_or_match_id> [--regen] [--no-generate] [--model <profile>] [--locale <code>]";
+  "usage: aifight review <session_or_match_id> [--regen] [--no-generate] [--model <profile>] [--locale <code>] [--md] [--out <file|dir>]";
 
 export async function runReview(args: HandlerArgs, env: HandlerEnv): Promise<number> {
   expectArity(args, 1, 1, USAGE);
@@ -26,13 +41,19 @@ export async function runReview(args: HandlerArgs, env: HandlerEnv): Promise<num
     throw new CommandError("session_not_found", `local match session not found: ${selector}`);
   }
 
+  const mdMode = args.flags.md === true;
+  if (args.flags.out === true) throw new UsageError("--out needs a path", USAGE);
+  const outPath = typeof args.flags.out === "string" ? args.flags.out.trim() : "";
+  if ((mdMode || outPath !== "") && args.jsonMode) {
+    throw new UsageError("--md/--out cannot be combined with --json", USAGE);
+  }
+
   const regen = args.flags.regen === true;
   const noGenerate = args.flags["no-generate"] === true;
   if (!regen) {
     const existing = store.readSelfReview(item.session_id);
     if (existing) {
-      printReview(env, existing, args.jsonMode);
-      return 0;
+      return outputReview(env, existing, item, args.jsonMode, { md: mdMode, out: outPath });
     }
     if (noGenerate) {
       // Read-only check (the desktop uses this on view to avoid spending tokens
@@ -84,8 +105,101 @@ export async function runReview(args: HandlerArgs, env: HandlerEnv): Promise<num
     throw new CommandError("review_failed", `self-review failed: ${(cause as Error).message}`);
   }
   store.writeSelfReview(item.session_id, review);
-  printReview(env, review, args.jsonMode);
+  return outputReview(env, review, item, args.jsonMode, { md: mdMode, out: outPath });
+}
+
+/** Route the finished review to the asked-for output: human text (default),
+ *  JSON, Markdown on stdout (--md), or a Markdown file (--out). */
+function outputReview(
+  env: HandlerEnv,
+  review: unknown,
+  summary: LocalMatchSessionSummary,
+  jsonMode: boolean,
+  opts: { readonly md: boolean; readonly out: string },
+): number {
+  if (!opts.md && opts.out === "") {
+    printReview(env, review, jsonMode);
+    return 0;
+  }
+  const typed = coerceSelfReview(review);
+  if (typed === null) {
+    throw new CommandError("review_invalid", "the stored review file is malformed; regenerate it with --regen");
+  }
+  const meta = reviewMetaFromSummary(summary, tryBaseUrl());
+  if (opts.out !== "") {
+    const file = writeReviewMarkdownTo(opts.out, typed, meta);
+    env.stdout(file + "\n");
+    return 0;
+  }
+  env.stdout(renderReviewMarkdown(typed, meta));
   return 0;
+}
+
+/** A path ending in .md is a file; anything else (existing directory or not)
+ *  is a directory that receives the standard filename. */
+function writeReviewMarkdownTo(out: string, review: SelfReview, meta: ReviewMarkdownMeta): string {
+  const expanded = path.resolve(expandHome(out));
+  const isExistingDir = (() => {
+    try {
+      return fsSync.statSync(expanded).isDirectory();
+    } catch {
+      return false;
+    }
+  })();
+  if (isExistingDir || !expanded.toLowerCase().endsWith(".md")) {
+    return exportReviewMarkdown(expanded, review, meta);
+  }
+  fsSync.mkdirSync(path.dirname(expanded), { recursive: true });
+  fsSync.writeFileSync(expanded, renderReviewMarkdown(review, meta), "utf8");
+  return expanded;
+}
+
+/** The replay link is a nice-to-have; a missing bridge config just drops it. */
+function tryBaseUrl(): string | undefined {
+  try {
+    return readBridgeConfig().baseUrl;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Structural check for a stored self_review.json — written by this CLI, but
+ *  hand-editable, so trust nothing. */
+function coerceSelfReview(review: unknown): SelfReview | null {
+  if (!isObject(review)) return null;
+  const usage = review.token_usage;
+  const suggestion = review.suggestion;
+  const suggestionOk =
+    suggestion === null ||
+    suggestion === undefined ||
+    (isObject(suggestion) && typeof suggestion.scope === "string" && typeof suggestion.text === "string");
+  if (
+    typeof review.report_text !== "string" ||
+    typeof review.generated_at !== "string" ||
+    typeof review.model !== "string" ||
+    (review.trigger !== "auto" && review.trigger !== "manual") ||
+    typeof review.locale !== "string" ||
+    !isObject(usage) ||
+    typeof usage.input !== "number" ||
+    typeof usage.output !== "number" ||
+    !suggestionOk
+  ) {
+    return null;
+  }
+  return {
+    schema: 1,
+    generated_at: review.generated_at,
+    trigger: review.trigger,
+    model: review.model,
+    locale: review.locale,
+    prompt_version: typeof review.prompt_version === "string" ? review.prompt_version : "",
+    report_text: review.report_text,
+    suggestion: (suggestion ?? null) as SelfReviewSuggestion | null,
+    token_usage: { input: usage.input, output: usage.output },
+    source_strategy_hashes: Array.isArray(review.source_strategy_hashes)
+      ? (review.source_strategy_hashes.filter((h) => typeof h === "string") as string[])
+      : [],
+  };
 }
 
 function resolveLocale(flag: string | number | boolean | undefined): string {

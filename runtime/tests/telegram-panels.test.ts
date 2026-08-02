@@ -108,6 +108,10 @@ function harness(opts: {
   runner?: Partial<PanelRunner> | null;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  pauseState?: () => boolean;
+  reviewMode?: () => Promise<"off" | "all" | "losses_only" | null>;
+  setReviewMode?: (mode: "off" | "all" | "losses_only") => Promise<void>;
+  onLocaleChanged?: (locale: "zh" | "en") => void;
   /** When set, editMessageText throws this message (a cleared chat history). */
   editError?: string;
 } = {}): Harness {
@@ -136,6 +140,10 @@ function harness(opts: {
     onLog: (e) => logs.push(e.code),
     ...(opts.fetchImpl !== undefined ? { fetchImpl: opts.fetchImpl } : {}),
     ...(opts.now !== undefined ? { now: opts.now } : {}),
+    ...(opts.pauseState !== undefined ? { pauseState: opts.pauseState } : {}),
+    ...(opts.reviewMode !== undefined ? { reviewMode: opts.reviewMode } : {}),
+    ...(opts.setReviewMode !== undefined ? { setReviewMode: opts.setReviewMode } : {}),
+    ...(opts.onLocaleChanged !== undefined ? { onLocaleChanged: opts.onLocaleChanged } : {}),
   });
 
   return {
@@ -515,10 +523,30 @@ describe("play panel", () => {
     expect(h.runner.joined[0]!.oneShot).toBeUndefined(); // a standing queue, not one match
   });
 
-  it("warns that pausing only lasts until the bridge restarts", async () => {
+  // The panel writes the SAME persisted flag `aifight pause` does, so the
+  // pause survives a bridge restart and every client shows the same truth.
+  it("persists the pause via matchingPaused, and resume clears it", async () => {
     const h = harness();
     await h.handle(tap("v1:play:ask_pause"));
-    expect(h.lastText()).toContain("until the bridge restarts");
+    expect(h.lastText()).toContain("stays paused");
+
+    await h.handle(tap(h.buttons().find((b) => b.startsWith("v1:play:pause"))!));
+    expect(h.config().matchingPaused).toBe(true);
+    expect(h.lastText()).toContain("⏸ paused (persistent");
+
+    await h.handle(tap("v1:play:ask_resume"));
+    await h.handle(tap(h.buttons().find((b) => b.startsWith("v1:play:resume"))!));
+    expect(h.config().matchingPaused).toBe(false);
+    expect(h.runner.joined).toHaveLength(1);
+  });
+
+  // A pause made from the CLI or the desktop app while this bridge runs must
+  // show truthfully here — the panel reads the fresh disk state when wired.
+  it("reflects an externally made pause via pauseState", async () => {
+    const h = harness({ pauseState: () => true });
+    await h.handle(tap("v1:play:open"));
+    expect(h.lastText()).toContain("⏸ paused (persistent");
+    expect(h.buttons()).toContain("v1:play:ask_resume");
   });
 
   // A cap of 0 means the bridge never queues by itself (automaticJoinOptions),
@@ -779,5 +807,129 @@ describe("panel resilience", () => {
     const h = harness();
     await h.handle({ update_id: 5 });
     expect(h.sent).toHaveLength(0);
+  });
+});
+
+// ── Telegram UX V2 (2026-08-02): commands, settings expansion, report entry ──
+
+describe("text commands — /play /notify /settings and the fuller /help", () => {
+  it("routes /play, /notify and /settings to their panels", async () => {
+    const h = harness();
+    await h.handle(command("/play"));
+    expect(h.lastText()).toContain("Play");
+    await h.handle(command("/notify"));
+    expect(h.lastText()).toContain("Notifications");
+    await h.handle(command("/settings"));
+    expect(h.lastText()).toContain("Settings");
+  });
+
+  it("says the current settings inside /help, and teaches the challenge trick", async () => {
+    const h = harness({ section: { results: "per_match", digestAt: "21:30" } });
+    await h.handle(command("/help"));
+    const text = h.lastText();
+    expect(text).toContain("/play");
+    expect(text).toContain("/settings");
+    expect(text).toContain("every match"); // the CURRENT results preference, in words
+    expect(text).toContain("21:30"); // the CURRENT digest time
+    expect(text).toContain("challenge link");
+    expect(text).toContain("API keys");
+  });
+});
+
+describe("settings panel — games, digest time, auto-review", () => {
+  it("toggles a game off and writes the explicit remaining list", async () => {
+    const h = harness();
+    await h.handle(tap("v1:settings:game:coup"));
+    expect(h.config().autoGames).toEqual(["texas_holdem", "liars_dice"]);
+    expect(h.lastText()).toContain("Coup ✗");
+  });
+
+  it("refuses to turn off the last enabled game", async () => {
+    const h = harness({ config: { autoGames: ["coup"] } });
+    await h.handle(tap("v1:settings:game:coup"));
+    expect(h.config().autoGames).toEqual(["coup"]); // unchanged
+    expect(h.sent.some((s) => s.kind === "answer" && s.text.includes("At least one game"))).toBe(true);
+  });
+
+  it("applies a digest preset (HHMM in the callback, HH:MM on disk)", async () => {
+    const h = harness();
+    await h.handle(tap("v1:settings:open"));
+    expect(h.buttons()).toContain("v1:settings:digest:2100");
+    await h.handle(tap("v1:settings:digest:2100"));
+    expect(h.settings().digestAt).toBe("21:00");
+  });
+
+  it("takes a custom digest time as a reply, and rejects a malformed one", async () => {
+    const h = harness();
+    await h.handle(tap("v1:settings:custom_digest"));
+    await h.handle(command("21:45"));
+    expect(h.settings().digestAt).toBe("21:45");
+
+    await h.handle(tap("v1:settings:custom_digest"));
+    await h.handle(command("quarter past nine"));
+    expect(h.settings().digestAt).toBe("21:45"); // unchanged
+    expect(h.lastText()).toContain("HH:MM");
+  });
+
+  it("applies losses_only on one tap, but demands a confirmation for all", async () => {
+    const applied: string[] = [];
+    const h = harness({
+      reviewMode: () => Promise.resolve("off"),
+      setReviewMode: (mode) => {
+        applied.push(mode);
+        return Promise.resolve();
+      },
+    });
+    await h.handle(tap("v1:settings:review:losses_only"));
+    expect(applied).toEqual(["losses_only"]);
+
+    // "all" without its nonce is a stale/forged button: nothing applies.
+    await h.handle(tap("v1:settings:review:all"));
+    expect(applied).toEqual(["losses_only"]);
+
+    await h.handle(tap("v1:settings:ask_review_all"));
+    expect(h.lastText()).toContain("model call");
+    await h.handle(tap(h.buttons().find((b) => b.startsWith("v1:settings:review:all"))!));
+    expect(applied).toEqual(["losses_only", "all"]);
+  });
+
+  it("hides the auto-review row entirely when no LLM config is readable", async () => {
+    const h = harness({ reviewMode: () => Promise.resolve(null) });
+    await h.handle(tap("v1:settings:open"));
+    expect(h.lastText()).not.toContain("Auto-review");
+    expect(h.buttons().some((b) => b.startsWith("v1:settings:review"))).toBe(false);
+  });
+
+  it("reports a setReviewMode failure as a notice instead of pretending", async () => {
+    const h = harness({
+      reviewMode: () => Promise.resolve("off"),
+      setReviewMode: () => Promise.reject(new Error("disk full")),
+    });
+    await h.handle(tap("v1:settings:review:losses_only"));
+    expect(h.lastText()).toContain("disk full");
+  });
+
+  it("tells the companion when the chat language changes", async () => {
+    const locales: string[] = [];
+    const h = harness({ onLocaleChanged: (l) => locales.push(l) });
+    await h.handle(tap("v1:settings:locale:zh"));
+    expect(locales).toEqual(["zh"]);
+    expect(h.settings().locale).toBe("zh");
+  });
+});
+
+describe("panel buttons under a match report (arg \"new\")", () => {
+  it("opens the notify panel as a NEW message instead of editing the report", async () => {
+    const h = harness();
+    await h.handle(tap("v1:notify:open:new"));
+    const last = h.sent[h.sent.length - 1]!;
+    expect(last.kind).toBe("send"); // never "edit" — the report must survive
+    expect(last.text).toContain("Notifications");
+  });
+
+  it("still edits in place for ordinary panel navigation", async () => {
+    const h = harness();
+    await h.handle(tap("v1:notify:open"));
+    expect(h.sent[h.sent.length - 1]!.kind).toBe("edit");
   });
 });

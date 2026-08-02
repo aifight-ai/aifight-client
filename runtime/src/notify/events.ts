@@ -29,6 +29,27 @@ export type NotifyEvent =
       readonly replayUrl?: string;
       readonly playerCount: number;
       readonly matchId: string;
+      /** game_start → game_over on this machine's clock. Absent when the
+       *  bridge did not see the start (reconnect mid-match). */
+      readonly durationMs?: number;
+      /**
+       * The rating line, filled in AFTER the fact by the Telegram channel's
+       * enrichment step (notify/telegram/match-report.ts) — the protocol does
+       * not carry per-match rating changes, so this is the public profile
+       * diffed against a local snapshot. Absent when the lookup failed; the
+       * report then simply has no rating line.
+       */
+      readonly rating?: {
+        readonly game: string;
+        /** display_rating — the number every other surface shows. */
+        readonly rating: number;
+        /** vs the snapshot taken after the previous match. */
+        readonly delta?: number;
+        /** Leaderboard position, when the agent is on the board. */
+        readonly rank?: number;
+        /** Positive = climbed that many places since the snapshot. */
+        readonly rankDelta?: number;
+      };
     }
   | {
       readonly kind: "digest.daily";
@@ -128,8 +149,9 @@ const SESSION_GAME_LIMIT = 64;
 
 export function createBridgeNotifier(opts: BridgeNotifierOptions): BridgeNotifier {
   const now = opts.now ?? Date.now;
-  /** session_id → game, learned from game_start (game_over does not repeat it). */
-  const sessionGames = new Map<string, string>();
+  /** session_id → {game, startedAt}, learned from game_start (game_over does
+   *  not repeat the game, and the duration is this machine's own clock). */
+  const sessionGames = new Map<string, { game: string; startedAt: number }>();
   const llmFailureAt = new Map<string, number>();
   /** Why the last model call for a match failed, so the alert can say more than
    *  "it failed" — the provider's own classification (auth / quota / …). */
@@ -153,7 +175,7 @@ export function createBridgeNotifier(opts: BridgeNotifierOptions): BridgeNotifie
       const oldest = sessionGames.keys().next();
       if (!oldest.done) sessionGames.delete(oldest.value);
     }
-    sessionGames.set(sessionId, game);
+    sessionGames.set(sessionId, { game, startedAt: now() });
   }
 
   /** Remember something per match without letting the map grow forever. */
@@ -174,7 +196,7 @@ export function createBridgeNotifier(opts: BridgeNotifierOptions): BridgeNotifie
     const last = llmFailureAt.get(matchId);
     if (last !== undefined && now() - last < LLM_FAILURE_THROTTLE_MS) return;
     remember(llmFailureAt, matchId, now());
-    const game = sessionGames.get(matchId);
+    const game = sessionGames.get(matchId)?.game;
     emit({
       kind: "alert.llm_failure",
       matchId,
@@ -187,7 +209,9 @@ export function createBridgeNotifier(opts: BridgeNotifierOptions): BridgeNotifie
   function onGameOver(gameOver: MsgGameOver): void {
     const data = gameOver.data;
     const self = data.players.find((p) => p.agent_id === opts.agentId);
-    const game = sessionGames.get(data.session_id);
+    const started = sessionGames.get(data.session_id);
+    const game = started?.game;
+    const durationMs = started === undefined ? undefined : Math.max(0, now() - started.startedAt);
     sessionGames.delete(data.session_id);
 
     const label = resultLabel(opts.agentId, gameOver);
@@ -208,6 +232,7 @@ export function createBridgeNotifier(opts: BridgeNotifierOptions): BridgeNotifie
       ...(replayUrl !== undefined ? { replayUrl } : {}),
       playerCount: data.players.length,
       matchId: data.match_id,
+      ...(durationMs !== undefined ? { durationMs } : {}),
     });
 
     // Losing by forfeit is worth its own alert: it means the agent stopped

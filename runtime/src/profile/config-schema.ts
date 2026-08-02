@@ -251,6 +251,12 @@ export interface SelfReviewConfig {
   model?: string;
   /** Max agent turns to keep in the compressed review context (default 40). */
   maxTurns?: number;
+  /**
+   * When set, every auto-generated review is ALSO written as a Markdown file
+   * into this directory (created if missing; "~" expands to the home dir).
+   * Unset = reviews live only as self_review.json in the session dir.
+   */
+  exportDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -717,6 +723,12 @@ function validateSelfReview(
     (typeof raw.maxTurns !== "number" || !Number.isInteger(raw.maxTurns) || raw.maxTurns <= 0)
   ) {
     errors.push(`${path}.maxTurns: must be a positive integer if present`);
+  }
+  if (
+    raw.exportDir !== undefined &&
+    (typeof raw.exportDir !== "string" || raw.exportDir.trim() === "")
+  ) {
+    errors.push(`${path}.exportDir: must be a non-empty path string if present`);
   }
 }
 

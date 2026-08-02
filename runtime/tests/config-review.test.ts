@@ -80,3 +80,32 @@ describe("aifight config review", () => {
     await expect(runConfig(args(["review", "model", "ghost"]), capture().env)).rejects.toThrow();
   });
 });
+
+describe("aifight config review export-dir (2026-08-02)", () => {
+  it("sets, reports and clears the Markdown export directory", async () => {
+    await runConfig(args(["review", "export-dir", "~/aifight-reviews"]), capture().env);
+    let cap = capture();
+    await runConfig(args(["review"], true), cap.env);
+    expect(JSON.parse(cap.out()).selfReview.exportDir).toBe("~/aifight-reviews");
+
+    // Human output names it too.
+    cap = capture();
+    await runConfig(args(["review"]), cap.env);
+    expect(cap.out()).toContain("export dir   : ~/aifight-reviews");
+
+    await runConfig(args(["review", "export-dir", "none"]), capture().env);
+    cap = capture();
+    await runConfig(args(["review"], true), cap.env);
+    expect(JSON.parse(cap.out()).selfReview.exportDir).toBeNull();
+  });
+
+  it("keeps autoMode intact while changing export-dir", async () => {
+    await runConfig(args(["review", "auto", "all"]), capture().env);
+    await runConfig(args(["review", "export-dir", "/tmp/r"]), capture().env);
+    const cap = capture();
+    await runConfig(args(["review"], true), cap.env);
+    const sr = JSON.parse(cap.out()).selfReview;
+    expect(sr.autoMode).toBe("all");
+    expect(sr.exportDir).toBe("/tmp/r");
+  });
+});

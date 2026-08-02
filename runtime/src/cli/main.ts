@@ -162,6 +162,9 @@ export async function run(
     { name: "regen", type: "boolean" },
     { name: "no-generate", type: "boolean" },
     { name: "locale", type: "string" },
+    // `aifight review --md` prints Markdown; `--out <file|dir>` writes it.
+    { name: "md", type: "boolean" },
+    { name: "out", type: "string" },
     // `aifight stats` / `aifight prices` flags (§7A local usage + cost).
     { name: "days", type: "number" },
     { name: "by-model", type: "boolean" },
@@ -615,10 +618,13 @@ function commandUsage(positional: readonly string[]): string | undefined {
       ].join("\n");
     case "review":
       return [
-        "Usage: aifight review <session_or_match_id> [--regen] [--no-generate] [--model <profile>] [--locale <code>]",
+        "Usage: aifight review <session_or_match_id> [--regen] [--no-generate] [--model <profile>] [--locale <code>] [--md] [--out <file|dir>]",
         "  Generate (or print the stored) post-match self-review for a local session.",
         "  --no-generate prints the stored review if present and never makes an LLM call.",
         "  Runs one LLM call on your own key; --model picks a cheaper profile, --regen overwrites.",
+        "  --md prints the review as Markdown; --out writes it to a file (or a directory,",
+        "  which gets a dated filename). `aifight config review export-dir <dir>` makes",
+        "  every automatic review land there as Markdown too.",
         "  The review stays on this machine and is never uploaded.",
       ].join("\n");
     case "strategy":
