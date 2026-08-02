@@ -105,28 +105,75 @@ describe("interactive config — multi-profile manager (⑦)", () => {
     fs.rmSync(home, { recursive: true, force: true });
   });
 
-  it("lists every profile with the active marker and returns on q", async () => {
+  it("renders the hub frame: title, config subheader, five actions + Back", async () => {
     scaffold(["alpha", "beta"]);
     const { io } = makeIO({ lines: ["q"] });
     const { env, out } = captureEnv();
     await manageLLMProfiles(SLUG, io, env);
     const text = out();
-    expect(text).toContain("Your LLM configurations:");
+    // U3: one frame — title, the configurations as the subheader, the actions
+    // as rows. No hand-printed English list, no "Choose [1-5, q]".
+    expect(text).toContain("LLM configurations");
     expect(text).toContain("alpha — claude-sonnet-4-6 (anthropic_messages)");
     expect(text).toContain("beta — claude-sonnet-4-6 (anthropic_messages)");
-    expect(text).toMatch(/alpha[^\n]*\[active\]/); // first profile flagged active
-    expect(text).toContain("1) Switch which one is active");
+    expect(text).toMatch(/alpha[^\n]*\[current\]/); // first profile flagged active
+    expect(text).toContain("1) Switch active — which config is live");
+    expect(text).toContain("2) Edit — change fields of one config");
+    expect(text).toContain("3) Add config — connect another model");
+    expect(text).toContain("4) Remove");
+    expect(text).toContain("5) Test — one real request to verify");
+    expect(text).toContain("q) ← Back");
+    expect(text).not.toContain("Choose [1-5");
   });
 
-  it("switches the active profile (option 1) via config use", async () => {
+  it("flags a configuration whose key no longer resolves", async () => {
     scaffold(["alpha", "beta"]);
-    // Choose 1 (switch) → pick profile 2 (beta) → decline the offered test → q.
+    // Break beta's key file: the row must say so instead of looking healthy.
+    fs.rmSync(path.join(agentDir(), "keys", "beta.key"));
+    const { io } = makeIO({ lines: ["q"] });
+    const { env, out } = captureEnv();
+    await manageLLMProfiles(SLUG, io, env);
+    expect(out()).toMatch(/beta[^\n]*\[key not resolvable\]/);
+  });
+
+  it("speaks zh when the CLI locale is zh (hub chrome only, values untouched)", async () => {
+    scaffold(["alpha"]);
+    const { io } = makeIO({ lines: ["q"] });
+    const { env, out } = captureEnv();
+    await manageLLMProfiles(SLUG, io, { ...env, locale: () => "zh" });
+    const text = out();
+    expect(text).toContain("模型配置");
+    expect(text).toContain("1) 切换启用 — 选哪个配置生效");
+    expect(text).toContain("alpha — claude-sonnet-4-6 (anthropic_messages)"); // values stay
+    expect(text).toContain("[当前]");
+  });
+
+  it("switches the active profile (Switch active) via config use", async () => {
+    scaffold(["alpha", "beta"]);
+    // Switch active → pick profile 2 (beta) → decline the offered test → q.
     const { io } = makeIO({ lines: ["1", "2", "q"], yesno: [false] });
-    const { env } = captureEnv();
+    const { env, out } = captureEnv();
     await manageLLMProfiles(SLUG, io, env);
     const cfg = readConfig();
     expect(cfg.activeProfile).toBe("beta");
     expect(cfg.routing.default).toBe("beta"); // config use keeps routing.default in sync
+    // The pick is its own P1 frame: verb in the title, model · protocol as the
+    // row hint, the live one marked.
+    expect(out()).toContain("Switch active — which config?");
+    expect(out()).toContain("1) alpha — claude-sonnet-4-6 · anthropic_messages · current");
+    expect(out()).toContain("2) beta — claude-sonnet-4-6 · anthropic_messages");
+  });
+
+  it("Add config hands straight over to the guided wizard", async () => {
+    scaffold(["alpha"]);
+    // Add config → the wizard's provider frame → q (nothing picked) → back in
+    // the hub → q. The hub itself owns no provider/key logic.
+    const { io } = makeIO({ lines: ["3", "q", "q"] });
+    const { env, out } = captureEnv();
+    await manageLLMProfiles(SLUG, io, env);
+    expect(out()).toContain("Which provider?");
+    expect(out()).toContain("No provider selected.");
+    expect(Object.keys(readConfig().profiles)).toEqual(["alpha"]); // nothing added
   });
 
   it("edits a field (stream) while keeping the rest, via one config update call", async () => {
@@ -177,34 +224,55 @@ describe("interactive config — multi-profile manager (⑦)", () => {
     expect(fs.readFileSync(path.join(agentDir(), "config.json"), "utf8")).toBe(before);
   });
 
-  it("refuses to remove the active profile and keeps the loop alive (delete guard)", async () => {
+  it("refuses to remove the active profile and reports it as a P6 error line", async () => {
     scaffold(["alpha", "beta"]);
-    // Choose 4 (remove) → pick 1 (alpha = active) → guard fires → q.
+    // Remove → pick 1 (alpha = active) → guard fires → q.
     const { io } = makeIO({ lines: ["4", "1", "q"] });
     const { env, out } = captureEnv();
     await manageLLMProfiles(SLUG, io, env);
-    expect(out()).toMatch(/is the active profile/);
+    expect(out()).toMatch(/✗[^\n]*is the active profile/); // P6 headline, loop alive
     expect(readConfig().profiles.alpha).toBeDefined(); // still there
   });
 
-  it("removes a non-active profile (option 4)", async () => {
+  it("removes a non-active profile (Remove)", async () => {
     scaffold(["alpha", "beta"]);
-    // Choose 4 → pick 2 (beta, non-active) → removed (non-TTY skips re-type) → q.
+    // Remove → pick 2 (beta, non-active) → removed (non-TTY skips re-type) → q.
     const { io } = makeIO({ lines: ["4", "2", "q"] });
-    const { env } = captureEnv();
+    const { env, out } = captureEnv();
     await manageLLMProfiles(SLUG, io, env);
     const cfg = readConfig();
     expect(cfg.profiles.beta).toBeUndefined();
     expect(cfg.profiles.alpha).toBeDefined();
+    expect(out()).toContain("Remove — which config?");
   });
 
   it("cancels a picked action cleanly when the pick is empty", async () => {
     scaffold(["alpha", "beta"]);
-    // Choose 1 (switch) → Enter (cancel pick) → q. Nothing changes.
+    // Switch active → Enter (cancel pick) → q. Nothing changes.
     const { io } = makeIO({ lines: ["1", "", "q"] });
     const { env } = captureEnv();
     await manageLLMProfiles(SLUG, io, env);
     expect(readConfig().activeProfile).toBe("alpha"); // unchanged
+  });
+
+  it("q at the profile pick cancels the action and returns to the hub", async () => {
+    scaffold(["alpha", "beta"]);
+    // Switch active → q (cancel the pick, back in the hub) → q (leave). The
+    // second q proves the cancel did NOT drop out of the loop.
+    const { io } = makeIO({ lines: ["1", "q", "q"] });
+    const { env, out } = captureEnv();
+    await manageLLMProfiles(SLUG, io, env);
+    expect(readConfig().activeProfile).toBe("alpha");
+    // Two hub renders: the first pass and the one after the cancelled pick.
+    expect(out().split("LLM configurations").length - 1).toBe(2);
+  });
+
+  it("re-asks on an unknown answer instead of falling out of the hub", async () => {
+    scaffold(["alpha"]);
+    const { io } = makeIO({ lines: ["9", "q"] });
+    const { env, out } = captureEnv();
+    await manageLLMProfiles(SLUG, io, env);
+    expect(out()).toContain("Unknown choice '9'.");
   });
 });
 
@@ -231,7 +299,7 @@ describe("interactive config — fresh machine falls through to onboarding (A5)"
     const { io } = makeIO({ lines: ["1", "", ""], hidden: ["sk-ant-xyz"], models: null, probe: [true] });
     const { env, out } = captureEnv();
     await configureLLMInteractive(SLUG, io, env);
-    expect(out()).toContain("Which LLM will your agent play with?"); // onboarding, not the manager
+    expect(out()).toContain("Which provider?"); // onboarding, not the manager
     const cfg = readConfig();
     expect(cfg.profiles[cfg.activeProfile].protocol).toBe("anthropic_messages");
   });

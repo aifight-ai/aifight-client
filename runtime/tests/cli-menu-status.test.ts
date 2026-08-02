@@ -89,7 +89,7 @@ describe("composeMenuStatusLines", () => {
       data(),
       data({ claimed: false }),
       data({ paused: true }),
-      data({ updateVersion: "0.2.0-beta.10" }),
+      data({ updateVersion: "0.2.0-beta.11" }),
       data({ dailyCap: undefined }),
       data({ matching: { state: "not_running" } }),
       data({ matching: { state: "unknown" } }),
@@ -100,18 +100,18 @@ describe("composeMenuStatusLines", () => {
   });
 
   it("styles: name bold, ✓ green, ● green when online, update hint yellow", () => {
-    const lines = composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.10" }));
+    const lines = composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.11" }));
     const styleOf = (text: string): string | undefined =>
       lines.flat().find((s) => s.text === text)?.style;
     expect(styleOf("Phantom Maverick")).toBe("bold");
     expect(styleOf("✓ claimed")).toBe("green");
     expect(styleOf("● online")).toBe("green");
-    expect(styleOf("↑ 0.2.0-beta.10")).toBe("yellow");
+    expect(styleOf("↑ 0.2.0-beta.11")).toBe("yellow");
   });
 
   it("puts the update hint before the games list, so truncation never eats the version", () => {
-    const [, , l3] = plain(composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.10" })));
-    expect(l3).toBe("claude-opus-4-6 · ↑ 0.2.0-beta.10 · games: Texas Hold'em, Coup");
+    const [, , l3] = plain(composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.11" })));
+    expect(l3).toBe("claude-opus-4-6 · ↑ 0.2.0-beta.11 · games: Texas Hold'em, Coup");
   });
 
   it("unclaimed warns in yellow on line 1", () => {
@@ -132,6 +132,24 @@ describe("composeMenuStatusLines", () => {
     expect(plain(composeMenuStatusLines(data({ dailyCap: 5 })))[0]).toContain("auto 5/day");
     expect(plain(composeMenuStatusLines(data({ dailyCap: 0 })))[0]).toContain("auto-match off");
     expect(plain(composeMenuStatusLines(data({ dailyCap: undefined })))[0]).toContain("auto-match not set");
+  });
+
+  // U5/T4: with the platform's own count in hand the same segment carries it,
+  // in BOTH places the daily wording appears (line 1 and the matching line).
+  it("daily wording carries today's count once it is known", () => {
+    const [l1, l2] = plain(composeMenuStatusLines(data({ dailyCap: 5, dailyUsed: 2 })));
+    expect(l1).toContain("auto 2/5/day");
+    expect(l2).toBe("matching: idle · auto 2/5/day");
+  });
+
+  it("a count without a running cap changes nothing (0 and unset stay as they were)", () => {
+    expect(plain(composeMenuStatusLines(data({ dailyCap: 0, dailyUsed: 2 })))[0]).toContain("auto-match off");
+    expect(plain(composeMenuStatusLines(data({ dailyCap: undefined, dailyUsed: 2 })))[0]).toContain("auto-match not set");
+  });
+
+  it("zh says the same thing", () => {
+    expect(plain(composeMenuStatusLines(data({ dailyCap: 5, dailyUsed: 2 }), "zh"))[0])
+      .toContain("自动 2/5 局/天");
   });
 });
 
@@ -198,6 +216,10 @@ function remoteFetch(opts: {
   name?: string;
   npmLatest?: string;
   fail?: boolean;
+  /** The platform's own `games_today`; omitted = an older server that never
+   *  sends it, which must leave the banner's cap-only wording alone. Typed
+   *  loosely on purpose — a non-number must be dropped, not rendered. */
+  gamesToday?: unknown;
 }): typeof fetch {
   return (async (input: unknown) => {
     if (opts.fail === true) throw new Error("offline");
@@ -209,6 +231,7 @@ function remoteFetch(opts: {
         identity_status: "official",
         status: "ready",
         ...(opts.name !== undefined ? { name: opts.name } : {}),
+        ...(opts.gamesToday !== undefined ? { games_today: opts.gamesToday, max_games_per_day: 5 } : {}),
       }), { status: 200 });
     }
     if (url.endsWith("/api/bridge/version")) {
@@ -260,7 +283,7 @@ describe("createMenuStatusBox", () => {
   it("enriches with the remote answers: server name, claim state, update hint", async () => {
     seedBridge();
     const box = createMenuStatusBox({
-      fetchImpl: remoteFetch({ claimed: true, name: "Server Name", npmLatest: "0.2.0-beta.10" }),
+      fetchImpl: remoteFetch({ claimed: true, name: "Server Name", npmLatest: "0.2.0-beta.11" }),
       seatHolderPid: () => undefined, // no local bridge process
     })!;
     const refresh = box.refreshed();
@@ -271,9 +294,9 @@ describe("createMenuStatusBox", () => {
     expect(l1).toContain("✓ claimed");
     expect(l1).toContain("○ offline");
     expect(l2).toBe("matching: bridge not running · auto 2/day");
-    expect(l3).toContain("↑ 0.2.0-beta.10");
+    expect(l3).toContain("↑ 0.2.0-beta.11");
     // The menu's Update item reads the same fact.
-    expect(box.updateVersion?.()).toBe("0.2.0-beta.10");
+    expect(box.updateVersion?.()).toBe("0.2.0-beta.11");
     // Settled: no second repaint hook.
     expect(box.refreshed()).toBeUndefined();
   });
@@ -304,6 +327,42 @@ describe("createMenuStatusBox", () => {
     expect(l1).toContain("● paused");
     expect(l2).toBe("matching: ⏸ paused (resume: aifight resume)");
     await box.refreshed();
+  });
+
+  // U5/T4: the count rides the platform-status arm that was already in flight.
+  // Before it lands the banner may only promise the cap; after it lands both
+  // the identity line and the matching line carry "2/5".
+  it("shows the cap alone until the remote count lands, then 2/5", async () => {
+    seedBridge({ autoDailyLimit: 5 });
+    const box = createMenuStatusBox({
+      fetchImpl: remoteFetch({ gamesToday: 2 }),
+      seatHolderPid: () => undefined,
+    })!;
+    // First paint: nothing remote has answered yet.
+    const before = plain(box.lines());
+    expect(before[0]).toContain("auto 5/day");
+    expect(before[0]).not.toContain("2/5");
+    expect(before[1]).toBe("matching: bridge not running · auto 5/day");
+
+    await box.refreshed();
+
+    const after = plain(box.lines());
+    expect(after[0]).toBe("Phantom Maverick · ✓ claimed · ○ offline · auto 2/5/day");
+    expect(after[1]).toBe("matching: bridge not running · auto 2/5/day");
+    expect(box.lines()).toHaveLength(3);
+  });
+
+  it("an older server (or a junk value) leaves the cap-only wording alone", async () => {
+    for (const body of [{}, { gamesToday: "two" }]) {
+      seedBridge({ autoDailyLimit: 5 });
+      const box = createMenuStatusBox({
+        fetchImpl: remoteFetch(body),
+        seatHolderPid: () => undefined,
+      })!;
+      await box.refreshed();
+      expect(plain(box.lines())[0]).toContain("auto 5/day");
+      expect(plain(box.lines())[0]).not.toMatch(/\d+\/5\/day/);
+    }
   });
 
   it("uses the model the leaderboard shows (effective declared model)", () => {

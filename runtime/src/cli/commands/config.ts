@@ -24,8 +24,10 @@ import { CommandError, UsageError, expectArity, isSupportedGame, SUPPORTED_GAMES
 import { runConfigInit } from "./config-init.js";
 import { runConfigValidate } from "./config-validate.js";
 import { runConfigProbe } from "./config-probe.js";
-import { createOnboardIO } from "./onboard-io.js";
-import { onboardDirectLLM, type OnboardIO } from "./onboard-llm.js";
+import { createOnboardIO, promptValidatedDefault } from "./onboard-io.js";
+import { onboardDirectLLM, onboardPickDeps, type OnboardIO } from "./onboard-llm.js";
+import { pickOneKey } from "./pick-one.js";
+import type { MenuFrame } from "./menu-frame.js";
 import { suggestClosest, CONFIG_EXAMPLES } from "./config-shared.js";
 import { runConfigAdd, runConfigUpdate } from "./config-edit.js";
 import { runConfigModels } from "./config-models.js";
@@ -42,7 +44,7 @@ const KNOWN_CONFIG_SUBS: readonly string[] = [
 import { runBridgeSet, SETUP_WIZARD_CAP_MAX } from "./bridge-set.js";
 import { readBridgeConfig } from "../../bridge/config.js";
 import { createAnsi } from "../ansi.js";
-import { resolveLocale, t } from "../i18n.js";
+import { resolveLocale, t, type I18nKey, type Locale } from "../i18n.js";
 import { createOutput } from "../output.js";
 import { resolveAgentDir } from "../../profile/profile-loader.js";
 import { resolveModelCapabilities } from "../../llm/capabilities/validate-capabilities.js";
@@ -179,6 +181,11 @@ export async function configureLLMInteractive(slug: string, io: OnboardIO, env: 
 // path behaviourally identical to the equivalent one-line command (and keeps it
 // unit-testable with a scripted IO).
 
+/** The display locale for the hub's chrome (read fresh, like the panel). */
+function localeOf(env: HandlerEnv): Locale {
+  return env.locale?.() ?? resolveLocale();
+}
+
 /** Drive the profile manager loop until the user backs out. Exported for tests. */
 export async function manageLLMProfiles(slug: string, io: OnboardIO, env: HandlerEnv): Promise<void> {
   for (;;) {
@@ -191,23 +198,26 @@ export async function manageLLMProfiles(slug: string, io: OnboardIO, env: Handle
       return;
     }
 
-    renderProfileList(view, env);
-    env.stdout(
-      [
-        "",
-        "  1) Switch which one is active",
-        "  2) Edit a configuration",
-        "  3) Add another configuration",
-        "  4) Remove a configuration",
-        "  5) Test a configuration",
-        "  q) Back",
-        "",
-      ].join("\n"),
-    );
-    const choice = (await io.promptLine("  Choose [1-5, q]: ")).trim().toLowerCase();
-    if (choice === "" || choice === "q" || choice === "quit" || choice === "back" || choice === "b") {
-      return;
-    }
+    // U3 (统一交互规范 P1): the hub was a hand-printed English list plus a typed
+    // "Choose [1-5, q]" — the loudest style break left in the CLI. Same five
+    // actions, now one frame: the configurations are the subheader, the actions
+    // are the rows, and the shared primitive owns unknown input.
+    const loc = localeOf(env);
+    const frame: MenuFrame = {
+      title: t(loc, "llmhub.title"),
+      banner: [],
+      subheader: profileSubheader(view, loc),
+      choices: [
+        { key: "1", main: t(loc, "llmhub.act.switch.main"), hint: t(loc, "llmhub.act.switch.hint") },
+        { key: "2", main: t(loc, "llmhub.act.edit.main"), hint: t(loc, "llmhub.act.edit.hint") },
+        { key: "3", main: t(loc, "llmhub.act.add.main"), hint: t(loc, "llmhub.act.add.hint") },
+        { key: "4", main: t(loc, "llmhub.act.remove.main") },
+        { key: "5", main: t(loc, "llmhub.act.test.main"), hint: t(loc, "llmhub.act.test.hint") },
+        { key: "q", main: t(loc, "challenge.menu.back.main") },
+      ],
+    };
+    const choice = await pickOneKey(onboardPickDeps(io, env, loc), frame);
+    if (choice === null) return; // q / Esc / an exhausted script
     try {
       switch (choice) {
         case "1":
@@ -226,8 +236,6 @@ export async function manageLLMProfiles(slug: string, io: OnboardIO, env: Handle
         case "5":
           await testProfileInteractive(slug, view, io, env);
           break;
-        default:
-          env.stdout("  Please enter 1, 2, 3, 4, 5, or q.\n");
       }
     } catch (e) {
       printActionError(e, env);
@@ -235,38 +243,61 @@ export async function manageLLMProfiles(slug: string, io: OnboardIO, env: Handle
   }
 }
 
-/** Print the numbered profile list with active / key-status annotations. */
-function renderProfileList(view: ProfileView, env: HandlerEnv): void {
-  env.stdout("\n  Your LLM configurations:\n");
-  view.rows.forEach((r, i) => {
+/** The configuration list as the frame's subheader (plain info lines above the
+ *  action rows), with the active / key-status tags. */
+function profileSubheader(view: ProfileView, loc: Locale): string[] {
+  return view.rows.map((r) => {
     const tags = [
-      r.id === view.activeProfile ? "active" : null,
-      r.resolvable ? null : "key not resolvable",
-    ].filter((t): t is string => t !== null);
-    const suffix = tags.length > 0 ? `  [${tags.join(", ")}]` : "";
-    env.stdout(`    ${i + 1}) ${r.id} — ${r.model} (${r.protocol})${suffix}\n`);
+      r.id === view.activeProfile ? t(loc, "profile.row.current") : null,
+      r.resolvable ? null : t(loc, "llmhub.tag.unresolvable"),
+    ].filter((tag): tag is string => tag !== null);
+    const suffix = tags.length > 0 ? `  [${tags.join(" · ")}]` : "";
+    return `  ${r.id} — ${r.model} (${r.protocol})${suffix}`;
   });
 }
 
-/** Ask the user to pick a profile from the shown list (number or exact id). */
+/** The four things a picked profile can be picked FOR. Each gets its own frame
+ *  title, so the screen says which verb is about to run. */
+type ProfilePickVerb = "switch" | "edit" | "remove" | "test";
+
+const PICK_TITLE_KEYS: Readonly<Record<ProfilePickVerb, I18nKey>> = {
+  switch: "llmhub.pick.switch",
+  edit: "llmhub.pick.edit",
+  remove: "llmhub.pick.remove",
+  test: "llmhub.pick.test",
+};
+
+/** P1: pick one configuration for `verb`. Rows carry the model and protocol as
+ *  the dim hint; q (or an exhausted script) cancels, changing nothing. */
 async function promptProfilePick(
   view: ProfileView,
   io: OnboardIO,
   env: HandlerEnv,
-  verb: string,
+  verb: ProfilePickVerb,
 ): Promise<string | undefined> {
-  const ans = (await io.promptLine(`  Which profile to ${verb}? [1-${view.rows.length}, Enter to cancel]: `)).trim();
-  if (ans === "") return undefined;
-  const n = Number.parseInt(ans, 10);
-  if (Number.isInteger(n) && n >= 1 && n <= view.rows.length) return view.rows[n - 1]!.id;
-  const byId = view.rows.find((r) => r.id === ans);
-  if (byId) return byId.id;
-  env.stdout("  That is not one of the choices.\n");
-  return undefined;
+  const loc = localeOf(env);
+  const frame: MenuFrame = {
+    title: t(loc, PICK_TITLE_KEYS[verb]),
+    banner: [],
+    choices: [
+      ...view.rows.map((r, i) => ({
+        key: String(i + 1),
+        main: r.id,
+        hint:
+          r.id === view.activeProfile
+            ? `${r.model} · ${r.protocol} · ${t(loc, "profile.row.current")}`
+            : `${r.model} · ${r.protocol}`,
+      })),
+      { key: "q", main: t(loc, "challenge.menu.back.main") },
+    ],
+  };
+  const key = await pickOneKey(onboardPickDeps(io, env, loc), frame);
+  if (key === null) return undefined;
+  return view.rows[Number.parseInt(key, 10) - 1]?.id;
 }
 
 async function switchActiveProfile(slug: string, view: ProfileView, io: OnboardIO, env: HandlerEnv): Promise<void> {
-  const id = await promptProfilePick(view, io, env, "make active");
+  const id = await promptProfilePick(view, io, env, "switch");
   if (id === undefined) return;
   await runConfigUse({ positional: [id, slug], flags: {}, jsonMode: false }, env);
   await offerTest(slug, id, io, env);
@@ -300,7 +331,9 @@ async function editProfileInteractive(slug: string, view: ProfileView, io: Onboa
   }
 
   env.stdout(`\n  Editing "${id}" (${p.protocol}). Press Enter to keep a value unchanged.\n`);
-  env.stdout("  (To change the API key, use option 3 to re-add it, or `aifight config set-key`.)\n");
+  // Items are referenced by NAME, never by number (CLI Menu Copy Rules): this
+  // line used to say "option 3", and the rows have been renumbered before.
+  env.stdout("  (To change the API key, pick Add config to re-add it, or run `aifight config set-key`.)\n");
 
   const flags: Record<string, string | number | boolean> = { "no-test": true };
 
@@ -393,14 +426,17 @@ async function offerTest(slug: string, id: string, io: OnboardIO, env: HandlerEn
   }
 }
 
-/** Surface a delegated-handler error inside the menu without aborting the loop. */
+/** Surface a delegated-handler error inside the menu without aborting the loop.
+ *  P6 (统一交互规范 §2): a red `✗` headline, then the handler's own hint as
+ *  plain indented text — the one line that says what WOULD work. */
 function printActionError(e: unknown, env: HandlerEnv): void {
-  if (e instanceof CommandError || e instanceof UsageError) {
-    env.stdout(`  ${e.message}\n`);
-    if (e.hint) env.stdout(e.hint.split("\n").map((l) => `  ${l}`).join("\n") + "\n");
-  } else {
-    env.stdout(`  Could not complete that step: ${e instanceof Error ? e.message : String(e)}\n`);
-  }
+  const ansi = createAnsi();
+  const known = e instanceof CommandError || e instanceof UsageError;
+  const message = known
+    ? e.message
+    : `Could not complete that step: ${e instanceof Error ? e.message : String(e)}`;
+  env.stdout(`  ${ansi.red(`✗ ${message}`)}\n`);
+  if (known && e.hint) env.stdout(e.hint.split("\n").map((l) => `  ${l}`).join("\n") + "\n");
 }
 
 export async function configureDailyInteractive(io: PromptOnlyIO, env: HandlerEnv): Promise<void> {
@@ -414,24 +450,30 @@ export async function configureDailyInteractive(io: PromptOnlyIO, env: HandlerEn
   const shown = current === undefined ? "server default" : String(current);
   // Fool-proof (V3): an invalid answer is explained and the prompt RE-ASKS —
   // the current value stays in the bracket; Enter keeps it, q/Esc cancels.
-  for (;;) {
-    const raw = (await io.promptLine(`  Automatic ranked matches per day [keep ${shown}, 0-${SETUP_WIZARD_CAP_MAX}, 0 = off]: `)).trim();
-    if (raw === "") {
-      env.stdout(`  Kept ${shown}.\n`);
-      return;
-    }
-    if (raw === "q" || raw === "Q" || raw.includes("\x1b")) {
-      env.stdout("  No changes made.\n");
-      return;
-    }
-    if (!/^\d+$/.test(raw) || Number.parseInt(raw, 10) > SETUP_WIZARD_CAP_MAX) {
-      env.stdout(`${createAnsi().yellow(`  Enter a whole number between 0 and ${SETUP_WIZARD_CAP_MAX}.`)}\n`);
-      continue;
-    }
-    // Delegate to `set daily`: it owns the >10 confirmation and the platform sync.
-    await runBridgeSet({ positional: ["daily", raw], flags: {}, jsonMode: false }, env);
+  // U2 (统一交互规范 P3): that hand-rolled loop is now the shared helper.
+  // The bracket content is passed AS the default so the rendered line stays
+  // byte-for-byte what it has always been —
+  // `  Automatic ranked matches per day [keep 5, 0-100, 0 = off]: `.
+  const answer = await promptValidatedDefault(
+    env,
+    "  Automatic ranked matches per day",
+    `keep ${shown}, 0-${SETUP_WIZARD_CAP_MAX}, 0 = off`,
+    (value) =>
+      /^\d+$/.test(value) && Number.parseInt(value, 10) <= SETUP_WIZARD_CAP_MAX
+        ? null
+        : createAnsi().yellow(`  Enter a whole number between 0 and ${SETUP_WIZARD_CAP_MAX}.`),
+    (_env, question) => io.promptLine(question),
+  );
+  if (answer.kind === "keep") {
+    env.stdout(`  Kept ${shown}.\n`);
     return;
   }
+  if (answer.kind === "cancel") {
+    env.stdout("  No changes made.\n");
+    return;
+  }
+  // Delegate to `set daily`: it owns the >10 confirmation and the platform sync.
+  await runBridgeSet({ positional: ["daily", answer.value], flags: {}, jsonMode: false }, env);
 }
 
 export async function configureGamesInteractive(io: PromptOnlyIO, env: HandlerEnv): Promise<void> {

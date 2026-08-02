@@ -14,7 +14,14 @@ const LANG_KEY = "aifight.lang";
 
 const en = {
   translation: {
-    app: { tagline: "direct-LLM" },
+    app: {
+      tagline: "direct-LLM",
+      crash: {
+        title: "This view hit an error",
+        body: "The rest of the app is fine — switch to another tab, or reload this view. If it keeps happening, the error text below helps us fix it.",
+        retry: "Reload this view",
+      },
+    },
     nav: { play: "Play", watch: "Watch", leaderboard: "Rankings", events: "Events", models: "Models", strategy: "Strategy", history: "History", settings: "Settings" },
     eyebrow: { play: "Your agent", leaderboard: "The arena", events: "Compete", models: "Engine", strategy: "Playbook", history: "Archive", settings: "Preferences" },
     radar: {
@@ -770,7 +777,14 @@ const en = {
 
 const zh = {
   translation: {
-    app: { tagline: "直连模式" },
+    app: {
+      tagline: "直连模式",
+      crash: {
+        title: "这个页面出错了",
+        body: "app 其他部分不受影响——可以切到别的标签，或重新加载本页。反复出现的话，把下面的错误文本发给我们即可定位。",
+        retry: "重新加载本页",
+      },
+    },
     nav: { play: "对战", watch: "观战", leaderboard: "排行榜", events: "赛事", models: "模型", strategy: "策略", history: "历史", settings: "设置" },
     eyebrow: { play: "你的 Agent", leaderboard: "竞技场", events: "参赛", models: "引擎", strategy: "战术手册", history: "档案", settings: "偏好" },
     radar: {

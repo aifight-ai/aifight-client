@@ -28,7 +28,7 @@ import {
 import { jsonErrorEnvelope } from "./format";
 import { createAnsi } from "./ansi";
 import { renderGlobalHelp, styleSubcommandUsage } from "./help";
-import { resolveLocale } from "./i18n";
+import { resolveLocale, t, type I18nKey } from "./i18n";
 import type { HelloResult } from "../index";
 
 import { runVersion } from "./commands/version";
@@ -238,12 +238,14 @@ export async function run(
     // panel doors are TTY-gated, so the wizard can prompt freely.
     if (!configured) {
       const a = createAnsi();
-      const zh = resolveLocale() === "zh";
-      env.stdout("\n  " + a.bold(a.brand(zh ? "首次使用 AIFight" : "Welcome to AIFight")) + "\n");
+      // U7: the welcome used to carry its own zh?: ternary — the last
+      // hand-rolled two-language string in the CLI. Same words, now keys.
+      const loc = resolveLocale();
+      env.stdout("\n  " + a.bold(a.brand(t(loc, "wizard.welcome.title"))) + "\n");
       env.stdout(
-        zh
-          ? "  这台机器还没完成初始配置——现在带你走一遍：创建 agent → 接上你的大模型 →\n  （可选）装成后台服务。配置完成后直接进入主菜单。\n\n"
-          : "  This machine isn't set up yet — let's walk through it: create your agent →\n  connect your LLM → (optionally) install the background service. You'll land\n  in the main menu right after.\n\n",
+        ["wizard.welcome.body1", "wizard.welcome.body2", "wizard.welcome.body3"]
+          .map((key) => `  ${t(loc, key as I18nKey)}\n`)
+          .join("") + "\n",
       );
       const setupCode = await runSetup({ positional: [], flags: {}, jsonMode: false }, env);
       if (setupCode !== 0) return setupCode;
@@ -255,7 +257,7 @@ export async function run(
         return 0;
       }
       configured = true;
-      env.stdout("\n  " + a.brand("▸") + " " + (zh ? "配置完成，进入主菜单…" : "Setup complete — opening the main menu…") + "\n\n");
+      env.stdout("\n  " + a.brand("▸") + " " + t(loc, "wizard.welcome.done") + "\n\n");
     }
     // Resolved once, before the panel opens: an unclaimed agent cannot play at
     // all, so the banner is worth one short request (offline-safe — see

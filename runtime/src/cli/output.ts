@@ -54,6 +54,11 @@ export interface Output {
   table(columns: readonly TableColumn[], rows: readonly (readonly string[])[], opts?: TableOptions): string[];
   /** A dim indented note line ("Note: …" tails, caveats). */
   note(text: string): string;
+  /** P6 (统一交互规范 §2, 批 U4): THE failure block — `✗ message` in red
+   *  (errors are red; yellow stays the warning color), with the one line that
+   *  says what WOULD work plain underneath. Newline-terminated and ready for
+   *  stdout/stderr, so a caller never re-decides the icon or the color. */
+  fail(message: string, hint?: string): string;
 }
 
 export interface KvOptions {
@@ -143,5 +148,11 @@ export function createOutput(gate: OutputOptions = {}): Output {
 
   const note = (text: string): string => `  ${ansi.dim(text)}`;
 
-  return { ansi, section, kv, kvRows, table, note };
+  // Same shape the menu's own catch prints (menu.ts P6): unindented `✗ `
+  // headline, hint plain on the next line. A hint that is absent prints
+  // nothing at all rather than an empty line.
+  const fail = (message: string, hint?: string): string =>
+    `${ansi.red(`✗ ${message}`)}\n${hint === undefined || hint === "" ? "" : `${hint}\n`}`;
+
+  return { ansi, section, kv, kvRows, table, note, fail };
 }

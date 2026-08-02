@@ -19,6 +19,8 @@ export interface Ansi {
   readonly cyan: (s: string) => string;
   readonly green: (s: string) => string;
   readonly yellow: (s: string) => string;
+  /** Errors only (统一交互规范 P6): yellow stays the warning color. */
+  readonly red: (s: string) => string;
   /** AIFight brand orange — see brandOpen for the degradation ladder. */
   readonly brand: (s: string) => string;
 }
@@ -51,6 +53,7 @@ export function createAnsi(gate: AnsiGate = {}): Ansi {
     cyan: wrap(enabled, "36", "39"),
     green: wrap(enabled, "32", "39"),
     yellow: wrap(enabled, "33", "39"),
+    red: wrap(enabled, "31", "39"),
     brand: wrap(enabled, brandOpen(gate), "39"),
   };
 }

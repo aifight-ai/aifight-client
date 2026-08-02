@@ -371,6 +371,12 @@ describe("banner in zh", () => {
     expect(line2(statusData({ dailyCap: 0, matching: { state: "not_running" } }))).toBe("匹配：桥未运行 · 自动匹配关");
   });
 
+  it("today's count joins the same daily segment once the platform answers", () => {
+    const lines = composeMenuStatusLines(statusData({ dailyUsed: 2 }), "zh");
+    expect(lines[0]!.map((s) => s.text).join("")).toContain("自动 2/5 局/天");
+    expect(line2(statusData({ dailyUsed: 2 }))).toBe("匹配：空闲 · 自动 2/5 局/天");
+  });
+
   it("unclaimed points at the Claim item by NAME (numbering shifted twice already)", () => {
     expect(line2(statusData({ claimed: false }))).toBe("匹配：⚠ 先认领 agent（菜单「认领」项）");
   });

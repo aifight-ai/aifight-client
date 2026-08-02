@@ -19,10 +19,13 @@
 //     first render. When the answers land the chooser repaints the box; when
 //     they don't (offline, slow), the local-only box simply stays — no error
 //     noise.
-//   * "Matches used today" is NOT shown: the platform status endpoint does
-//     not expose it and the local scheduler counter lives in the bridge
-//     process's memory, so there is no cheap truthful source. The daily cap
-//     (auto N/day) is shown instead of a number we would have to guess.
+//   * "Matches used today" rides the SAME remote arm (U5/T4, 2026-08-02):
+//     `/api/agents/me/status` already answers with `games_today`, it was
+//     simply parsed away. So the daily wording is the cap alone on the first
+//     paint ("auto 5/day") and becomes "auto 2/5/day" once that answer lands.
+//     The cap in it stays the LOCAL one — a local cap of 0 is stored
+//     server-side as auto_requeue:false, leaving the platform's own
+//     max_games_per_day at its previous value.
 //
 // Everything here is injectable/pure except createMenuStatusBox's one config
 // read, so banner composition is unit-testable without a terminal or network.
@@ -63,6 +66,10 @@ export interface MenuStatusData {
    *  seat holder) — the honest local "is my agent online" signal. */
   readonly online: boolean;
   readonly dailyCap: number | undefined;
+  /** Automatic matches the PLATFORM counted today (`games_today`). Known only
+   *  after the one-shot remote refresh lands; until then the daily wording is
+   *  the cap alone, never a guessed "0". */
+  readonly dailyUsed?: number;
   readonly games: readonly string[];
   /** The effective declared model (what the leaderboard shows). */
   readonly model: string;
@@ -90,13 +97,15 @@ export interface MenuStatusBoxProvider {
   updateVersion?(): string | undefined;
 }
 
-/** The daily-cap wording shared by line 1 and the matching line. */
-function dailyText(loc: Locale, dailyCap: number | undefined): string {
-  return dailyCap === undefined
-    ? t(loc, "banner.daily.unset")
-    : dailyCap === 0
-      ? t(loc, "banner.daily.off")
-      : t(loc, "banner.daily.cap", { cap: dailyCap });
+/** The daily-cap wording shared by line 1 and the matching line. With the
+ *  platform's own count in hand (after the remote refresh) it becomes
+ *  "auto 2/5/day"; without it, or with nothing automatic running at all, the
+ *  three cap-only wordings stand unchanged. */
+function dailyText(loc: Locale, dailyCap: number | undefined, dailyUsed?: number): string {
+  if (dailyCap === undefined) return t(loc, "banner.daily.unset");
+  if (dailyCap === 0) return t(loc, "banner.daily.off");
+  if (dailyUsed !== undefined) return t(loc, "banner.daily.used", { used: dailyUsed, cap: dailyCap });
+  return t(loc, "banner.daily.cap", { cap: dailyCap });
 }
 
 /**
@@ -114,7 +123,7 @@ function composeMatchingLine(data: MenuStatusData, loc: Locale): MenuStatusLine 
   if (!data.claimed) {
     return [{ text: t(loc, "banner.match.unclaimed"), style: "yellow" }];
   }
-  const daily = dailyText(loc, data.dailyCap);
+  const daily = dailyText(loc, data.dailyCap, data.dailyUsed);
   switch (data.matching.state) {
     case "queued":
       return [{ text: t(loc, "banner.match.queued", { games: joinGameLabels(loc, data.matching.games) }), style: "cyan" }];
@@ -148,7 +157,7 @@ export function composeMenuStatusLines(data: MenuStatusData, loc: Locale = "en")
     { text: " · " },
     presence,
     { text: " · " },
-    { text: dailyText(loc, data.dailyCap), style: "dim" },
+    { text: dailyText(loc, data.dailyCap, data.dailyUsed), style: "dim" },
   ];
   const line3: MenuStatusSegment[] = [
     { text: data.model, style: "cyan" },
@@ -258,6 +267,9 @@ export function createMenuStatusBox(
           ...data,
           claimed: status.isClaimed,
           agentName: status.name ?? data.agentName,
+          // Only when the server actually said so: an absent count must keep
+          // the cap-only wording rather than claim "0 played today".
+          ...(status.gamesToday !== undefined ? { dailyUsed: status.gamesToday } : {}),
         };
       }
       if (

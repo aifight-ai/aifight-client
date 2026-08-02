@@ -21,6 +21,7 @@ import { HistoryView } from "./views/HistoryView";
 import { ModelsView } from "./views/ModelsView";
 import { StrategyView } from "./views/StrategyView";
 import { DiagnosticsCard } from "./views/DiagnosticsCard";
+import { ViewErrorBoundary } from "./ViewErrorBoundary";
 
 type ViewId = "play" | "watch" | "leaderboard" | "events" | "models" | "strategy" | "history" | "settings";
 type SelfReviewMode = "off" | "all" | "losses_only";
@@ -203,25 +204,30 @@ export function App() {
         <UpdateReadyBanner />
         <MatchBanner live={live.match} onWatch={() => setActive("watch")} />
         <section ref={contentRef} className="flex-1 overflow-auto p-6">
-          {active === "settings" ? (
-            <SettingsView />
-          ) : active === "watch" ? (
-            <WatchView />
-          ) : active === "leaderboard" ? (
-            <LeaderboardView />
-          ) : active === "events" ? (
-            <EventsView />
-          ) : active === "play" ? (
-            <PlayView onNavigate={(view) => setActive(view as ViewId)} />
-          ) : active === "history" ? (
-            <HistoryView />
-          ) : active === "models" ? (
-            <ModelsView />
-          ) : active === "strategy" ? (
-            <StrategyView />
-          ) : (
-            <Placeholder view={active} />
-          )}
+          {/* Keyed by view id: a crash in one view never blanks the window
+              (sidebar/header live outside), and switching tabs remounts the
+              boundary, clearing the error state. */}
+          <ViewErrorBoundary key={active}>
+            {active === "settings" ? (
+              <SettingsView />
+            ) : active === "watch" ? (
+              <WatchView />
+            ) : active === "leaderboard" ? (
+              <LeaderboardView />
+            ) : active === "events" ? (
+              <EventsView />
+            ) : active === "play" ? (
+              <PlayView onNavigate={(view) => setActive(view as ViewId)} />
+            ) : active === "history" ? (
+              <HistoryView />
+            ) : active === "models" ? (
+              <ModelsView />
+            ) : active === "strategy" ? (
+              <StrategyView />
+            ) : (
+              <Placeholder view={active} />
+            )}
+          </ViewErrorBoundary>
         </section>
       </main>
     </div>

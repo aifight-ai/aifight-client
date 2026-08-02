@@ -8,6 +8,7 @@
 //      blocked bot — all of it degrades to "the phone stayed quiet".
 
 import { readBridgeConfig, writeBridgeConfig, type BridgeConfig, type BridgeTelegramConfig } from "../../bridge/config";
+import { resolveEffectiveDeclaredModel } from "../../bridge/declared-model";
 import { resolveNotifyLocale } from "../locale";
 import {
   createBridgeNotifier,
@@ -440,6 +441,17 @@ export function startTelegramCompanion(deps: TelegramCompanionDeps): TelegramCom
         return readBridgeConfig().matchingPaused === true;
       } catch {
         return config.matchingPaused === true;
+      }
+    },
+    // The public model label the leaderboard shows. Resolved here (it reads the
+    // active agent profile off disk) rather than inside the panel, and read
+    // fresh so a model change made since this bridge started still shows.
+    // Never throws outward: an unreadable profile drops the row.
+    declaredModel: () => {
+      try {
+        return resolveEffectiveDeclaredModel(config).value;
+      } catch {
+        return undefined;
       }
     },
     // Self-review is a direct-LLM feature; a mock bridge hides the row.

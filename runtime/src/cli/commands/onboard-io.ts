@@ -7,6 +7,7 @@ import type { OnboardIO } from "./onboard-llm.js";
 import type { Protocol } from "../../profile/config-schema.js";
 import { storeSecretFile } from "../../profile/secret-ref.js";
 import { runConfigProbe } from "./config-probe.js";
+import { createMenuChooser } from "./menu-select.js";
 import { discoverModelsForProtocol } from "../../llm/discover-models.js";
 
 const CTRL_C = String.fromCharCode(3); // ETX
@@ -32,6 +33,42 @@ function readYesNo(env: HandlerEnv, question: string, defaultYes: boolean): Prom
     if (n === "") return defaultYes;
     return n === "y" || n === "yes";
   });
+}
+
+/**
+ * P4 (统一交互规范 §2, 批 U4): THE yes/no confirm. Every command that asks a
+ * yes/no question goes through this one function — before U4 half a dozen of
+ * them hand-rolled the same stdin read and each spelled the bracket suffix
+ * into its own question text.
+ *
+ * The `[Y/n]` / `[y/N]` suffix is appended HERE. A caller that writes it into
+ * its question shows it twice, so question strings (and their i18n entries)
+ * must never contain it. `defaultYes` is what a bare Enter means: destructive
+ * actions (uninstall, credential deletion) always pass false.
+ */
+export function promptYesNo(env: HandlerEnv, question: string, defaultYes: boolean): Promise<boolean> {
+  return readYesNo(env, question, defaultYes);
+}
+
+/** The injectable shape of P4. Commands take one as a test seam so both
+ *  branches of a confirmation — accept and decline — are unit-testable
+ *  without a real terminal. Production passes nothing and gets promptYesNo. */
+export type ConfirmFn = (question: string, defaultYes: boolean) => Promise<boolean>;
+
+/** The injectable shape of a single free-text prompt (the typed
+ *  "re-enter this to confirm" step high-risk actions use). Same seam idea as
+ *  ConfirmFn; production passes nothing and gets the real terminal read. */
+export type PromptLineFn = (question: string) => Promise<string>;
+
+/** Bind P4 to an env — the default every command falls back to. */
+export function bindConfirm(env: HandlerEnv): ConfirmFn {
+  return (question, defaultYes) => promptYesNo(env, question, defaultYes);
+}
+
+/** Bind the visible line read to an env (the P4 counterpart for typed
+ *  confirmations). */
+export function bindPromptLine(env: HandlerEnv): PromptLineFn {
+  return (question) => readLineVisible(env, question);
 }
 
 /** What the user meant by their answer at a default-bracket prompt. */
@@ -64,6 +101,31 @@ export async function promptDefault(
   readLine: (env: HandlerEnv, question: string) => Promise<string> = readLineVisible,
 ): Promise<DefaultPromptAnswer> {
   return resolveDefaultAnswer(await readLine(env, `${question} [${current}]: `));
+}
+
+/**
+ * promptDefault + in-place re-ask (统一交互规范 P3, 2026-08-02): an invalid
+ * answer prints `validate`'s reason and asks AGAIN instead of kicking the user
+ * back to the panel — the pattern the daily-cap prompt pioneered, extracted so
+ * every text prompt behaves identically. A resolved "value" answer is
+ * guaranteed to have passed `validate`; Enter keeps, q/Esc cancels, as ever.
+ * Prompt lines stay ANSI-free by design — readline editing over colored text
+ * mis-measures in some terminals; the color identity lives in frames/output.
+ */
+export async function promptValidatedDefault(
+  env: HandlerEnv,
+  question: string,
+  current: string,
+  validate: (value: string) => string | null,
+  readLine: (env: HandlerEnv, question: string) => Promise<string> = readLineVisible,
+): Promise<DefaultPromptAnswer> {
+  for (;;) {
+    const answer = await promptDefault(env, question, current, readLine);
+    if (answer.kind !== "value") return answer;
+    const reason = validate(answer.value);
+    if (reason === null) return answer;
+    env.stdout(`${reason}\n`);
+  }
 }
 
 // Masked secret input. Uses raw mode so the key is never echoed to the
@@ -126,7 +188,12 @@ export async function discoverModels(
 
 /** Build the real-terminal OnboardIO used by `aifight setup` / `aifight config` in a TTY. */
 export function createOnboardIO(env: HandlerEnv): OnboardIO {
+  // The arrow-key chooser is wired only for a REAL terminal (U3): the raw-mode
+  // repaint math needs both streams, and a piped/scripted host must keep the
+  // printed-frame + numbered-line fallback. Same gate as the panel's.
+  const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
   return {
+    ...(interactive ? { choose: createMenuChooser(env) } : {}),
     promptLine: (q) => readLineVisible(env, q),
     promptHidden: (q) => readHidden(env, q),
     promptYesNo: (q, d) => readYesNo(env, q, d),

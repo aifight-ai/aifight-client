@@ -307,3 +307,50 @@ describe("bare `aifight rename` (interactive)", () => {
     expect(out()).toContain("No changes made.");
   });
 });
+
+// ── promptValidatedDefault (统一交互规范 P3, 2026-08-02) ─────────────
+
+import { promptValidatedDefault } from "../src/cli/commands/onboard-io";
+
+describe("promptValidatedDefault", () => {
+  function harness(answers: string[]) {
+    const out: string[] = [];
+    const asked: string[] = [];
+    let i = 0;
+    const env = { stdout: (s: string) => out.push(s), stderr: (s: string) => out.push(s) } as never;
+    const readLine = (_env: unknown, q: string): Promise<string> => {
+      asked.push(q);
+      return Promise.resolve(answers[i++] ?? "");
+    };
+    return { env, readLine, out: () => out.join(""), asked };
+  }
+
+  const numeric = (v: string): string | null => (/^\d+$/.test(v) ? null : "  numbers only");
+
+  it("re-asks in place on an invalid answer, then resolves the valid one", async () => {
+    const h = harness(["abc", "12"]);
+    const answer = await promptValidatedDefault(h.env, "Count", "1", numeric, h.readLine);
+    expect(answer).toEqual({ kind: "value", value: "12" });
+    expect(h.asked).toHaveLength(2); // asked again, not kicked out
+    expect(h.out()).toContain("numbers only");
+  });
+
+  it("bare Enter keeps without consulting validate", async () => {
+    const h = harness([""]);
+    const answer = await promptValidatedDefault(h.env, "Count", "1", () => "never", h.readLine);
+    expect(answer).toEqual({ kind: "keep" });
+    expect(h.out()).toBe("");
+  });
+
+  it("q cancels even after a failed attempt", async () => {
+    const h = harness(["xyz", "q"]);
+    const answer = await promptValidatedDefault(h.env, "Count", "1", numeric, h.readLine);
+    expect(answer).toEqual({ kind: "cancel" });
+  });
+
+  it("exhausted scripted input (empty) terminates as keep — no infinite loop", async () => {
+    const h = harness(["bad"]);
+    const answer = await promptValidatedDefault(h.env, "Count", "1", numeric, h.readLine);
+    expect(answer).toEqual({ kind: "keep" });
+  });
+});

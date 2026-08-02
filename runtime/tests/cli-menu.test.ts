@@ -212,16 +212,38 @@ describe("interactive menu", () => {
     expect(h.dispatched).toEqual([{ cmd: "rename", positional: ["Dark Knight"] }]);
   });
 
-  it("play asks game + count → start [game] [N]", async () => {
-    const h = harness(["1", "texas_holdem", "2", "q"]);
+  // U2 (统一交互规范 P1): the game is PICKED from a frame — row 1 is
+  // Auto-pick, rows 2-4 are the platform's games in SUPPORTED_GAMES order.
+  it("play picks the game from a frame → start [game] [N]", async () => {
+    const h = harness(["1", "2", "2", "q"]); // Play → row 2 (Texas) → 2 matches
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "start", positional: ["texas_holdem", "2"] }]);
   });
 
-  it("play with blank game → start [N] (auto game)", async () => {
-    const h = harness(["1", "", "", "q"]); // blank game, blank count → default 1
+  it("play's game frame offers Auto-pick first, then every game by display name", async () => {
+    const h = harness(["1", "q", "q"]); // open the picker, back out of it
+    await runInteractiveMenu(h.deps);
+    // frames[0] is the panel; frames[1] is the game picker.
+    const picker = h.frames[1]!;
+    expect(picker.title).toBe("Request a match — which game?");
+    expect(picker.choices.map((c) => c.main)).toEqual([
+      "Auto-pick", "Texas Hold'em", "Liar's Dice", "Coup", "← Back",
+    ]);
+    expect(picker.choices[0]!.hint).toBe("let the platform pick");
+    expect(picker.choices[1]!.hint).toBe("poker · 4-max table");
+    expect(h.dispatched).toEqual([]); // backing out of the picker dispatches nothing
+  });
+
+  it("play with Auto-pick + a kept count → start [N] (no game argument)", async () => {
+    const h = harness(["1", "1", "", "q"]); // Auto-pick, Enter keeps the [1] default
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "start", positional: ["1"] }]);
+  });
+
+  it("play: q at the count prompt cancels back to the panel", async () => {
+    const h = harness(["1", "4", "q", "q"]); // Coup picked, then q at the count
+    await runInteractiveMenu(h.deps);
+    expect(h.dispatched).toEqual([]);
   });
 
   it("daily cap without an agent on this machine says so instead of prompting", async () => {
@@ -303,7 +325,8 @@ describe("interactive menu", () => {
       { cmd: "status", positional: [] },
       { cmd: "record", positional: [] },
     ]);
-    expect(h.out()).toContain("aifight: boom in status");
+    // P6 (U2): failures read `✗ message`, not the funnel's `aifight: ` prefix.
+    expect(h.out()).toContain("✗ boom in status");
   });
 
   it("a failing action prints the error's hint, not just its message", async () => {
@@ -318,28 +341,75 @@ describe("interactive menu", () => {
     });
     const code = await runInteractiveMenu(h.deps);
     expect(code).toBe(0);
-    expect(h.out()).toContain("aifight: AIFight Bridge is not running.");
+    expect(h.out()).toContain("✗ AIFight Bridge is not running.");
     expect(h.out()).toContain("aifight service start");
   });
 
   it("play rejects a count of 0 before dispatching", async () => {
-    const h = harness(["1", "coup", "0", "q"]);
+    const h = harness(["1", "4", "0", "q"]); // Coup, then 0 → re-asks, then q
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([]);
     expect(h.out()).toContain("between 1 and 20");
   });
 
   it("play rejects a count above 20 before dispatching", async () => {
-    const h = harness(["1", "coup", "999", "q"]);
+    const h = harness(["1", "4", "999", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([]);
     expect(h.out()).toContain("between 1 and 20");
   });
 
+  // P3: an out-of-range count is explained and asked AGAIN in place — it used
+  // to bounce the user all the way back to the panel.
+  it("play re-asks the count in place and accepts the corrected answer", async () => {
+    const h = harness(["1", "4", "0", "3", "q"]);
+    await runInteractiveMenu(h.deps);
+    expect(h.out()).toContain("between 1 and 20");
+    expect(h.dispatched).toEqual([{ cmd: "start", positional: ["coup", "3"] }]);
+  });
+
   it("play accepts the 1-20 boundary", async () => {
-    const h = harness(["1", "coup", "20", "q"]);
+    const h = harness(["1", "4", "20", "q"]);
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "start", positional: ["coup", "20"] }]);
+  });
+});
+
+// U2 (统一交互规范 P1): the Service item used to demand a typed English action
+// word ("restart"); it is a picked row now. Install stays a one-click row when
+// the service is missing.
+describe("service item", () => {
+  it("picks an action from the frame and dispatches the English verb", async () => {
+    const h = harness(["17", "4", "q"], { serviceInstalled: true }); // row 4 = Restart
+    await runInteractiveMenu(h.deps);
+    expect(h.dispatched).toEqual([{ cmd: "service", positional: ["restart"] }]);
+    const picker = h.frames[1]!;
+    expect(picker.title).toBe("Service — pick an action");
+    expect(picker.choices.map((c) => c.main)).toEqual([
+      "Status", "Start", "Stop", "Restart", "Uninstall", "← Back",
+    ]);
+  });
+
+  it("backing out of the action frame dispatches nothing", async () => {
+    const h = harness(["17", "q", "q"], { serviceInstalled: true });
+    await runInteractiveMenu(h.deps);
+    expect(h.dispatched).toEqual([]);
+  });
+
+  it("a missing service makes the row itself the install button (no picker)", async () => {
+    const h = harness(["17", "q"], { serviceInstalled: false });
+    await runInteractiveMenu(h.deps);
+    expect(h.dispatched).toEqual([{ cmd: "service", positional: ["install"] }]);
+  });
+
+  it("speaks zh", async () => {
+    const h = harness(["17", "1", "q"], { serviceInstalled: true, locale: () => "zh" as const });
+    await runInteractiveMenu(h.deps);
+    expect(h.dispatched).toEqual([{ cmd: "service", positional: ["status"] }]);
+    expect(h.frames[1]!.title).toBe("常驻服务——选操作");
+    expect(h.frames[1]!.choices.map((c) => c.main)).toEqual([
+      "状态", "启动", "停止", "重启", "卸载", "← 返回",
+    ]);
   });
 });
 

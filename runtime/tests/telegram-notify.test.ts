@@ -75,7 +75,10 @@ function gameOver(overrides: GameOverOverrides = {}): ServerMessageEnvelope {
 describe("bridge notifier — match results", () => {
   it("reports a win with the game learned from game_start and a full replay URL", () => {
     const rec = recorder();
-    const notifier = createBridgeNotifier({ agentId: SELF, baseUrl: BASE_URL, channel: rec.channel });
+    // Frozen clock injected: without it Date.now() can advance ~1ms between
+    // the two observe calls under load and durationMs flakes to 1 (seen twice
+    // in full-suite runs, 2026-08-02).
+    const notifier = createBridgeNotifier({ agentId: SELF, baseUrl: BASE_URL, channel: rec.channel, now: () => 1_754_000_000_000 });
 
     notifier.observeServerMessage(gameStart("sess-1", "texas_holdem"));
     notifier.observeServerMessage(gameOver({ replayUrl: "/replay/abc123" }));

@@ -31,9 +31,9 @@ import { createControlClient } from "../control-client";
 import { readPort, readToken } from "../runtime-files";
 import type { HandlerEnv } from "../shared";
 import { t, type Locale } from "../i18n";
-import { createAnsi } from "../ansi";
-import { renderMenuFrame, type MenuFrame, type MenuFrameChoice } from "./menu-frame";
+import type { MenuFrame, MenuFrameChoice } from "./menu-frame";
 import type { MenuChoose } from "./menu-select";
+import { pickOneKey, type PickOneDeps } from "./pick-one";
 import { agentSeatHolderPid } from "./bridge-start";
 import { registerAgentConfig } from "./setup";
 
@@ -87,7 +87,7 @@ export async function runProfileMenu(deps: ProfileMenuDeps): Promise<void> {
     rows.push({ kind: "create" }, { kind: "back" });
 
     const frame = buildSubmenuFrame(loc, active, others, rows);
-    const key = await pickKey(deps, frame, loc);
+    const key = await pickOneKey(pickDeps(deps, loc), frame);
     if (key === null || key === "q") return;
     const row = rows[Number.parseInt(key, 10) - 1];
     if (row === undefined) continue; // a key that maps to no row — redraw
@@ -143,13 +143,16 @@ function buildSubmenuFrame(
   return { title: t(loc, "profile.title"), banner: [], subheader, choices };
 }
 
-/** One chooser pass (single-column), or the line-prompt fallback. q/Esc → null. */
-async function pickKey(deps: ProfileMenuDeps, frame: MenuFrame, loc: Locale): Promise<string | null> {
-  if (deps.choose !== undefined) {
-    return (await deps.choose(frame, { locale: loc, singleColumn: true })).trim().toLowerCase();
-  }
-  deps.env.stdout(`\n${renderMenuFrame(frame, -1, createAnsi({ enabled: false }), 0, { singleColumn: true }).join("\n")}\n\n`);
-  return (await deps.prompt(t(loc, "menu.pick"))).trim().toLowerCase();
+/** This submenu's deps shaped for the shared P1 primitive (pick-one.ts). The
+ *  hand-rolled chooser/line pair that used to live here is gone — one
+ *  implementation for every list choice in the CLI. */
+function pickDeps(deps: ProfileMenuDeps, loc: Locale): PickOneDeps {
+  return {
+    env: deps.env,
+    locale: loc,
+    ...(deps.choose !== undefined ? { choose: deps.choose } : {}),
+    prompt: deps.prompt,
+  };
 }
 
 /** Switch the active identity: desktop-seat guard, the store write, the ✓

@@ -19,9 +19,13 @@ import { isSafeAutoUpdatePhase } from "../../bridge/auto-update";
 import { getBridgeConfigPath } from "../../bridge/config";
 import { BridgeServiceError, restartBridgeService, statusBridgeService } from "../../bridge/service";
 import { getAgentsRoot } from "../../store/paths";
+import { createStatusIcons } from "../ansi";
+import { resolveLocale, t } from "../i18n";
+import { createOutput } from "../output";
 import { portFilePath } from "../runtime-files";
 import type { HandlerEnv } from "../shared";
 import { makeClient } from "../shared";
+import { promptYesNo } from "./onboard-io";
 
 export interface ApplySettingsOptions {
   /** Skip every prompt and print the plain hint (scripts, --json). */
@@ -31,7 +35,9 @@ export interface ApplySettingsOptions {
   readonly confirm?: boolean;
   /** Test seam. Defaults to `process.stdin.isTTY === true`. */
   readonly interactive?: boolean;
-  /** Test seam for the confirm prompt. Defaults to a stdin read. */
+  /** Test seam for the confirm prompt. Defaults to P4 (onboard-io's
+   *  promptYesNo, default yes). The question arrives WITHOUT the `[Y/n]`
+   *  bracket — P4 appends that itself. */
   readonly promptYesNo?: (question: string) => Promise<boolean>;
 }
 
@@ -157,23 +163,28 @@ export async function applyPendingBridgeRestart(
     return "match_in_progress";
   }
 
+  // P4 (统一交互规范 §2, 批 U4): the one yes/no primitive. The bracket suffix
+  // belongs to promptYesNo, so the question — and its i18n entry — carries none.
+  const loc = env.locale?.() ?? resolveLocale();
   if (opts.confirm !== false) {
-    const ask = opts.promptYesNo ?? ((q: string) => promptYesNoDefaultYes(env, q));
-    if (!(await ask("Restart the bridge now so it takes effect? [Y/n] "))) {
-      say("Left running with the previous settings — `aifight service restart` when you're ready.\n");
+    const ask = opts.promptYesNo ?? ((q: string) => promptYesNo(env, q, true));
+    if (!(await ask(t(loc, "confirm.restart.ask")))) {
+      say(`${t(loc, "confirm.restart.declined")}\n`);
       return "declined";
     }
   }
 
   try {
     const result = await restartBridgeService(env.bridgeService);
-    say(`aifight.service restarted (${result.platform}) — the new settings are live.\n`);
+    const ok = (env.statusIcons ?? createStatusIcons()).ok;
+    say(`${ok} ${t(loc, "confirm.restart.ok", { platform: result.platform })}\n`);
     return "restarted";
   } catch (cause) {
+    // P6: `✗ message` in red, the fix hint plain underneath. Stays on stderr —
+    // a script tailing stderr for this failure must keep seeing it there.
     const hint = cause instanceof BridgeServiceError ? cause.hint : undefined;
-    env.stderr(`warning: aifight.service could not be restarted: ${describe(cause)}\n`);
-    if (hint !== undefined) env.stderr(`${hint}\n`);
-    env.stderr("The setting is saved — run `aifight service restart` once that is sorted.\n");
+    env.stderr(createOutput().fail(t(loc, "confirm.restart.failed", { error: describe(cause) }), hint));
+    env.stderr(`${t(loc, "confirm.restart.failed.tail")}\n`);
     return "failed";
   }
 }
@@ -207,16 +218,4 @@ function describe(cause: unknown): string {
   const stderr = (cause as { stderr?: unknown } | undefined)?.stderr;
   if (typeof stderr === "string" && stderr.trim() !== "") return stderr.trim().split("\n")[0]!;
   return cause instanceof Error ? cause.message : String(cause);
-}
-
-async function promptYesNoDefaultYes(env: HandlerEnv, question: string): Promise<boolean> {
-  env.stdout(question);
-  process.stdin.resume();
-  process.stdin.setEncoding("utf8");
-  const answer = await new Promise<string>((resolve) => {
-    process.stdin.once("data", (chunk) => resolve(String(chunk)));
-  });
-  process.stdin.pause();
-  const normalized = answer.trim().toLowerCase();
-  return normalized === "" || normalized === "y" || normalized === "yes";
 }

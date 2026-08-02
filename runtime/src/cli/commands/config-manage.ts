@@ -19,13 +19,20 @@ import {
   isManagedKeyRef,
 } from "./config-edit.js";
 import { configError, boolFlag } from "./config-shared.js";
-import { createOnboardIO } from "./onboard-io.js";
+import { bindPromptLine, type PromptLineFn } from "./onboard-io.js";
+import { resolveLocale, t } from "../i18n.js";
 
 // ─── remove ──────────────────────────────────────────────────────────
 
 const REMOVE_USAGE = "usage: aifight config remove <profile> [--yes] [agent-slug]";
 
-export async function runConfigRemove(args: HandlerArgs, env: HandlerEnv): Promise<number> {
+export async function runConfigRemove(
+  args: HandlerArgs,
+  env: HandlerEnv,
+  /** Test seam for the typed confirmation (批 U4): supplying one also stands
+   *  in for the terminal, so both branches are testable without a stdin. */
+  promptLine?: PromptLineFn,
+): Promise<number> {
   const profileId = args.positional[0];
   if (profileId === undefined || profileId.trim() === "") {
     throw new UsageError("config remove requires a <profile> id", REMOVE_USAGE);
@@ -53,12 +60,15 @@ export async function runConfigRemove(args: HandlerArgs, env: HandlerEnv): Promi
     });
   }
 
-  // Confirmation (human TTY only; --json / non-TTY / --yes skip it).
-  if (!args.jsonMode && !boolFlag(args.flags, "yes") && process.stdin.isTTY === true) {
-    const io = createOnboardIO(env);
-    const answer = (await io.promptLine(`Type "${profileId}" to confirm removal (or Enter to cancel): `)).trim();
+  // Confirmation (human TTY only; --json / non-TTY / --yes skip it). U4 keeps
+  // the typed-name semantics — deleting a profile is not a [y/N] question —
+  // and only moves the wording into i18n.
+  if (!args.jsonMode && !boolFlag(args.flags, "yes") && (promptLine !== undefined || process.stdin.isTTY === true)) {
+    const loc = env.locale?.() ?? resolveLocale();
+    const ask = promptLine ?? bindPromptLine(env);
+    const answer = (await ask(`${t(loc, "confirm.config.remove.verify", { profile: profileId })}: `)).trim();
     if (answer !== profileId) {
-      env.stdout("Cancelled — nothing removed.\n");
+      env.stdout(`${t(loc, "confirm.config.remove.cancelled")}\n`);
       return 0;
     }
   }

@@ -33,6 +33,7 @@ const STRINGS = {
   cmd_settings: { zh: "设置：上限/游戏/摘要/复盘/改名", en: "Settings: cap, games, digest, review, rename" },
   cmd_links: { zh: "常用链接", en: "Useful links" },
   cmd_mute: { zh: "静音通知", en: "Mute notifications" },
+  cmd_update: { zh: "升级 CLI（无对局时）", en: "Update the CLI (when idle)" },
   cmd_help: { zh: "帮助", en: "Help" },
 
   // ── Match results ──────────────────────────────────────────────────
@@ -143,6 +144,7 @@ const STRINGS = {
   btn_links: { zh: "🔗 链接", en: "🔗 Links" },
   btn_home: { zh: "« 主菜单", en: "« Menu" },
   btn_refresh: { zh: "🔄 刷新", en: "🔄 Refresh" },
+  btn_update: { zh: "⬆️ 升级 CLI", en: "⬆️ Update CLI" },
   btn_pause: { zh: "⏸ 暂停自动匹配", en: "⏸ Pause auto-matching" },
   btn_resume: { zh: "▶️ 恢复自动匹配", en: "▶️ Resume auto-matching" },
   btn_confirm: { zh: "✅ 确定", en: "✅ Confirm" },
@@ -184,9 +186,54 @@ const STRINGS = {
   phase_matching: { zh: "当前：匹配中", en: "Now: matching" },
   phase_in_match: { zh: "当前：对局进行中", en: "Now: in a match" },
   status_phase: { zh: "{phase}", en: "{phase}" },
-  status_today: { zh: "今日自动对局：{played} / {cap}", en: "Automatic matches today: {played} / {cap}" },
-  status_cap_off: { zh: "关闭", en: "off" },
+  status_today: { zh: "今日自动 {played}/{cap}", en: "Auto today: {played}/{cap}" },
+  status_cap_off: { zh: "仅手动", en: "manual only" },
   status_unavailable: { zh: "平台状态暂不可用。", en: "Platform status is unavailable right now." },
+  // The /status panel says what the CLI's status box says, in the same words
+  // (U5/T1): matching state, public model, games, today's count, version.
+  // A row whose fact this process cannot know is left out entirely — a
+  // placeholder would be a claim of its own.
+  status_match_queued: { zh: "匹配：⚔ 排队中 · {game}", en: "matching: ⚔ queued · {game}" },
+  status_match_idle: { zh: "匹配：空闲", en: "matching: idle" },
+  status_match_paused: { zh: "匹配：⏸ 已暂停", en: "matching: ⏸ paused" },
+  status_model: { zh: "公开模型：{model}", en: "Public model: {model}" },
+  status_games: { zh: "参赛游戏：{games}", en: "Games: {games}" },
+  status_version: { zh: "CLI 版本：v{version}", en: "CLI version: v{version}" },
+  // Same row, with the newer version named (U6/T3). Only ever shown when a
+  // version check actually answered — an unreachable registry says nothing.
+  status_version_update: {
+    zh: "CLI 版本：v{version}（可更新 → v{latest}）",
+    en: "CLI version: v{version} (update available → v{latest})",
+  },
+
+  // ── Remote update (U6/T3) ──────────────────────────────────────────
+  // The one action in the bot with no confirmation tap (owner ruling
+  // 2026-08-02). These four sentences ARE the safety net: each refusal says
+  // which gate stopped it, and the receipt says what happens next.
+  update_busy: {
+    zh: "有对局在打，结束后再试。升级会重启服务，中途重启这一局就判负了。",
+    en: "A match is in progress — try again when it finishes. Updating restarts the service, and a restart mid-match forfeits it.",
+  },
+  update_check_failed: {
+    zh: "查不到版本信息，稍后再试。",
+    en: "Could not reach the version check — try again shortly.",
+  },
+  update_current: { zh: "已是最新 v{version}。", en: "Already on the latest: v{version}." },
+  update_started: {
+    zh: "⬆️ 开始升级到 v{latest}——service 会自动重启，升完发 /status 就能验证。",
+    en: "⬆️ Updating to v{latest} — the service restarts itself; send /status afterwards to check.",
+  },
+  // Appended whenever this process is NOT the installed service: an
+  // `aifight run` in a terminal keeps running the old code until it is
+  // restarted by hand, and nothing here can do that for it.
+  update_foreground_note: {
+    zh: "前台 <code>aifight run</code> 的桥要自己重启才用上新版。",
+    en: "A foreground <code>aifight run</code> bridge has to be restarted by hand to pick up the new version.",
+  },
+  update_failed: {
+    zh: "没能启动升级——请到这台机器上手动运行 <code>aifight update --yes</code>。",
+    en: "Could not start the update — run <code>aifight update --yes</code> on the machine instead.",
+  },
 
   play_title: { zh: "对局", en: "Play" },
   play_state_running: { zh: "自动匹配：▶️ 运行中", en: "Auto-matching: ▶️ running" },
@@ -226,6 +273,13 @@ const STRINGS = {
   notify_not_muted: { zh: "🔔 未静音", en: "🔔 Not muted" },
 
   settings_title: { zh: "设置", en: "Settings" },
+  // Group headings for the settings message (U5/T2). Six flat rows read as one
+  // undifferentiated list; four bold groups let the eye jump straight to the
+  // thing it came for.
+  settings_group_play: { zh: "对局", en: "Play" },
+  settings_group_notify: { zh: "通知", en: "Notifications" },
+  settings_group_review: { zh: "复盘", en: "Review" },
+  settings_group_language: { zh: "语言", en: "Language" },
   settings_daily_current: { zh: "每日自动对局上限：{limit}", en: "Daily automatic match cap: {limit}" },
   settings_games_current: { zh: "参与游戏：{games}", en: "Games: {games}" },
   settings_digest_current: { zh: "每日摘要时间：{time}", en: "Daily digest at: {time}" },
@@ -250,7 +304,9 @@ const STRINGS = {
     en: "Reply with the digest time as 24-hour HH:MM (this machine's local time), e.g. 21:30.",
   },
   settings_digest_invalid: { zh: "格式要是 HH:MM（24 小时制），再回复一次。", en: "That has to be HH:MM on a 24-hour clock — reply again." },
-  settings_language: { zh: "语言：{language}", en: "Language: {language}" },
+  // Under the "Language" group heading, "Language: English" would say the same
+  // word twice — this row is specifically the language the BOT writes in.
+  settings_language: { zh: "消息语言：{language}", en: "Message language: {language}" },
   settings_daily_set: { zh: "每日上限已设为 {limit}。", en: "Daily cap set to {limit}." },
   // The server clamps to the admin ceiling and answers with what it stored, so
   // this reports the number that is actually in force, not the one asked for.
@@ -352,6 +408,7 @@ const STRINGS = {
       "/record 战绩 —— 各游戏评分、近 5 场与回放",
       "/notify 通知偏好 · /mute 静音",
       "/settings 设置 —— 每日上限、参与游戏、摘要时间、自动复盘、改名、语言",
+      "/update 升级 CLI —— 无对局时把这台机器上的 CLI 升到最新",
       "/links 常用链接 · /help 本说明",
       "",
       "<b>你会收到</b>",
@@ -375,6 +432,7 @@ const STRINGS = {
       "/record — per-game ratings, last 5 matches, replays",
       "/notify notification preferences · /mute quiet hours",
       "/settings — daily cap, games, digest time, auto-review, rename, language",
+      "/update — update this machine's CLI to the latest, when no match is running",
       "/links useful links · /help this guide",
       "",
       "<b>What you will receive</b>",
@@ -702,6 +760,7 @@ export function botCommands(locale: NotifyLocale): ReadonlyArray<{ command: stri
     { command: "notify", description: t(locale, "cmd_notify") },
     { command: "settings", description: t(locale, "cmd_settings") },
     { command: "daily", description: t(locale, "cmd_daily") },
+    { command: "update", description: t(locale, "cmd_update") },
     { command: "links", description: t(locale, "cmd_links") },
     { command: "mute", description: t(locale, "cmd_mute") },
     { command: "help", description: t(locale, "cmd_help") },

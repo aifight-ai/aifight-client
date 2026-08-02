@@ -22,14 +22,19 @@ import type { HandlerEnv } from "../shared.js";
 import {
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_MAX_TOKENS,
-  STORABLE_REASONING_EFFORTS,
 } from "../../profile/config-schema.js";
 import type { LLMConfig, LLMProfile, Protocol, ReasoningEffort } from "../../profile/config-schema.js";
 import { validateProviderBaseURL } from "../../profile/config-schema.js";
 import { resolveAgentDir } from "../../profile/profile-loader.js";
 import { checkSecretStatus } from "../../profile/secret-ref.js";
 import { resolveModelCapabilities, recommendMaxTokens } from "../../llm/capabilities/validate-capabilities.js";
+import { resolveLocale, t, type Locale } from "../i18n.js";
+import { createOutput } from "../output.js";
 import { buildLLMProfile } from "./config-shared.js";
+import type { MenuFrame } from "./menu-frame.js";
+import type { MenuChoose } from "./menu-select.js";
+import { promptValidatedDefault } from "./onboard-io.js";
+import { pickOneKey, type PickOneDeps } from "./pick-one.js";
 
 export interface OnboardProvider {
   /** Menu key, e.g. "1". */
@@ -57,7 +62,9 @@ export const ONBOARD_PROVIDERS: readonly OnboardProvider[] = [
   {
     key: "1",
     id: "claude",
-    label: "Claude   (Anthropic)",
+    // U3: single-spaced. The label used to be padded so a hand-printed list
+    // lined up; it is now a frame row, where the renderer owns the alignment.
+    label: "Claude (Anthropic)",
     protocol: "anthropic_messages",
     officialBaseURL: "https://api.anthropic.com",
     // Current-generation speed/intelligence tier. Sonnet 4.6 is now a legacy model,
@@ -70,7 +77,7 @@ export const ONBOARD_PROVIDERS: readonly OnboardProvider[] = [
   {
     key: "2",
     id: "gpt",
-    label: "GPT      (OpenAI Responses API)",
+    label: "GPT (OpenAI Responses API)",
     protocol: "openai_responses",
     officialBaseURL: "https://api.openai.com/v1",
     // Cost-effective mainstream tier (not the flagship). Kept in sync with the
@@ -81,7 +88,7 @@ export const ONBOARD_PROVIDERS: readonly OnboardProvider[] = [
   {
     key: "3",
     id: "compat",
-    label: "OpenAI Chat Completions  (DeepSeek / GLM / Minimax / Qwen / …)",
+    label: "OpenAI Chat Completions (DeepSeek / GLM / Minimax / Qwen / …)",
     protocol: "openai_chat_compat",
     officialBaseURL: undefined, // base URL is required for compat providers
     defaultModel: "deepseek-v4-flash",
@@ -90,7 +97,7 @@ export const ONBOARD_PROVIDERS: readonly OnboardProvider[] = [
   {
     key: "4",
     id: "gemini",
-    label: "Gemini   (Google)",
+    label: "Gemini (Google)",
     protocol: "gemini_generate_content",
     // Bare domain, NO /v1beta: the gemini_generate_content adapter appends the
     // version path itself. Must match protocolDefaultBaseURL (resolve-profile.ts)
@@ -102,6 +109,13 @@ export const ONBOARD_PROVIDERS: readonly OnboardProvider[] = [
 ] as const;
 
 export interface OnboardIO {
+  /**
+   * The arrow-key chooser for every N-of-1 step (统一交互规范 P1, U3). Present
+   * only when the host is a real terminal (createOnboardIO wires it behind the
+   * stdin+stdout TTY gate); absent for scripted/injected IO, where pickOneKey
+   * falls back to the printed frame + numbered line answer read by promptLine.
+   */
+  choose?: MenuChoose;
   /** Visible single-line prompt; returns the trimmed answer. */
   promptLine(question: string): Promise<string>;
   /** Masked prompt for secrets; returns the raw value (not trimmed of inner chars). */
@@ -123,6 +137,41 @@ export interface OnboardIO {
 export type OnboardResult = "configured" | "failed";
 
 const MAX_ATTEMPTS = 3;
+
+// ── The wizard on the shared interaction primitives (统一交互规范, U3) ──
+//
+// Every choice below goes through pickOneKey (P1) and every typed value through
+// promptValidatedDefault (P3), so `aifight setup` and `aifight config llm` look
+// and behave like the panel instead of like a different program. Two rules the
+// steps here follow, because a wizard is a chain and not a menu:
+//   * a STEP frame (provider, model) carries a Back row where going back is
+//     meaningful;
+//   * a VALUE frame (reasoning effort, streaming) carries none — q/Enter mean
+//     "take the shown default", exactly what Enter meant before. That also
+//     keeps an exhausted script moving FORWARD: a blank answer must never bounce
+//     the wizard into a step that will read blank again.
+
+/** The display locale for the wizard's chrome (menu.ts's rule: read fresh). */
+function localeOf(env: HandlerEnv): Locale {
+  return env.locale?.() ?? resolveLocale();
+}
+
+/** The wizard's IO shaped for the shared P1 primitive: the arrow-key chooser
+ *  when the host wired one, the injected line prompt otherwise. */
+export function onboardPickDeps(io: OnboardIO, env: HandlerEnv, locale: Locale): PickOneDeps {
+  return {
+    env,
+    locale,
+    ...(io.choose !== undefined ? { choose: io.choose } : {}),
+    prompt: (question) => io.promptLine(question),
+  };
+}
+
+/** The wizard's line prompt shaped for the P3 helpers (which take an env they
+ *  do not use once a reader is injected). */
+export function onboardAskLine(io: OnboardIO): (env: HandlerEnv, question: string) => Promise<string> {
+  return (_env, question) => io.promptLine(question);
+}
 
 // DEFAULT_MAX_TOKENS is imported from config-schema (D16 single source):
 // AIFight is a reasoning arena, so generous output room is the default.
@@ -228,8 +277,9 @@ async function pruneUnresolvableProfiles(slug: string, env: HandlerEnv): Promise
   if (placeholders.length === 0) return;
   // Say exactly what is being dropped BEFORE dropping it — a silent prune is
   // how a real profile disappears without anyone noticing.
+  const loc = localeOf(env);
   for (const id of placeholders) {
-    env.stdout(`  Removing leftover placeholder profile "${id}" (its env key is not set on this machine).\n`);
+    env.stdout(`${t(loc, "llmhub.wizard.prune.removing", { id })}\n`);
     delete config.profiles[id];
   }
   if (config.profiles[config.routing.default] === undefined) config.routing.default = active;
@@ -262,13 +312,16 @@ async function existingConfigIsUsable(slug: string, io: OnboardIO, env: HandlerE
   // DEFAULT_CONFIG points at an absent env var → fall through to interactive.
   const status = await checkSecretStatus(active.apiKeyRef);
   if (!status.available) return false;
-  env.stdout(`Found a saved LLM config (${active.displayName ?? config.activeProfile}). Testing…\n`);
+  const loc = localeOf(env);
+  env.stdout(
+    `${t(loc, "llmhub.wizard.existing.found", { name: active.displayName ?? config.activeProfile })}\n`,
+  );
   const ok = await io.probe(slug);
   if (ok) {
-    env.stdout("  ✓ model responded.\n\n");
+    env.stdout(`${t(loc, "llmhub.wizard.existing.ok")}\n\n`);
     return true;
   }
-  env.stdout("  The saved key did not respond — let's set it up again.\n\n");
+  env.stdout(`${t(loc, "llmhub.wizard.existing.stale")}\n\n`);
   return false;
 }
 
@@ -287,15 +340,21 @@ function isBack(answer: string): boolean {
 }
 
 async function chooseProvider(io: OnboardIO, env: HandlerEnv): Promise<OnboardProvider | undefined> {
-  env.stdout("Which LLM will your agent play with?\n");
-  for (const p of ONBOARD_PROVIDERS) env.stdout(`    ${p.key}) ${p.label}\n`);
-  for (let i = 0; i < MAX_ATTEMPTS; i++) {
-    const answer = (await io.promptLine("  Choose [1-4]: ")).trim();
-    const match = ONBOARD_PROVIDERS.find((p) => p.key === answer);
-    if (match) return match;
-    env.stdout("  Please enter 1, 2, 3, or 4.\n");
-  }
-  return undefined;
+  const loc = localeOf(env);
+  // P1: the provider used to be a hand-printed English list plus a typed
+  // "Choose [1-4]". Same four rows, same keys, now the shared frame — the
+  // brand labels stay English on purpose.
+  const frame: MenuFrame = {
+    title: t(loc, "llmhub.provider_title"),
+    banner: [],
+    choices: [
+      ...ONBOARD_PROVIDERS.map((p) => ({ key: p.key, main: p.label })),
+      { key: "q", main: t(loc, "challenge.menu.back.main") },
+    ],
+  };
+  const key = await pickOneKey(onboardPickDeps(io, env, loc), frame);
+  if (key === null) return undefined; // q / Esc / an exhausted script
+  return ONBOARD_PROVIDERS.find((p) => p.key === key);
 }
 
 async function chooseBaseURL(
@@ -303,29 +362,43 @@ async function chooseBaseURL(
   io: OnboardIO,
   env: HandlerEnv,
 ): Promise<string | undefined | Back> {
+  // P3: one prompt shape, the reason printed in place, the question re-asked
+  // without abandoning the step. "b" stays navigation rather than a value, so
+  // the wizard's back-chain survives the move onto the shared helper.
+  const validate = (value: string): string | null => {
+    if (isBack(value)) return null;
+    const problem = baseURLProblem(value);
+    return problem === null ? null : `  ${problem}`;
+  };
+  const ask = onboardAskLine(io);
+  const loc = localeOf(env);
   if (provider.officialBaseURL === undefined) {
-    // Compat: base URL is required.
+    // Compat: base URL is required — there is no default to keep, so Enter
+    // asks again (bounded, so an exhausted script still gets out).
     for (let i = 0; i < MAX_ATTEMPTS; i++) {
-      const raw = (await io.promptLine("  Base URL (e.g. https://api.deepseek.com/v1) [b = back]: ")).trim();
-      if (isBack(raw)) return BACK;
-      if (raw === "") continue; // empty → ask again
-      const problem = baseURLProblem(raw);
-      if (problem === null) return raw.replace(/\/+$/, "");
-      env.stdout(`  ${problem}\n`);
+      const answer = await promptValidatedDefault(
+        env,
+        t(loc, "llmhub.wizard.baseurl.q"),
+        t(loc, "llmhub.wizard.baseurl.required"),
+        validate,
+        ask,
+      );
+      if (answer.kind === "cancel") return BACK;
+      if (answer.kind === "keep") continue;
+      return isBack(answer.value) ? BACK : answer.value.replace(/\/+$/, "");
     }
     return undefined;
   }
-  for (let i = 0; i < MAX_ATTEMPTS; i++) {
-    const raw = (
-      await io.promptLine(`  Base URL [Enter = official ${provider.officialBaseURL}, or paste a custom one, b = back]: `)
-    ).trim();
-    if (isBack(raw)) return BACK;
-    if (raw === "") return provider.officialBaseURL;
-    const problem = baseURLProblem(raw);
-    if (problem === null) return raw.replace(/\/+$/, "");
-    env.stdout(`  ${problem}\n`);
-  }
-  return provider.officialBaseURL;
+  const answer = await promptValidatedDefault(
+    env,
+    t(loc, "llmhub.wizard.baseurl.q"),
+    t(loc, "llmhub.wizard.baseurl.official", { url: provider.officialBaseURL }),
+    validate,
+    ask,
+  );
+  if (answer.kind === "cancel") return BACK;
+  if (answer.kind === "keep") return provider.officialBaseURL;
+  return isBack(answer.value) ? BACK : answer.value.replace(/\/+$/, "");
 }
 
 /** The pasted key is sent to whatever base URL survives this prompt (model
@@ -345,26 +418,53 @@ async function chooseModel(
   io: OnboardIO,
   env: HandlerEnv,
 ): Promise<string | Back> {
+  const loc = localeOf(env);
   // Best-effort discovery; never blocks the flow.
   const models = await io.discoverModels({ protocol: provider.protocol, baseURL, apiKey });
   if (models && models.length > 0) {
     const shown = models.slice(0, 30);
-    env.stdout("  Available models:\n");
-    shown.forEach((m, i) => env.stdout(`    ${i + 1}) ${m}\n`));
-    const answer = (
-      await io.promptLine(`  Pick a number, type a model name, or Enter for default (${provider.defaultModel}) [b = back]: `)
-    ).trim();
-    if (isBack(answer)) return BACK;
-    if (answer === "") return provider.defaultModel;
-    const asNum = Number.parseInt(answer, 10);
-    if (Number.isInteger(asNum) && asNum >= 1 && asNum <= shown.length) return shown[asNum - 1]!;
-    return answer;
+    // P1: the discovered list is a frame, with one explicit row for "not in
+    // this list" instead of the old "type a name here too" overloading. Enter
+    // still means the provider's default model, so a scripted run behaves
+    // exactly as it did — and always moves forward.
+    const customKey = String(shown.length + 1);
+    const frame: MenuFrame = {
+      title: t(loc, "llmhub.model_title"),
+      banner: [],
+      choices: [
+        ...shown.map((m, i) => ({
+          key: String(i + 1),
+          main: m,
+          ...(m === provider.defaultModel ? { hint: t(loc, "llmhub.tag.default") } : {}),
+        })),
+        { key: customKey, main: t(loc, "llmhub.model_custom") },
+      ],
+    };
+    const key = await pickOneKey(onboardPickDeps(io, env, loc), frame);
+    if (key === null) return provider.defaultModel;
+    if (key !== customKey) {
+      const picked = shown[Number.parseInt(key, 10) - 1];
+      if (picked !== undefined) return picked;
+    }
+    // the custom row falls through to the typed prompt below
   }
-  const answer = (
-    await io.promptLine(`  Model [Enter = ${provider.defaultModel}, or type a name, b = back]: `)
-  ).trim();
-  if (isBack(answer)) return BACK;
-  return answer === "" ? provider.defaultModel : answer;
+  return typeModel(provider, io, env);
+}
+
+/** P3: type a model id yourself — the no-discovery path, and what the
+ *  discovered list's "type another model id" row opens. */
+async function typeModel(provider: OnboardProvider, io: OnboardIO, env: HandlerEnv): Promise<string | Back> {
+  const loc = localeOf(env);
+  const answer = await promptValidatedDefault(
+    env,
+    t(loc, "llmhub.wizard.model.q"),
+    t(loc, "llmhub.wizard.model.default", { model: provider.defaultModel }),
+    () => null, // any id is accepted here; the live probe is the real check
+    onboardAskLine(io),
+  );
+  if (answer.kind === "cancel") return BACK;
+  if (answer.kind === "keep") return provider.defaultModel;
+  return isBack(answer.value) ? BACK : answer.value;
 }
 
 /**
@@ -383,6 +483,7 @@ async function chooseModelSettings(
   env: HandlerEnv,
 ): Promise<ModelSettings | Back> {
   const caps = resolveModelCapabilities(provider.protocol, model);
+  const loc = localeOf(env);
 
   // ── Thinking ──
   let thinkingEnabled: boolean;
@@ -390,15 +491,13 @@ async function chooseModelSettings(
     thinkingEnabled = false;
   } else if (caps.thinkingAlwaysOn) {
     thinkingEnabled = true;
-    env.stdout("  This model always reasons — thinking can't be turned off.\n");
+    env.stdout(`${t(loc, "llmhub.wizard.thinking.always_on")}\n`);
   } else {
     // Pass-through protocols default the toggle OFF: the endpoint's model may not
     // reason at all, and a forwarded reasoning_effort would 400 on it. Reasoning
     // arenas want it on everywhere else.
     thinkingEnabled = await io.promptYesNo(
-      caps.thinkingDefaultOn
-        ? "  Enable thinking / reasoning? (recommended)"
-        : "  Enable thinking / reasoning? (only if this endpoint's model reasons)",
+      t(loc, caps.thinkingDefaultOn ? "llmhub.wizard.thinking.ask" : "llmhub.wizard.thinking.ask_passthrough"),
       caps.thinkingDefaultOn,
     );
   }
@@ -417,35 +516,45 @@ async function chooseModelSettings(
       : caps.defaultEffort
         ? normalizeEffort(caps.defaultEffort)
         : (efforts[efforts.length - 1] as ReasoningEffort);
-    env.stdout(
-      `  Reasoning effort: ${efforts.join(", ")}, or auto (= the provider's default` +
-        `${caps.defaultEffort ? `, ${caps.defaultEffort}` : ""})` +
-        (caps.isKnownModel ? "" : " (suggested — this model isn't in the built-in list)") +
-        "\n",
-    );
-    const ans = (await io.promptLine(`  Effort [Enter = ${def}, b = back]: `)).trim().toLowerCase();
-    if (isBack(ans)) return BACK;
-    const picked = normalizeEffort(ans);
-    if (ans === "") {
-      effort = def;
-    } else if (efforts.includes(picked) || picked === "auto") {
-      effort = picked;
-      effortExplicit = picked !== "auto";
-    } else if (STORABLE_REASONING_EFFORTS.includes(picked)) {
-      // A storable tier the model doesn't list is ACCEPTED — the adapter clamps it
-      // on send — but say so now, at the prompt, not never. (Same rule as the
-      // desktop chips: max stays clickable on gpt-5.5 with a "sent as xhigh" note.)
-      if (caps.isKnownModel) {
-        env.stdout(`  Note: this model doesn't list "${picked}" — it will be clamped when sent.\n`);
-      }
-      effort = picked;
-      effortExplicit = true;
+    // P1 value frame. The ROWS are the protocol's tier vocabulary (what the
+    // desktop renders as chips) rather than only this model's list: a tier the
+    // model doesn't list is storable and clamped by the adapter, so it stays
+    // pickable and is annotated instead of gated away. Typing a tier used to be
+    // the only way to reach those — the frame makes them visible.
+    const tiers: ReasoningEffort[] = [];
+    for (const raw of caps.protocolEfforts.length > 0 ? caps.protocolEfforts : caps.efforts) {
+      const tier = normalizeEffort(raw);
+      if (!tiers.includes(tier)) tiers.push(tier);
+    }
+    if (!tiers.includes(def)) tiers.unshift(def);
+    const autoKey = String(tiers.length + 1);
+    const frame: MenuFrame = {
+      title: t(loc, "llmhub.effort_title"),
+      banner: [],
+      // Only said when it is true: the tiers are the protocol's, and the
+      // registry has nothing model-specific to back them up.
+      ...(caps.isKnownModel ? {} : { subheader: [`  ${t(loc, "llmhub.effort.unknown_model")}`] }),
+      choices: [
+        ...tiers.map((tier, i) => {
+          const tags = [
+            tier === def ? t(loc, "llmhub.tag.default") : null,
+            caps.isKnownModel && !efforts.includes(tier) ? t(loc, "llmhub.tag.clamped") : null,
+          ].filter((tag): tag is string => tag !== null);
+          return { key: String(i + 1), main: tier, ...(tags.length > 0 ? { hint: tags.join(" · ") } : {}) };
+        }),
+        { key: autoKey, main: "auto", hint: t(loc, "llmhub.effort.auto") },
+      ],
+    };
+    const key = await pickOneKey(onboardPickDeps(io, env, loc), frame);
+    if (key === null || key === autoKey) {
+      // Enter/q keeps the shown default (what Enter always did here); "auto"
+      // means "send no effort at all", so neither counts as an explicit tier
+      // for the max-tokens recommendation below.
+      effort = key === autoKey ? "auto" : def;
     } else {
-      // Never swallow the answer. This used to fall back to the default in silence,
-      // so a user who typed a tier the model lacks got a config that disagreed with
-      // what they'd just chosen, with nothing on screen saying so.
-      env.stdout(`  "${ans}" isn't a level this app can save — using ${def}.\n`);
-      effort = def;
+      const picked = tiers[Number.parseInt(key, 10) - 1];
+      effort = picked ?? def;
+      effortExplicit = picked !== undefined;
     }
   }
 
@@ -461,7 +570,11 @@ async function chooseModelSettings(
     : undefined;
   if (rec && maxTokens < rec.recommended) {
     const raise = await io.promptYesNo(
-      `  ${effort ?? "high"} effort works best with max tokens ≥ ${rec.recommended} (currently ${maxTokens}). Raise it?`,
+      t(loc, "llmhub.wizard.tokens.raise", {
+        effort: effort ?? "high",
+        recommended: rec.recommended,
+        current: maxTokens,
+      }),
       true,
     );
     if (raise) maxTokens = rec.recommended;
@@ -469,55 +582,88 @@ async function chooseModelSettings(
   let stream: "auto" | "always" | "never" = "auto";
   let temperature: number | null = null;
 
-  const advanced = await io.promptYesNo(
-    "  Tune advanced settings (max tokens, streaming, temperature)?",
-    false,
-  );
+  const advanced = await io.promptYesNo(t(loc, "llmhub.wizard.advanced.ask"), false);
   if (advanced) {
+    const ask = onboardAskLine(io);
+    // P3: a number that isn't one is explained and re-asked in place. It used
+    // to be swallowed — the wizard kept the default and never said so.
     const cap = caps.maxOutputTokens;
-    const mtAns = (
-      await io.promptLine(
-        `  Max output tokens [Enter = ${maxTokens}${cap ? `, model max ${cap}` : ""}]: `,
-      )
-    ).trim();
-    if (/^\d+$/.test(mtAns)) {
-      let n = Number.parseInt(mtAns, 10);
+    const mtAnswer = await promptValidatedDefault(
+      env,
+      t(loc, "llmhub.wizard.tokens.q"),
+      cap
+        ? t(loc, "llmhub.wizard.tokens.default_cap", { tokens: maxTokens, cap })
+        : t(loc, "llmhub.wizard.tokens.default", { tokens: maxTokens }),
+      (value) => (/^\d+$/.test(value) ? null : `  ${t(loc, "llmhub.invalid.tokens")}`),
+      ask,
+    );
+    if (mtAnswer.kind === "value") {
+      let n = Number.parseInt(mtAnswer.value, 10);
       if (n < MIN_MAX_TOKENS) n = MIN_MAX_TOKENS;
       if (cap && n > cap) n = cap;
       maxTokens = n;
     }
 
-    const sAns = (await io.promptLine("  Streaming [Enter = auto / always / never]: ")).trim().toLowerCase();
-    if (sAns === "always" || sAns === "never") stream = sAns;
+    // P1 value frame: three fixed values, so they are picked, not spelled.
+    // The row words are the config values themselves.
+    const streamFrame: MenuFrame = {
+      title: t(loc, "llmhub.stream_title"),
+      banner: [],
+      choices: [
+        { key: "1", main: "auto", hint: t(loc, "llmhub.tag.default") },
+        { key: "2", main: "always" },
+        { key: "3", main: "never" },
+      ],
+    };
+    const streamKey = await pickOneKey(onboardPickDeps(io, env, loc), streamFrame);
+    if (streamKey === "2") stream = "always";
+    else if (streamKey === "3") stream = "never";
 
     if (!thinkingEnabled && caps.temperatureUsableWhenThinkingOff) {
-      const tAns = (
-        await io.promptLine("  Temperature [Enter = omit (provider default); e.g. 0.2 for more rigour]: ")
-      ).trim();
-      if (tAns !== "") {
-        const t = Number.parseFloat(tAns);
-        if (Number.isFinite(t) && t >= 0 && t <= 2) temperature = t;
-      }
+      const tAnswer = await promptValidatedDefault(
+        env,
+        t(loc, "llmhub.wizard.temperature.q"),
+        t(loc, "llmhub.wizard.temperature.default"),
+        (value) => {
+          const n = Number.parseFloat(value);
+          return Number.isFinite(n) && n >= 0 && n <= 2 ? null : `  ${t(loc, "llmhub.invalid.temperature")}`;
+        },
+        ask,
+      );
+      if (tAnswer.kind === "value") temperature = Number.parseFloat(tAnswer.value);
     } else if (!thinkingEnabled) {
-      env.stdout("  (This model ignores temperature, so it stays omitted.)\n");
+      env.stdout(`${t(loc, "llmhub.wizard.temperature.ignored")}\n`);
     }
     // When thinking is ON we never ask about temperature — it is ignored or
     // rejected by every major provider in that mode.
   }
 
-  env.stdout(
-    `  → thinking ${thinkingEnabled ? `on${effort ? ` (effort ${effort})` : ""}` : "off"}, ` +
-      `max tokens ${maxTokens}, streaming ${stream}` +
-      `${temperature !== null ? `, temperature ${temperature}` : ""}.\n`,
-  );
-
-  return {
+  const settings: ModelSettings = {
     thinkingEnabled,
     ...(effort ? { effort } : {}),
     maxTokens,
     stream,
     temperature,
   };
+  env.stdout(`${t(loc, "llmhub.wizard.echo", { settings: describeSettings(loc, settings) })}\n`);
+  return settings;
+}
+
+/**
+ * The one sentence that describes a collected profile ("on · effort high ·
+ * max tokens 32000 · streaming auto"). Built once and used by BOTH the
+ * settings step's echo line and the summary screen's Reasoning row, so the
+ * two can never describe the same profile differently.
+ */
+function describeSettings(loc: Locale, s: ModelSettings): string {
+  const parts = [t(loc, s.thinkingEnabled ? "llmhub.wizard.set.on" : "llmhub.wizard.set.off")];
+  if (s.thinkingEnabled && s.effort) parts.push(t(loc, "llmhub.wizard.set.effort", { effort: s.effort }));
+  parts.push(t(loc, "llmhub.wizard.set.max_tokens", { tokens: s.maxTokens }));
+  parts.push(t(loc, "llmhub.wizard.set.streaming", { stream: s.stream }));
+  if (s.temperature !== null) {
+    parts.push(t(loc, "llmhub.wizard.set.temperature", { temperature: s.temperature }));
+  }
+  return parts.join(" · ");
 }
 
 /**
@@ -538,6 +684,8 @@ export async function onboardDirectLLM(opts: {
   reconfigure?: boolean;
 }): Promise<OnboardResult> {
   const { slug, env, io } = opts;
+  const loc = localeOf(env);
+  const out = createOutput();
 
   if (!opts.reconfigure && (await existingConfigIsUsable(slug, io, env))) return "configured";
 
@@ -586,7 +734,7 @@ export async function onboardDirectLLM(opts: {
           if (!provider) {
             // Back-navigation can reach this phase with a key already staged.
             await discardPendingKey();
-            env.stdout("No provider selected.\n");
+            env.stdout(`${t(loc, "llmhub.wizard.provider.none")}\n`);
             return "failed";
           }
           // Confirm before overwriting a pre-existing profile (default No). To keep
@@ -595,14 +743,12 @@ export async function onboardDirectLLM(opts: {
           const clash = preExistingProfiles[provider.id];
           if (clash) {
             const replace = await io.promptYesNo(
-              `  You already have "${provider.id}" (${clash.model}). Replace it? (No keeps it — use \`aifight config add <name>\` to add another alongside)`,
+              t(loc, "llmhub.wizard.clash.ask", { id: provider.id, model: clash.model }),
               false,
             );
             if (!replace) {
               await discardPendingKey();
-              env.stdout(
-                `  Kept your existing "${provider.id}". Run \`aifight config add <name>\` to add another provider alongside it.\n`,
-              );
+              env.stdout(`${t(loc, "llmhub.wizard.clash.kept", { id: provider.id })}\n`);
               return "failed";
             }
           }
@@ -617,7 +763,7 @@ export async function onboardDirectLLM(opts: {
             break;
           }
           if (provider!.officialBaseURL === undefined && r === undefined) {
-            env.stdout("  A base URL is required for an OpenAI-compatible provider.\n");
+            env.stdout(`${t(loc, "llmhub.wizard.baseurl.missing")}\n`);
             break; // re-ask
           }
           baseURL = r;
@@ -627,15 +773,15 @@ export async function onboardDirectLLM(opts: {
         }
         case "key": {
           const entered = (
-            await io.promptHidden(`  Paste your ${provider!.displayName} API key (hidden; b = back): `)
+            await io.promptHidden(t(loc, "llmhub.wizard.key.q", { provider: provider!.displayName }))
           ).trim();
           if (isBack(entered)) {
             phase = "baseURL";
             break;
           }
           if (entered === "") {
-            env.stdout("  No key entered.\n");
-            const again = await io.promptYesNo("  Try again?", true);
+            env.stdout(`${t(loc, "llmhub.wizard.key.empty")}\n`);
+            const again = await io.promptYesNo(t(loc, "llmhub.wizard.key.retry"), true);
             if (!again) {
               await discardPendingKey();
               return "failed";
@@ -657,7 +803,7 @@ export async function onboardDirectLLM(opts: {
           }
           pendingKeyPath = staged;
           await io.storeKey(pendingKeyPath, apiKey);
-          env.stdout("  ✓ Key received — stored locally (0600 file) once you confirm, never uploaded.\n");
+          env.stdout(`${t(loc, "llmhub.wizard.key.received")}\n`);
           phase = "model";
           break;
         }
@@ -685,23 +831,30 @@ export async function onboardDirectLLM(opts: {
         }
         case "summary": {
           const st = settings!;
-          const official = baseURL === provider!.officialBaseURL ? " (official)" : "";
+          // P6-adjacent styling (U7): the review screen is kv rows, so the
+          // label column sizes itself — the zh labels are a different width
+          // and used to glue onto their values under the hand-padded layout.
+          const baseURLText =
+            baseURL === undefined
+              ? t(loc, "llmhub.wizard.summary.unset")
+              : baseURL === provider!.officialBaseURL
+                ? t(loc, "llmhub.wizard.summary.official", { url: baseURL })
+                : baseURL;
           env.stdout(
-            [
-              "",
-              `  Summary — ${provider!.displayName}`,
-              `    1) Base URL   ${baseURL ?? "(unset)"}${official}`,
-              `    2) Model      ${model}`,
-              `    3) Reasoning  ${st.thinkingEnabled ? `on${st.effort ? ` · effort ${st.effort}` : ""}` : "off"}` +
-                ` · max tokens ${st.maxTokens} · streaming ${st.stream}` +
-                `${st.temperature !== null ? ` · temperature ${st.temperature}` : ""}`,
-              `       Key        (staged — written to a 0600 file on save)`,
-              "",
-            ].join("\n"),
+            "\n" +
+              out.section(`  ${t(loc, "llmhub.wizard.summary.title", { provider: provider!.displayName })}`) +
+              "\n" +
+              out
+                .kvRows([
+                  [t(loc, "llmhub.wizard.summary.baseurl"), baseURLText],
+                  [t(loc, "llmhub.wizard.summary.model"), model],
+                  [t(loc, "llmhub.wizard.summary.reasoning"), describeSettings(loc, st)],
+                  [t(loc, "llmhub.wizard.summary.key"), t(loc, "llmhub.wizard.summary.key.value"), "dim"],
+                ])
+                .join("\n") +
+              "\n\n",
           );
-          const ans = (
-            await io.promptLine("  Save & test? [Enter = save, 1-3 = change that item, q = cancel]: ")
-          )
+          const ans = (await io.promptLine(t(loc, "llmhub.wizard.summary.ask")))
             .trim()
             .toLowerCase();
           if (ans === "") {
@@ -724,7 +877,7 @@ export async function onboardDirectLLM(opts: {
     }
     if (cancelled) {
       await discardPendingKey();
-      env.stdout("  Cancelled — nothing was saved.\n");
+      env.stdout(`${t(loc, "llmhub.wizard.cancelled")}\n`);
       return "failed";
     }
 
@@ -743,23 +896,22 @@ export async function onboardDirectLLM(opts: {
       throw cause;
     }
 
-    env.stdout(`\nTesting ${provider!.displayName} (${model})…\n`);
+    env.stdout(`\n${t(loc, "llmhub.wizard.testing", { provider: provider!.displayName, model })}\n`);
     const ok = await io.probe(slug);
     if (ok) {
       // Drop any leftover placeholder profiles (e.g. config init's
       // DEFAULT_CONFIG "claude-default" pointing at an unset env var) so the
       // user — and the desktop app — only see the profile that actually works.
       await pruneUnresolvableProfiles(slug, env);
-      env.stdout("  ✓ model responded.\n");
-      env.stdout(
-        `  Tip: change any field later with one command — \`aifight config update ${provider!.id} --model …\` (see \`aifight config --help\`).\n\n`,
-      );
+      env.stdout(`${t(loc, "llmhub.wizard.existing.ok")}\n`);
+      env.stdout(`${t(loc, "llmhub.wizard.tip", { id: provider!.id })}\n\n`);
       return "configured";
     }
 
-    env.stdout("  ✗ the model did not respond — the key, model name, or base URL may be wrong.\n");
+    // P6: THE failure block — red `✗` headline, no hand-rolled icon.
+    env.stdout(out.fail(t(loc, "llmhub.wizard.no_response")));
     if (attempt < MAX_ATTEMPTS) {
-      const again = await io.promptYesNo("  Re-enter the key / pick another provider?", true);
+      const again = await io.promptYesNo(t(loc, "llmhub.wizard.retry.ask"), true);
       if (!again) break;
     }
   }
@@ -767,9 +919,9 @@ export async function onboardDirectLLM(opts: {
   env.stdout(
     [
       "",
-      "Could not confirm the model yet. Your config is saved; you can fix it later with:",
-      "  aifight config show      # review provider, base URL, model",
-      "  aifight config test      # try the model again",
+      t(loc, "llmhub.wizard.giveup"),
+      t(loc, "llmhub.wizard.giveup.show"),
+      t(loc, "llmhub.wizard.giveup.test"),
       "",
     ].join("\n"),
   );

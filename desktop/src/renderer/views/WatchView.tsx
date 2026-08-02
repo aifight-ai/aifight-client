@@ -132,17 +132,13 @@ export function WatchView() {
     });
   }, []);
 
-  // An explicit click outranks live/demo until the user closes it.
-  if (replay !== null) {
-    return <ReplayPane replay={replay} onClose={() => setReplay(null)} />;
-  }
-
   const isLive = liveMatch.sessionId !== null && liveMatch.match !== null;
   // A finished real match flips the cockpit from follow-the-tip to replay
   // transport: the board no longer "waits" on anyone (the final tail is loaded
   // by liveStore from the public replay), and play/restart replace the live
   // button. The key below remounts the panel so it re-parks at the final board.
   const finished = isLive && liveMatch.finished;
+  const watchingLive = isLive && !finished;
 
   // A match killed server-side (deploy restart / cancel) never sends game_over,
   // so without this the cockpit shows LIVE on a dead board forever (the owner's
@@ -151,13 +147,24 @@ export function WatchView() {
   // also means zero re-renders, so an interval re-evaluates the clock; if the
   // match somehow resumes (reconnect replays history), fresh activity flips it
   // straight back to LIVE.
+  //
+  // ⚠️ This hook pair MUST stay above the replay early-return below. It used to
+  // live after it, so the render right after a dashboard replay intent landed
+  // ran fewer hooks than the mount render — React throws "Rendered fewer hooks
+  // than expected" and, with no boundary catching it, the whole window went
+  // blank (owner report 2026-08-02: dashboard recent-match click white-screen).
   const [, setStaleTick] = useState(0);
-  const watchingLive = isLive && !finished;
   useEffect(() => {
     if (!watchingLive) return;
     const id = window.setInterval(() => setStaleTick((n) => n + 1), 30_000);
     return () => window.clearInterval(id);
   }, [watchingLive]);
+
+  // An explicit click outranks live/demo until the user closes it.
+  if (replay !== null) {
+    return <ReplayPane replay={replay} onClose={() => setReplay(null)} />;
+  }
+
   const interrupted = watchingLive && isSilentPastCutoff(live.lastActivityAt, Date.now());
   // Receive-gap visibility (owner ask 2026-07-28): a live match that stops
   // producing frames looks identical to one that's merely thinking — surface

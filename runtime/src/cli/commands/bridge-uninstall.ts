@@ -1,8 +1,20 @@
 import { readBridgeConfig, removeBridgeConfig, type BridgeConfig } from "../../bridge/config";
 import { BridgeServiceError, uninstallBridgeService } from "../../bridge/service";
 import { fetchNoFollow } from "../../net/guarded-fetch.js";
+import { createStatusIcons } from "../ansi";
+import { resolveLocale, t, type Locale } from "../i18n";
+import { createOutput } from "../output";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { UsageError, expectArity } from "../shared";
+import { bindConfirm, bindPromptLine, type ConfirmFn, type PromptLineFn } from "./onboard-io";
+
+/** P4/P3 test seams (批 U4). Supplying either also stands in for the
+ *  terminal, so both branches of every confirmation are unit-testable;
+ *  production passes nothing and keeps the real isTTY gate. */
+export interface UninstallIO {
+  readonly confirm?: ConfirmFn;
+  readonly promptLine?: PromptLineFn;
+}
 
 const USAGE = [
   "usage: aifight uninstall",
@@ -14,11 +26,15 @@ const USAGE = [
 export async function runBridgeUninstall(
   args: HandlerArgs,
   env: HandlerEnv,
+  io: UninstallIO = {},
 ): Promise<number> {
   expectArity(args, 0, 0, USAGE);
-  if (args.jsonMode || !process.stdin.isTTY) {
+  const seamed = io.confirm !== undefined || io.promptLine !== undefined;
+  if (args.jsonMode || (!seamed && !process.stdin.isTTY)) {
     throw new UsageError("aifight uninstall requires an interactive terminal", USAGE);
   }
+  const loc = env.locale?.() ?? resolveLocale();
+  const confirm = io.confirm ?? bindConfirm(env);
 
   env.stdout([
     "This removes local AIFight bridge setup from this machine.",
@@ -44,14 +60,15 @@ export async function runBridgeUninstall(
     env.stdout("No local bridge credentials were found.\n\n");
   }
 
-  const accepted = await promptYesNoDefaultNo(env, "Continue with local uninstall? [y/N] ");
+  // P4, default NO: uninstall is destructive, so a bare Enter must not run it.
+  const accepted = await confirm(t(loc, "confirm.uninstall.ask"), false);
   if (!accepted) {
-    env.stdout("Uninstall cancelled.\n");
+    env.stdout(`${t(loc, "confirm.uninstall.declined")}\n`);
     return 0;
   }
 
-  await uninstallServiceBestEffort(env);
-  await maybeRemoveBridgeIdentity(env, bridgeConfig);
+  await uninstallServiceBestEffort(env, loc);
+  await maybeRemoveBridgeIdentity(env, bridgeConfig, loc, confirm, io.promptLine ?? bindPromptLine(env));
 
   env.stdout("AIFight local uninstall finished.\n\n");
   if (bridgeConfig !== undefined) {
@@ -65,6 +82,9 @@ export async function runBridgeUninstall(
 async function maybeRemoveBridgeIdentity(
   env: HandlerEnv,
   config: BridgeConfig | undefined,
+  loc: Locale,
+  confirm: ConfirmFn,
+  promptLine: PromptLineFn,
 ): Promise<boolean> {
   if (config === undefined) return false;
 
@@ -76,22 +96,27 @@ async function maybeRemoveBridgeIdentity(
     "",
   ].join("\n"));
 
-  const accepted = await promptYesNoDefaultNo(env, "Delete local bridge credentials too? [y/N] ");
+  // P4, default NO — this deletes the machine's only copy of the bridge key.
+  const accepted = await confirm(t(loc, "confirm.uninstall.credentials.ask"), false);
   if (!accepted) {
-    env.stdout("Kept local bridge credentials.\n");
+    env.stdout(`${t(loc, "confirm.uninstall.credentials.declined")}\n`);
     return false;
   }
 
+  // The typed second confirmation stays exactly as strict as it was — U4 only
+  // restyles it (i18n + P6 on a mismatch); a yes/no would not be enough here.
   const suffix = config.agentId.slice(-6);
-  env.stdout(`Type the last 6 characters of the Agent ID (${suffix}) to confirm credential deletion: `);
-  const answer = await readLineFromStdin();
+  const answer = await promptLine(`${t(loc, "confirm.uninstall.credentials.verify", { suffix })}: `);
   if (answer.trim() !== suffix) {
-    env.stdout("Confirmation did not match. Kept local bridge credentials.\n");
+    env.stdout(createOutput().fail(
+      t(loc, "confirm.uninstall.credentials.mismatch"),
+      t(loc, "confirm.uninstall.credentials.declined"),
+    ));
     return false;
   }
 
   removeBridgeConfig();
-  env.stdout("Local bridge credentials removed from this machine.\n");
+  env.stdout(`${(env.statusIcons ?? createStatusIcons()).ok} ${t(loc, "confirm.uninstall.credentials.removed")}\n`);
   return true;
 }
 
@@ -132,35 +157,17 @@ async function fetchProfileLabel(
   }
 }
 
-async function readLineFromStdin(): Promise<string> {
-  process.stdin.resume();
-  process.stdin.setEncoding("utf8");
-  const answer = await new Promise<string>((resolve) => {
-    process.stdin.once("data", (chunk) => resolve(String(chunk)));
-  });
-  process.stdin.pause();
-  return answer;
-}
-
-async function promptYesNoDefaultNo(env: HandlerEnv, question: string): Promise<boolean> {
-  env.stdout(question);
-  process.stdin.resume();
-  process.stdin.setEncoding("utf8");
-  const answer = await new Promise<string>((resolve) => {
-    process.stdin.once("data", (chunk) => resolve(String(chunk)));
-  });
-  process.stdin.pause();
-  const normalized = answer.trim().toLowerCase();
-  return normalized === "y" || normalized === "yes";
-}
-
-async function uninstallServiceBestEffort(env: HandlerEnv): Promise<void> {
+async function uninstallServiceBestEffort(env: HandlerEnv, loc: Locale): Promise<void> {
   try {
     const target = await uninstallBridgeService(env.bridgeService);
     env.stdout(`aifight.service removed if it existed (${target.platform}).\n`);
   } catch (e) {
+    // P6: the whole command is TTY-only, so this failure is on the interactive
+    // path — red `✗` + the one line that says what WOULD work.
     const message = e instanceof BridgeServiceError ? e.message : e instanceof Error ? e.message : String(e);
-    env.stderr(`warning: could not uninstall aifight.service automatically: ${message}\n`);
-    env.stderr("If you installed it, run `aifight service uninstall` manually before removing the npm package.\n");
+    env.stderr(createOutput().fail(
+      t(loc, "confirm.uninstall.service.failed", { error: message }),
+      t(loc, "confirm.uninstall.service.failed.tail"),
+    ));
   }
 }

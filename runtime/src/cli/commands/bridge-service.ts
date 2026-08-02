@@ -1,7 +1,10 @@
 import { BridgeServiceError, installBridgeService, restartBridgeService, startBridgeService, statusBridgeService, stopBridgeService, uninstallBridgeService } from "../../bridge/service";
 import { readBridgeConfig } from "../../bridge/config";
+import { resolveLocale, t } from "../i18n";
+import { createOutput } from "../output";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { UsageError, expectArity } from "../shared";
+import { bindConfirm, type ConfirmFn } from "./onboard-io";
 
 const USAGE = [
   "usage: aifight service <install|status|start|stop|restart|uninstall>",
@@ -103,73 +106,78 @@ function stringFlag(args: HandlerArgs, name: string): string | undefined {
 
 export async function offerBridgeServiceInstall(
   env: HandlerEnv,
-  opts: { readonly approvedLocalSetup?: boolean } = {},
+  opts: {
+    readonly approvedLocalSetup?: boolean;
+    /** P4 test seam (批 U4): supplying one also stands in for the terminal. */
+    readonly confirm?: ConfirmFn;
+  } = {},
 ): Promise<"installed" | "declined" | "unavailable"> {
-  if (!process.stdin.isTTY && opts.approvedLocalSetup !== true) return "unavailable";
+  const ask = opts.confirm ?? bindConfirm(env);
+  const interactive = opts.confirm !== undefined || process.stdin.isTTY === true;
+  if (!interactive && opts.approvedLocalSetup !== true) return "unavailable";
+  const loc = env.locale?.() ?? resolveLocale();
+  const out = createOutput();
   const existing = await currentServiceStatus(env);
   if (existing?.installed && existing.running === true) {
     env.stdout([
-      "aifight.service is already running.",
-      "AIFight just saved bridge credentials, so the service must reload them before the Dashboard can show the new Agent online.",
+      t(loc, "wizard.service.running1"),
+      t(loc, "wizard.service.running2"),
       "",
     ].join("\n"));
+    // P4: the shared yes/no, default YES — the credentials are already saved
+    // and the service must reload them before the Agent shows up online.
     const accepted = opts.approvedLocalSetup === true
       ? true
-      : await promptYesNo(
-        env,
-        "Restart aifight.service now? [Y/n] ",
-      );
+      : await ask(t(loc, "confirm.service.restart.ask"), true);
     if (!accepted) return "declined";
     if (opts.approvedLocalSetup === true) {
-      env.stdout("Using the previously approved AIFight local setup scope; restarting aifight.service now.\n");
+      env.stdout(`${t(loc, "wizard.service.approved.restart")}\n`);
     }
     try {
       const result = await restartBridgeService(env.bridgeService);
-      env.stdout(`aifight.service restarted (${result.platform}).\n`);
-      env.stdout(`unit: ${result.unitPath}\n`);
+      env.stdout(`${t(loc, "wizard.service.restarted", { platform: result.platform })}\n`);
+      env.stdout(`${t(loc, "wizard.service.unit", { path: result.unitPath })}\n`);
       return "installed";
     } catch (e) {
+      // P6: red `✗` headline, the service manager's own hint plain underneath.
       const message = e instanceof BridgeServiceError ? e.message : (e as Error).message;
       const hint = e instanceof BridgeServiceError ? e.hint : undefined;
-      env.stderr(`aifight.service could not be restarted: ${message}\n`);
-      if (hint) env.stderr(`${hint}\n`);
+      env.stderr(out.fail(t(loc, "confirm.service.restart.failed", { error: message }), hint));
       return "unavailable";
     }
   }
 
   env.stdout([
-    "AIFight needs a long-running local Bridge before your Agent can play scheduled matches and challenges.",
+    t(loc, "wizard.service.offer1"),
     "",
-    "I can install a local background service named aifight.service.",
-    "It runs `aifight run` after reboot and keeps the outbound Bridge online for normal use.",
+    t(loc, "wizard.service.offer2"),
+    t(loc, "wizard.service.offer3"),
     "",
-    "This does not expose your machine to the public internet.",
-    "AIFight Bridge only opens an outbound WebSocket to AIFight and calls your local Agent runtime on localhost.",
+    t(loc, "wizard.service.offer4"),
+    t(loc, "wizard.service.offer5"),
     "",
-    "If you do not install it now, finish setup later with `aifight service install` or manage `aifight run` yourself.",
+    t(loc, "wizard.service.offer6"),
     "",
   ].join("\n"));
+  // P4, default YES: the banner above has just made the case for installing it.
   const accepted = opts.approvedLocalSetup === true
     ? true
-    : await promptYesNo(
-      env,
-      "Install and start aifight.service now? [Y/n] ",
-    );
+    : await ask(t(loc, "confirm.service.install.ask"), true);
   if (!accepted) return "declined";
   if (opts.approvedLocalSetup === true) {
-    env.stdout("Using the previously approved AIFight local setup scope; installing aifight.service now.\n");
+    env.stdout(`${t(loc, "wizard.service.approved.install")}\n`);
   }
   try {
     const result = await installBridgeService(env.bridgeService);
-    env.stdout(`aifight.service installed and started (${result.platform}).\n`);
-    env.stdout(`unit: ${result.unitPath}\n`);
-    if (result.warning) env.stderr(`warning: ${result.warning}\n`);
+    env.stdout(`${t(loc, "wizard.service.installed", { platform: result.platform })}\n`);
+    env.stdout(`${t(loc, "wizard.service.unit", { path: result.unitPath })}\n`);
+    if (result.warning) env.stderr(`${t(loc, "wizard.service.warning", { warning: result.warning })}\n`);
     return "installed";
   } catch (e) {
+    // P6 — same shape as the restart failure above.
     const message = e instanceof BridgeServiceError ? e.message : (e as Error).message;
     const hint = e instanceof BridgeServiceError ? e.hint : undefined;
-    env.stderr(`aifight.service could not be installed: ${message}\n`);
-    if (hint) env.stderr(`${hint}\n`);
+    env.stderr(out.fail(t(loc, "confirm.service.install.failed", { error: message }), hint));
     return "unavailable";
   }
 }
@@ -180,16 +188,4 @@ async function currentServiceStatus(env: HandlerEnv) {
   } catch {
     return undefined;
   }
-}
-
-async function promptYesNo(env: HandlerEnv, question: string): Promise<boolean> {
-  env.stdout(question);
-  process.stdin.resume();
-  process.stdin.setEncoding("utf8");
-  const answer = await new Promise<string>((resolve) => {
-    process.stdin.once("data", (chunk) => resolve(String(chunk)));
-  });
-  process.stdin.pause();
-  const normalized = answer.trim().toLowerCase();
-  return normalized === "" || normalized === "y" || normalized === "yes";
 }

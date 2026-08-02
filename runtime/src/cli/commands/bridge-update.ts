@@ -12,6 +12,7 @@ import { createOutput } from "../output";
 import { resolveLocale, t } from "../i18n";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, expectArity, makeClient } from "../shared";
+import { bindConfirm, type ConfirmFn } from "./onboard-io";
 
 const USAGE = [
   "usage: aifight update [--yes] [--force]",
@@ -26,6 +27,10 @@ const UPDATE_PACKAGE = "@aifight/aifight";
 export async function runBridgeUpdate(
   args: HandlerArgs,
   env: HandlerEnv,
+  /** P4 test seam (批 U4): supplying one also stands in for the terminal, so
+   *  both branches of the confirm are testable. Production passes nothing and
+   *  gets onboard-io's promptYesNo behind the real isTTY gate. */
+  confirm?: ConfirmFn,
 ): Promise<number> {
   expectArity(args, 0, 0, USAGE);
   const approved = args.flags.yes === true;
@@ -68,14 +73,17 @@ export async function runBridgeUpdate(
   }
 
   if (!approved) {
-    if (!process.stdin.isTTY) {
+    if (confirm === undefined && !process.stdin.isTTY) {
       env.stderr("aifight: update requires confirmation in non-interactive mode.\n");
       env.stderr("Run `aifight update --yes` after the human approves the local package update.\n");
       return 1;
     }
-    const accepted = await promptYesNoDefaultNo(env, "Run npm update now? [y/N] ");
+    // P4 (统一交互规范 §2): the shared yes/no, default NO — an update the user
+    // did not ask for is never what a bare Enter should mean.
+    const loc = env.locale?.() ?? resolveLocale();
+    const accepted = await (confirm ?? bindConfirm(env))(t(loc, "confirm.update.ask"), false);
     if (!accepted) {
-      env.stdout("Update skipped.\n");
+      env.stdout(`${t(loc, "confirm.update.declined")}\n`);
       return 0;
     }
   }
@@ -262,16 +270,4 @@ function firstErrorLine(cause: unknown): string {
   }
   if (cause instanceof Error) return cause.message;
   return String(cause);
-}
-
-async function promptYesNoDefaultNo(env: HandlerEnv, question: string): Promise<boolean> {
-  env.stdout(question);
-  process.stdin.resume();
-  process.stdin.setEncoding("utf8");
-  const answer = await new Promise<string>((resolve) => {
-    process.stdin.once("data", (chunk) => resolve(String(chunk)));
-  });
-  process.stdin.pause();
-  const normalized = answer.trim().toLowerCase();
-  return normalized === "y" || normalized === "yes";
 }

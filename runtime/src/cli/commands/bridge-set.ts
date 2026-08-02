@@ -15,9 +15,10 @@ import {
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, SUPPORTED_GAMES, UsageError, expectArity, isSupportedGame } from "../shared";
 import { createAnsi, createStatusIcons } from "../ansi";
-import { parseLocale, resolveLocale, t, type I18nKey } from "../i18n";
+import { gameLabel, parseLocale, resolveLocale, t, type I18nKey } from "../i18n";
 import { agentSeatHolderPid } from "./bridge-start";
-import { createOnboardIO, promptDefault } from "./onboard-io";
+import { createOutput } from "../output";
+import { createOnboardIO, promptDefault, promptValidatedDefault } from "./onboard-io";
 import { selectMulti } from "./select-multi";
 import type { RawInput } from "./menu-select";
 
@@ -167,14 +168,8 @@ async function promptGames(args: HandlerArgs, env: HandlerEnv, picker: GamesPick
   return setGames(picked.join(","), args, env);
 }
 
-/** Per-game display names + picker hints. Ids stay English everywhere; the
- *  display name mirrors displayGameName (inlined — the narrator module is
- *  bridge-side and pulls in match machinery this command must not load). */
-const GAME_LABELS: Readonly<Record<string, string>> = {
-  texas_holdem: "Texas Hold'em",
-  liars_dice: "Liar's Dice",
-  coup: "Coup",
-};
+/** Per-game picker hints. Display names go through gameLabel() (CLI Menu
+ *  Copy Rules: game ids never surface raw and names never hardcode). */
 const GAME_HINT_KEYS: Readonly<Record<string, I18nKey>> = {
   texas_holdem: "set.game.hint.texas_holdem",
   liars_dice: "set.game.hint.liars_dice",
@@ -193,7 +188,7 @@ export async function pickGamesCheckbox(env: HandlerEnv, current: readonly strin
     {
       title: t(loc, "set.game.picker.title"),
       items: SUPPORTED_GAMES.map((game) => ({
-        label: GAME_LABELS[game] ?? game,
+        label: gameLabel(loc, game),
         hint: t(loc, GAME_HINT_KEYS[game] ?? "set.game.hint.coup"),
         checked: current.includes(game),
       })),
@@ -285,38 +280,46 @@ async function setDaily(raw: string, args: HandlerArgs, env: HandlerEnv): Promis
  * it later.
  */
 export async function onboardDailyCap(env: HandlerEnv): Promise<void> {
+  const loc = env.locale?.() ?? resolveLocale();
   const io = createOnboardIO(env);
+  const out = createOutput();
   env.stdout(
     [
-      "Daily automatic matches",
-      "  Your agent joins ranked matches BY ITSELF, up to a daily cap — and every",
-      "  match makes many model calls on your own API key. The cap is the token-burn",
-      "  safety valve. 0 = manual only (the agent never starts matches by itself).",
-      "  Manual matches and friendly challenges are never counted against it.",
+      out.section(t(loc, "wizard.daily.title")),
+      t(loc, "wizard.daily.body1"),
+      t(loc, "wizard.daily.body2"),
+      t(loc, "wizard.daily.body3"),
+      t(loc, "wizard.daily.body4"),
       "",
     ].join("\n"),
   );
+  // P3 (批 U7): the same default-bracket prompt bare `aifight set daily` uses —
+  // it used to hand-roll `Automatic matches per day [2]: ` plus its own two
+  // bounds messages. Enter still means the default (2); an out-of-range answer
+  // is explained and re-asked in place, and q/Esc takes the default rather
+  // than trapping a first-time user in the question.
+  const WIZARD_DEFAULT_CAP = "2";
   let limit: number;
   for (;;) {
-    const raw = (await io.promptLine("  Automatic matches per day [2]: ")).trim();
-    if (raw === "") {
-      limit = 2;
-      break;
-    }
-    if (!/^\d+$/.test(raw)) {
-      env.stdout(`  Please enter a whole number between 0 and ${SETUP_WIZARD_CAP_MAX}.\n`);
-      continue;
-    }
-    const parsed = Number.parseInt(raw, 10);
-    if (parsed > SETUP_WIZARD_CAP_MAX) {
-      env.stdout(`  The maximum is ${SETUP_WIZARD_CAP_MAX}.\n`);
-      continue;
-    }
-    if (dailyCapNeedsConfirm(parsed)) {
-      const ok = await io.promptYesNo(
-        `  ${parsed}/day means a lot of model calls — token costs add up fast. Keep ${parsed}?`,
-        false,
-      );
+    const answer = await promptValidatedDefault(
+      env,
+      `  ${t(loc, "prompt.daily.question", { max: SETUP_WIZARD_CAP_MAX })}`,
+      WIZARD_DEFAULT_CAP,
+      (value) =>
+        /^\d+$/.test(value) && Number.parseInt(value, 10) <= SETUP_WIZARD_CAP_MAX
+          ? null
+          : createAnsi().yellow(t(loc, "prompt.daily.invalid", { max: SETUP_WIZARD_CAP_MAX })),
+      (_env, question) => io.promptLine(question),
+    );
+    const parsed = Number.parseInt(
+      answer.kind === "value" ? answer.value : WIZARD_DEFAULT_CAP,
+      10,
+    );
+    // P4: the >threshold gate keeps its own warning line and its default-NO
+    // confirm; the bracket suffix belongs to promptYesNo, never the question.
+    if (answer.kind === "value" && dailyCapNeedsConfirm(parsed)) {
+      env.stdout(`  ${t(loc, "prompt.daily.confirm.warn", { limit: parsed })}\n`);
+      const ok = await io.promptYesNo(`  ${t(loc, "prompt.daily.confirm.ask", { limit: parsed })}`, false);
       if (!ok) continue;
     }
     limit = parsed;
@@ -328,12 +331,12 @@ export async function onboardDailyCap(env: HandlerEnv): Promise<void> {
     await syncDailyPolicy(config, limit, env.fetchImpl ?? globalThis.fetch);
     writeBridgeConfig({ ...config, autoDailyLimit: limit, updatedAt: new Date().toISOString() });
     env.stdout(
-      limit === 0
-        ? "  Automatic matching is OFF — you start every match yourself (aifight start).\n\n"
-        : `  Up to ${limit} automatic match${limit === 1 ? "" : "es"} per day. Change any time with \`aifight set daily <N>\`.\n\n`,
+      (limit === 0
+        ? t(loc, "wizard.daily.off")
+        : t(loc, limit === 1 ? "wizard.daily.on_one" : "wizard.daily.on", { limit })) + "\n\n",
     );
   } catch {
-    env.stdout("  Could not sync the cap right now — set it later with `aifight set daily <N>`.\n\n");
+    env.stdout(`${t(loc, "wizard.daily.sync_failed")}\n\n`);
   }
 }
 

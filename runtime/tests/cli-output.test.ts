@@ -116,4 +116,18 @@ describe("output kit", () => {
     expect(PLAIN.note("estimate only")).toBe("  estimate only");
     expect(COLOR.note("estimate only")).toBe("  \x1b[2mestimate only\x1b[22m");
   });
+
+  // P6 (统一交互规范 §2, 批 U4): one failure shape for every command.
+  it("fail is a red ✗ headline with the hint plain underneath", () => {
+    expect(PLAIN.fail("could not restart", "run `aifight service restart`"))
+      .toBe("✗ could not restart\nrun `aifight service restart`\n");
+    expect(COLOR.fail("could not restart")).toBe("\x1b[31m✗ could not restart\x1b[39m\n");
+    // Errors are red; yellow stays the warning color.
+    expect(COLOR.fail("x")).toContain("\x1b[31m");
+  });
+
+  it("fail without a hint emits no trailing blank line", () => {
+    expect(PLAIN.fail("boom")).toBe("✗ boom\n");
+    expect(PLAIN.fail("boom", "")).toBe("✗ boom\n");
+  });
 });

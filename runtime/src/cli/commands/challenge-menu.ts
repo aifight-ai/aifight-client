@@ -11,9 +11,10 @@
 
 import type { HandlerEnv } from "../shared";
 import { gameLabel, t, type Locale } from "../i18n";
-import { createAnsi } from "../ansi";
-import { renderMenuFrame, type MenuFrame, type MenuFrameChoice } from "./menu-frame";
+import type { MenuFrame, MenuFrameChoice } from "./menu-frame";
 import type { MenuChoose } from "./menu-select";
+import { pickOneKey, type PickOneDeps } from "./pick-one";
+import { promptValidatedDefault } from "./onboard-io";
 
 export interface ChallengeMenuDeps {
   readonly env: HandlerEnv;
@@ -51,7 +52,7 @@ export async function runChallengeMenu(deps: ChallengeMenuDeps): Promise<void> {
     { key: "q", main: t(loc, "challenge.menu.back.main"), hint: t(loc, "challenge.menu.back.hint") },
   ];
   const frame: MenuFrame = { title: t(loc, "challenge.menu.title"), banner: [], choices: rows };
-  const key = await pickKey(deps, frame, loc);
+  const key = await pickOneKey(pickDeps(deps, loc), frame);
   if (key === null || key === "q") return;
   if (key === "1") {
     await createFlow(deps, loc);
@@ -79,26 +80,32 @@ async function createFlow(deps: ChallengeMenuDeps, loc: Locale): Promise<void> {
   });
   choices.push({ key: "q", main: t(loc, "challenge.menu.back.main") });
   const frame: MenuFrame = { title: t(loc, "challenge.menu.create.game_title"), banner: [], choices };
-  const key = await pickKey(deps, frame, loc);
+  const key = await pickOneKey(pickDeps(deps, loc), frame);
   if (key === null || key === "q") return;
   const game = GAME_ROWS[Number.parseInt(key, 10) - 1];
   if (game === undefined) return;
 
+  // P3 (U2): the smallest legal table sits in the bracket, an out-of-range
+  // answer explains itself and RE-ASKS instead of throwing the user back to
+  // the panel, and q/Esc cancels.
   const size = TABLE_SIZES[game]!;
-  const raw = (await deps.prompt(
+  const answer = await promptValidatedDefault(
+    deps.env,
     t(loc, "challenge.menu.create.players_prompt", { min: size.min, max: size.max }),
-  )).trim();
-  let positional: string[];
-  if (raw === "") {
-    positional = [game]; // blank → the server seats the smallest legal table
-  } else {
-    const n = /^\d+$/.test(raw) ? Number.parseInt(raw, 10) : 0;
-    if (n < size.min || n > size.max) {
-      deps.env.stdout(`${t(loc, "challenge.menu.create.players_invalid", { min: size.min, max: size.max })}\n`);
-      return;
-    }
-    positional = [game, String(n)];
-  }
+    String(size.min),
+    (value) => {
+      const n = /^\d+$/.test(value) ? Number.parseInt(value, 10) : 0;
+      return n >= size.min && n <= size.max
+        ? null
+        : t(loc, "challenge.menu.create.players_invalid", { min: size.min, max: size.max });
+    },
+    (_env, question) => deps.prompt(question),
+  );
+  if (answer.kind === "cancel") return;
+  // "keep" = the shown default = the minimum; dispatching the game alone lets
+  // the SERVER seat that smallest legal table (it is the authority — see
+  // TABLE_SIZES), so a drift in the mirrored bounds cannot send a wrong count.
+  const positional = answer.kind === "keep" ? [game] : [game, answer.value];
   await deps.dispatch("challenge", positional);
 }
 
@@ -112,11 +119,14 @@ async function acceptFlow(deps: ChallengeMenuDeps, loc: Locale): Promise<void> {
   await deps.dispatch("accept", [raw]);
 }
 
-/** One chooser pass (single-column), or the line-prompt fallback. q/Esc → null. */
-async function pickKey(deps: ChallengeMenuDeps, frame: MenuFrame, loc: Locale): Promise<string | null> {
-  if (deps.choose !== undefined) {
-    return (await deps.choose(frame, { locale: loc, singleColumn: true })).trim().toLowerCase();
-  }
-  deps.env.stdout(`\n${renderMenuFrame(frame, -1, createAnsi({ enabled: false }), 0, { singleColumn: true }).join("\n")}\n\n`);
-  return (await deps.prompt(t(loc, "menu.pick"))).trim().toLowerCase();
+/** This submenu's deps shaped for the shared P1 primitive (pick-one.ts). The
+ *  hand-rolled chooser/line pair that used to live here is gone — one
+ *  implementation for every list choice in the CLI. */
+function pickDeps(deps: ChallengeMenuDeps, loc: Locale): PickOneDeps {
+  return {
+    env: deps.env,
+    locale: loc,
+    ...(deps.choose !== undefined ? { choose: deps.choose } : {}),
+    prompt: deps.prompt,
+  };
 }

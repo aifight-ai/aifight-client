@@ -26,6 +26,14 @@ export type PlatformAgentStatus =
     readonly name?: string;
     readonly publicNo?: number;
     readonly termsPending: boolean;
+    /** Matches the platform counted against the daily cap in its own rolling
+     *  window. Absent when the server did not send it (older build), so a
+     *  caller shows the cap alone rather than a made-up "0 played". */
+    readonly gamesToday?: number;
+    /** The cap the PLATFORM has on file. Note a local cap of 0 is stored as
+     *  auto_requeue:false and leaves this at its previous value, so a caller
+     *  that also knows the local cap should prefer the local one. */
+    readonly maxGamesPerDay?: number;
   }
   | {
     readonly kind: "unavailable";
@@ -62,6 +70,11 @@ export async function checkPlatformAgentStatus(
   }
 }
 
+/** A non-negative whole number, or nothing at all. */
+function countField(raw: unknown): number | undefined {
+  return typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : undefined;
+}
+
 export function parsePlatformAgentStatus(raw: unknown): PlatformAgentStatus | null {
   if (!raw || typeof raw !== "object") return null;
   const v = raw as Record<string, unknown>;
@@ -82,5 +95,10 @@ export function parsePlatformAgentStatus(raw: unknown): PlatformAgentStatus | nu
     name: typeof v.name === "string" ? v.name : undefined,
     publicNo: typeof v.public_no === "number" ? v.public_no : undefined,
     termsPending: v.terms_pending === true,
+    // Same endpoint, two fields that were parsed away until now. Anything that
+    // is not a finite number is simply not carried — the banner then keeps its
+    // cap-only wording instead of showing "NaN/5".
+    gamesToday: countField(v.games_today),
+    maxGamesPerDay: countField(v.max_games_per_day),
   };
 }

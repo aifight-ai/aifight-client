@@ -22,6 +22,8 @@
 
 import type { HandlerArgs, HandlerEnv } from "../shared.js";
 import { expectArity } from "../shared.js";
+import { resolveLocale, t } from "../i18n.js";
+import { createOutput, type KvRow } from "../output.js";
 import {
   loadAgentProfile,
   resolveAgentDir,
@@ -212,25 +214,38 @@ export async function runConfigProbe(
   const profileFlag =
     typeof args.flags["profile"] === "string" ? args.flags["profile"] : undefined;
 
+  // U7: the wait line and the result block below are what `aifight setup`
+  // shows while the wizard's live test runs, so they speak the display
+  // locale like the rest of the wizard. --json (built separately, below) and
+  // every machine field stay English and byte-stable.
+  const loc = env.locale?.() ?? resolveLocale();
+  const out = createOutput();
+
   const outcome = await resolveAndProbe(slug, profileFlag, env, (info) => {
     if (!args.jsonMode) {
       env.stdout(
-        `aifight config test: testing profile "${info.profileName}" (${info.protocol}, ${info.model})` +
-          `${info.thinkingOn ? " with reasoning — this may take a few seconds" : ""}...\n`,
+        t(loc, info.thinkingOn ? "llmhub.probe.testing.reasoning" : "llmhub.probe.testing", {
+          profile: info.profileName,
+          protocol: info.protocol,
+          model: info.model,
+        }) + "\n",
       );
     }
   });
 
-  // Pre-probe resolution failure → same messages/exit code as before.
+  // Pre-probe resolution failure → same exit code as before, now through P6's
+  // one failure shape instead of three hand-prefixed `aifight: …` lines.
   if (!outcome.ok) {
     if (args.jsonMode) {
       env.stderr(JSON.stringify({ error: { code: outcome.code, message: outcome.message } }) + "\n");
-    } else if (outcome.code === "config_probe_load_failed") {
-      env.stderr(`aifight: config probe: failed to load profile: ${outcome.message}\n`);
-    } else if (outcome.code === "config_probe_secret_failed") {
-      env.stderr(`aifight: config probe: cannot resolve API key: ${outcome.message}\n`);
     } else {
-      env.stderr(`aifight: config probe: ${outcome.message}\n`);
+      const key =
+        outcome.code === "config_probe_load_failed"
+          ? "llmhub.probe.fail.load"
+          : outcome.code === "config_probe_secret_failed"
+            ? "llmhub.probe.fail.secret"
+            : "llmhub.probe.fail.other";
+      env.stderr(out.fail(t(loc, key, { error: outcome.message })));
     }
     return 1;
   }
@@ -254,26 +269,35 @@ export async function runConfigProbe(
     return probeResult.success ? 0 : 1;
   }
 
-  if (probeResult.success) {
-    env.stdout(`  result      : OK\n`);
-    env.stdout(`  latency     : ${probeResult.latencyMs} ms\n`);
-    if (probeResult.jsonValid !== undefined) {
-      env.stdout(`  json valid  : ${probeResult.jsonValid ? "yes" : "no"}\n`);
-    }
-    env.stdout(`  model       : ${probeResult.model}\n`);
-    env.stdout(`  protocol    : ${probeResult.protocol}\n`);
-    if (probeResult.truncated) {
-      env.stdout(`  ⚠ truncated : the reply hit the max_tokens cap — raise it with \`aifight config update <profile> --max-tokens <higher>\`.\n`);
-    }
-    env.stdout("\n");
-  } else {
-    env.stdout(`  result      : FAILED\n`);
-    env.stdout(`  latency     : ${probeResult.latencyMs} ms\n`);
-    env.stdout(`  error       : ${probeResult.error ?? "(unknown)"}\n`);
-    env.stdout(`  model       : ${probeResult.model}\n`);
-    env.stdout(`  protocol    : ${probeResult.protocol}\n`);
-    env.stdout("\n");
+  // The label column sizes itself, so zh labels never glue onto their values.
+  const rows: KvRow[] = [
+    // P6's colours: errors are red, warnings yellow. The kit's Tone has no
+    // red (nothing else needs one), so the failed word is pre-styled and
+    // passes through the "default" tone untouched.
+    probeResult.success
+      ? [t(loc, "llmhub.probe.label.result"), t(loc, "llmhub.probe.value.ok"), "green"]
+      : [t(loc, "llmhub.probe.label.result"), out.ansi.red(t(loc, "llmhub.probe.value.failed"))],
+    [t(loc, "llmhub.probe.label.latency"), t(loc, "llmhub.probe.value.latency", { ms: probeResult.latencyMs })],
+  ];
+  if (probeResult.success && probeResult.jsonValid !== undefined) {
+    rows.push([
+      t(loc, "llmhub.probe.label.json"),
+      t(loc, probeResult.jsonValid ? "llmhub.probe.value.yes" : "llmhub.probe.value.no"),
+    ]);
   }
+  if (!probeResult.success) {
+    rows.push([
+      t(loc, "llmhub.probe.label.error"),
+      probeResult.error ?? t(loc, "llmhub.probe.value.error_unknown"),
+    ]);
+  }
+  rows.push([t(loc, "llmhub.probe.label.model"), probeResult.model]);
+  rows.push([t(loc, "llmhub.probe.label.protocol"), probeResult.protocol]);
+  env.stdout(out.kvRows(rows).join("\n") + "\n");
+  if (probeResult.success && probeResult.truncated) {
+    env.stdout(`  ${out.ansi.yellow(`⚠ ${t(loc, "llmhub.probe.truncated")}`)}\n`);
+  }
+  env.stdout("\n");
 
   return probeResult.success ? 0 : 1;
 }

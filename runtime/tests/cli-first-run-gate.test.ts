@@ -80,6 +80,9 @@ describe("bare `aifight` first-run gate", () => {
     // must exit cleanly without opening a hollow panel.
     expect(code).toBe(0);
     expect(out).toContain("Welcome to AIFight");
+    // U7: the banner body is dictionary text now, not a hand-rolled ternary.
+    expect(out).toContain("This machine isn't set up yet");
+    expect(out).toContain("in the main menu right after.");
     expect(out, "no panel after a quit-without-identity wizard run").not.toContain("Setup complete");
   });
 
@@ -116,6 +119,9 @@ describe("bare `aifight` first-run gate", () => {
       await run([], { stdout: (s) => (out += s), stderr: (s) => (out += s) });
       expect(setupSpy.calls).toBe(1);
       expect(out).toContain("首次使用 AIFight");
+      expect(out).toContain("这台机器还没完成初始配置");
+      expect(out).toContain("配置完成后直接进入主菜单。");
+      expect(out, "no English half of the banner survives in zh").not.toContain("This machine isn't set up yet");
     } finally {
       if (prevLang === undefined) delete process.env.AIFIGHT_LANG;
       else process.env.AIFIGHT_LANG = prevLang;

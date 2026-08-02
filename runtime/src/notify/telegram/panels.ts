@@ -9,6 +9,16 @@
 //      stale button someone scrolls back to cannot fire an action.
 //   3. The panel exposes only what the CLI already exposes. It never touches
 //      LLM configuration, API keys, or strategy files.
+//   4. One exception to rule 2, by owner ruling (2026-08-02): /update and the
+//      "Update CLI" button run WITHOUT a confirmation tap. Three gates stand in
+//      for it, in this order — a match in progress (checked before any network
+//      call), then "is there actually a newer version", then "is there a path to
+//      run". The spawned command is three literals; nothing from the chat ever
+//      reaches it. See runUpdateFlow.
+
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 
 import {
   AgentActionError,
@@ -17,6 +27,9 @@ import {
   renameAgent,
   type ChallengeGame,
 } from "../../bridge/agent-actions";
+import { isSafeAutoUpdatePhase } from "../../bridge/auto-update";
+import { checkBridgeUpdate, type BridgeUpdateCheck } from "../../bridge/update-check";
+import { ensureRuntimeHome, getRuntimeHome } from "../../store/paths";
 import { findChallengeTokenInText } from "../../bridge/challenge-link";
 import type { BridgeConfig, BridgeTelegramConfig } from "../../bridge/config";
 import { pickAutomaticGame, standbyGamePool, type SupportedGame } from "../../bridge/auto-join";
@@ -29,6 +42,10 @@ import {
   syncDailyPolicy,
 } from "../../bridge/daily-policy";
 import { fetchNoFollow } from "../../net/guarded-fetch";
+// The CLI version the status panel reports. A plain constant — index.ts pulls
+// in no notify/* module, so this cannot close a cycle (bridge/runner.ts reads
+// PROTOCOL_VERSION the same way).
+import { RUNTIME_VERSION } from "../../index";
 import { sameOriginUrl } from "../safe-url";
 import type { BridgeLogEvent } from "../events";
 import { resolveNotifyLocale, type NotifyLocale } from "../locale";
@@ -63,7 +80,24 @@ const NAME_MAX_CHARS = 50;
 
 const STATUS_TIMEOUT_MS = 4_000;
 
+/** Where the detached updater's output goes, under the runtime home (never a
+ *  hand-built $HOME path — tests and services both relocate that root). */
+const UPDATE_LOG_NAME = "update.log";
+
 export const PLAYABLE_GAMES: readonly SupportedGame[] = ["texas_holdem", "liars_dice", "coup"];
+
+/** The child the update flow starts and then walks away from. */
+export interface DetachedChild {
+  unref(): void;
+}
+
+/** Narrow enough for a test to record the call, wide enough that node's own
+ *  spawn() fits behind it. */
+export type UpdateSpawn = (
+  command: string,
+  args: readonly string[],
+  options: { detached: boolean; stdio: Array<"ignore" | number> },
+) => DetachedChild;
 
 // ── one-shot confirmation nonces ─────────────────────────────────────
 
@@ -105,7 +139,16 @@ export function createNonceStore(opts: { now?: () => number; ttlMs?: number; ran
 
 /** The slice of BridgeRunner the panel is allowed to touch. */
 export interface PanelRunner {
-  snapshot(): { readonly state: { readonly phase?: string } | null } | null;
+  /** `state.queue` is the SAME queue belief the CLI's status box reads out of
+   *  the control API (GET /v1/agents → state.queue.game) — here it is read
+   *  straight off the runner this process owns, so the status panel needs no
+   *  new endpoint and no new protocol to say "queued · Coup". */
+  snapshot(): {
+    readonly state: {
+      readonly phase?: string;
+      readonly queue?: { readonly game?: string } | null;
+    } | null;
+  } | null;
   connectionSnapshot(): { readonly state: string; readonly connectedAt: number | null } | null;
   joinQueue(game: SupportedGame, mode?: string, opts?: { readonly oneShot?: boolean; readonly count?: number }): void;
   leaveQueue(): void;
@@ -139,6 +182,11 @@ export interface PanelDeps {
    * truthfully here. Falls back to this process's config snapshot.
    */
   readonly pauseState?: () => boolean;
+  /** The public model label the leaderboard shows for this agent (the
+   *  effective declared model). Resolving it reads the agent profile from
+   *  disk, which is the companion's business, not the panel's — undefined
+   *  (or an unset dep) simply drops the row. */
+  readonly declaredModel?: () => string | undefined;
   /** Current self-review auto mode; null = no usable LLM config, so the
    *  settings panel hides the whole row. */
   readonly reviewMode?: () => Promise<SelfReviewAutoMode | null>;
@@ -146,6 +194,16 @@ export interface PanelDeps {
   readonly setReviewMode?: (mode: SelfReviewAutoMode) => Promise<void>;
   /** The chat switched language — re-register the command menu etc. */
   readonly onLocaleChanged?: (locale: NotifyLocale) => void;
+  /** Test seam: the version check behind the status panel's version row and
+   *  the /update gate. Production asks npm + the platform (checkBridgeUpdate),
+   *  with the same short timeout the status fetch uses. */
+  readonly checkUpdate?: () => Promise<BridgeUpdateCheck>;
+  /** Test seam: how the detached `aifight update --yes` child is started. */
+  readonly spawnUpdate?: UpdateSpawn;
+  /** Test seam: whether this process IS the installed service (production
+   *  reads the env var the unit/plist sets). False = a foreground `aifight
+   *  run`, which the update cannot restart for the user. */
+  readonly isServiceRun?: () => boolean;
 }
 
 export interface PanelHandler {
@@ -272,6 +330,9 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
       case "record":
         await sendPanel(chatId, await recordPanel());
         return;
+      case "update":
+        await runUpdateFlow(chatId);
+        return;
       default: {
         // The smoothest way to accept a challenge is to forward the link
         // straight to the bot, so any message carrying one offers to take it.
@@ -341,6 +402,16 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
       case "record:open":
       case "record:refresh":
         return show(await recordPanel(), { fresh: data.arg === "new" });
+
+      // ── remote update (U6/T3) ──
+      // The same handler /update runs, gates and all. Its answer is a NEW
+      // message rather than a panel edit: the receipt has to survive the user
+      // navigating away, and it is not a panel.
+      case "status:update": {
+        await answer();
+        await runUpdateFlow(chatId);
+        return;
+      }
 
       // ── play ──
       case "play:ask_start": {
@@ -729,11 +800,33 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     };
   }
 
+  /**
+   * The panel the CLI's status box has and this one used to lack (U5/T1):
+   * matching state, public model, games, today's count, CLI version. Every
+   * row states a fact this process can actually check — a row whose fact is
+   * missing is left OUT, never filled with a placeholder that would read as
+   * "known to be nothing".
+   */
   async function statusPanel(): Promise<Panel> {
     const l = locale();
     const config = deps.config();
-    const [status, ratings] = await Promise.all([fetchAgentStatus(), fetchRatings()]);
+    // Three reads, one wait: the version check (U6/T3) rides alongside the two
+    // that were already here and, like them, says nothing when it fails.
+    const [status, ratings, update] = await Promise.all([fetchAgentStatus(), fetchRatings(), runUpdateCheck()]);
+    const updateTo = updateTarget(update);
     const lines = [`📊 <b>${escapeHtml(config.agentName)}</b>`, connectionLine(l)];
+
+    // Matching: the same three states, in the same words, the CLI banner uses.
+    // Paused wins — a paused bridge can be connected yet is not matching.
+    const queued = safe(() => deps.runner?.snapshot()?.state?.queue?.game, undefined);
+    lines.push(
+      isPaused()
+        ? t(l, "status_match_paused")
+        : typeof queued === "string" && queued !== ""
+          ? t(l, "status_match_queued", { game: gameName(l, queued) })
+          : t(l, "status_match_idle"),
+    );
+    lines.push(t(l, "status_phase", { phase: escapeHtml(phaseLabel(l)) }));
 
     if (status === null) {
       lines.push(t(l, "status_unavailable"));
@@ -748,14 +841,34 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
         cap: off ? t(l, "status_cap_off") : String(status.maxGamesPerDay),
       }));
     }
-    lines.push(t(l, "status_phase", { phase: escapeHtml(phaseLabel(l)) }));
+
+    const model = safe(() => deps.declaredModel?.(), undefined);
+    if (model !== undefined && model.trim() !== "") {
+      lines.push(t(l, "status_model", { model: escapeHtml(model.trim()) }));
+    }
+    lines.push(t(l, "status_games", {
+      games: standbyGamePool(config.autoGames).map((g) => gameName(l, g)).join(l === "zh" ? "、" : ", "),
+    }));
+    lines.push(
+      updateTo === null
+        ? t(l, "status_version", { version: RUNTIME_VERSION })
+        : t(l, "status_version_update", { version: RUNTIME_VERSION, latest: escapeHtml(updateTo) }),
+    );
+
     if (ratings.length > 0) {
       lines.push(ratings.map((r) => `${gameName(l, r.game)} ${Math.round(r.rating)}`).join(" · "));
     }
 
     return {
       text: lines.join("\n"),
-      keyboard: [[button(t(l, "btn_refresh"), { panel: "status", action: "refresh" }), homeButton(l)]],
+      keyboard: [
+        // Only when there is something to update TO. The button carries no
+        // version and no argument at all: the flow re-checks for itself, so a
+        // button scrolled back to a week later cannot install a stale target.
+        ...(updateTo !== null ? [[button(t(l, "btn_update"), { panel: "status", action: "update" })]] : []),
+        // Navigation stays on the last row, the way every other panel here ends.
+        [button(t(l, "btn_refresh"), { panel: "status", action: "refresh" }), homeButton(l)],
+      ],
     };
   }
 
@@ -848,14 +961,28 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     const reviewMode = deps.reviewMode === undefined
       ? null
       : await deps.reviewMode().catch(() => null);
+    const s = deps.settings();
+    // Grouped, not flat (U5/T2): the rows are the same facts the buttons below
+    // change, in four labelled blocks so the eye lands on the one it came for.
+    // The keyboard is untouched — no callback_data changes anywhere in here.
     const lines = [
       `⚙️ <b>${t(l, "settings_title")}</b>`,
+      "",
+      `<b>${t(l, "settings_group_play")}</b>`,
       t(l, "settings_daily_current", { limit: current }),
       t(l, "settings_games_current", {
         games: PLAYABLE_GAMES.map((g) => `${gameName(l, g)} ${enabledGames.includes(g) ? "✓" : "✗"}`).join(" · "),
       }),
+      "",
+      `<b>${t(l, "settings_group_notify")}</b>`,
+      t(l, "notify_results", { value: resultsPreferenceText(l, s.results) }),
       t(l, "settings_digest_current", { time: digestAt }),
-      ...(reviewMode !== null ? [t(l, "settings_review_current", { mode: reviewModeText(l, reviewMode) })] : []),
+      t(l, "notify_flags", { alerts: onOff(l, s.alerts), challenges: onOff(l, s.challengeEvents) }),
+      ...(reviewMode !== null
+        ? ["", `<b>${t(l, "settings_group_review")}</b>`, t(l, "settings_review_current", { mode: reviewModeText(l, reviewMode) })]
+        : []),
+      "",
+      `<b>${t(l, "settings_group_language")}</b>`,
       t(l, "settings_language", { language: l === "zh" ? "中文" : "English" }),
     ];
     if (notice !== undefined) lines.push("", notice);
@@ -1037,6 +1164,136 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     }
   }
 
+  // ── remote update (U6/T3, owner ruling 2026-08-02: no confirmation tap) ──
+
+  /** The version check with the status panel's manners: one short timeout, and
+   *  a failure is null rather than an exception or a message of its own. */
+  async function runUpdateCheck(): Promise<BridgeUpdateCheck | null> {
+    try {
+      if (deps.checkUpdate !== undefined) return await deps.checkUpdate();
+      return await checkBridgeUpdate({
+        baseUrl: deps.config().baseUrl,
+        currentVersion: RUNTIME_VERSION,
+        timeoutMs: STATUS_TIMEOUT_MS,
+        ...(deps.fetchImpl !== undefined ? { fetchImpl: deps.fetchImpl } : {}),
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /** The version worth updating TO, or null when there is none — up to date,
+   *  unknown, or an answer that named no version. Resolved in the same order
+   *  `aifight update` prints it: the check's own latest, then the server
+   *  policy's, which can lag npm. */
+  function updateTarget(check: BridgeUpdateCheck | null): string | null {
+    if (check === null) return null;
+    if (check.status !== "update_recommended" && check.status !== "unsupported") return null;
+    const latest = check.latestVersion ?? check.policy?.latestVersion;
+    return typeof latest === "string" && latest.trim() !== "" ? latest.trim() : null;
+  }
+
+  /** Busy = the phases a restart could corrupt, by the same definition
+   *  `aifight update` uses for its own restart guard (isSafeAutoUpdatePhase),
+   *  read off the runner this process owns. A runner that cannot be read is NOT
+   *  busy: a wedged bridge is exactly when updating matters most. */
+  function matchInProgress(): boolean {
+    const phase = safe(() => deps.runner?.snapshot()?.state?.phase, undefined);
+    return typeof phase === "string" && !isSafeAutoUpdatePhase(phase);
+  }
+
+  /**
+   * /update, and the status panel's button, share this. The gate ORDER is the
+   * safety property: a match in progress is refused before any network call, so
+   * a bridge that is playing never even asks npm what the latest version is.
+   */
+  async function runUpdateFlow(chatId: number): Promise<void> {
+    const l = locale();
+    if (matchInProgress()) {
+      await send(chatId, t(l, "update_busy"));
+      return;
+    }
+    const check = await runUpdateCheck();
+    if (check === null || check.status === "unknown") {
+      await send(chatId, t(l, "update_check_failed"));
+      return;
+    }
+    const target = updateTarget(check);
+    if (target === null) {
+      await send(chatId, t(l, "update_current", { version: RUNTIME_VERSION }));
+      return;
+    }
+    // The entry script THIS process was started from. Without one there is
+    // nothing to run, and guessing a path is how you run the wrong binary.
+    const script = process.argv[1];
+    if (script === undefined || script === "") {
+      await send(chatId, t(l, "update_failed"));
+      return;
+    }
+    // The receipt goes out BEFORE the spawn: the child ends by restarting the
+    // service, which kills this process mid-send.
+    const service = safe(() => (deps.isServiceRun ?? defaultIsServiceRun)(), false);
+    const note = service ? "" : `\n${t(l, "update_foreground_note")}`;
+    await send(chatId, `${t(l, "update_started", { latest: escapeHtml(target) })}${note}`);
+    if (!startDetachedUpdate(script)) await send(chatId, t(l, "update_failed"));
+  }
+
+  /** Nobody waits on this child, so an async spawn failure (ENOENT) would
+   *  surface as an unhandled "error" event — which would take the whole bridge
+   *  down. The listener is the only reason this wrapper exists. */
+  const defaultSpawnUpdate: UpdateSpawn = (command, args, options) => {
+    const child = spawn(command, args, options);
+    child.on("error", (cause) => {
+      deps.onLog?.({ level: "warning", code: "telegram.update_spawn_failed", message: describe(cause) });
+    });
+    return child;
+  };
+
+  /**
+   * Start `aifight update --yes` and let go of it: detached, so the service
+   * restart it performs does not take the child down with this process, and
+   * unref'd so it can never hold the bridge open at shutdown.
+   *
+   * The argv is this process's own entry script plus two literals. Nothing from
+   * the chat reaches it, by construction.
+   */
+  function startDetachedUpdate(script: string): boolean {
+    const log = openUpdateLog();
+    try {
+      const child = (deps.spawnUpdate ?? defaultSpawnUpdate)(
+        process.execPath,
+        [script, "update", "--yes"],
+        { detached: true, stdio: log === null ? ["ignore", "ignore", "ignore"] : ["ignore", log, log] },
+      );
+      child.unref();
+      return true;
+    } catch (cause) {
+      deps.onLog?.({ level: "warning", code: "telegram.update_spawn_failed", message: describe(cause) });
+      return false;
+    } finally {
+      // The child holds its own dup of the descriptor; this copy would leak.
+      if (log !== null) {
+        try {
+          fs.closeSync(log);
+        } catch {
+          // Already gone — nothing to salvage and nothing worth saying.
+        }
+      }
+    }
+  }
+
+  /** Append-only and best effort: a runtime home we cannot write to loses the
+   *  log, not the update. Failing silently is deliberate — a warning here would
+   *  be noise on top of a receipt that is already correct. */
+  function openUpdateLog(): number | null {
+    try {
+      ensureRuntimeHome();
+      return fs.openSync(path.join(getRuntimeHome(), UPDATE_LOG_NAME), "a");
+    } catch {
+      return null;
+    }
+  }
+
   /** The competitive record panel (owner ask 2026-08-01): ratings per game,
    *  the last few matches WITH their replay links, achievements count. Same
    *  unauthenticated profile read the website / `aifight record` use. */
@@ -1208,6 +1465,14 @@ function homeButton(l: NotifyLocale): { text: string; callback_data: string } {
 /** "• " marks the currently selected option in a row of choices. */
 function marked(on: boolean, label: string): string {
   return on ? `• ${label}` : label;
+}
+
+/** True when this bridge IS the installed service — the unit file and the
+ *  launchd plist both stamp this variable, so no probe is needed. Anything else
+ *  (including "cannot tell") counts as a foreground run, which earns the extra
+ *  "restart it yourself" line: over-reminding is the cheap mistake here. */
+function defaultIsServiceRun(): boolean {
+  return process.env.AIFIGHT_SERVICE_RUN === "1";
 }
 
 function asGame(raw: string | undefined): SupportedGame | null {

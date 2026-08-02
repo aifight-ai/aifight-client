@@ -19,10 +19,14 @@ export const en = {
   "menu.firstrun.aborted": "Setup didn't finish — run `aifight setup` any time to pick up where you left off.",
 
   // ── Menu inline prompts (A2: the last hardcoded-English holdouts) ────
-  "menu.play.game_prompt": "Game (blank = auto-pick; options: {{games}}): ",
-  "menu.play.count_prompt": "How many matches? (1-{{max}}, default 1): ",
+  // U2: the game is PICKED from a frame (P1) and the count re-asks in place
+  // (P3) — the two typed-answer questions this used to open with are gone.
+  "menu.play.game_title": "Request a match — which game?",
+  "menu.play.auto.main": "Auto-pick",
+  "menu.play.auto.hint": "let the platform pick",
+  "menu.play.count_q": "How many matches? (1-{{max}})",
   "menu.play.count_invalid": "Count must be a whole number between 1 and {{max}}.",
-  "menu.rename.prompt": "New display name: ",
+  "menu.rename.prompt": "New public display name",
   "menu.rename.empty": "No name entered — nothing changed.",
   "menu.claim.already": "This agent is already claimed. Manage it in the Dashboard: {{url}}",
   "menu.claim.open": "Open this link to claim your agent — until you do, it cannot play:",
@@ -73,8 +77,10 @@ export const en = {
   "challenge.menu.create.hint": "pick a game & table size, share the link",
   "challenge.menu.create.game_title": "Create a challenge — which game?",
   "challenge.menu.create.game_hint": "{{min}}-{{max}} players",
-  "challenge.menu.create.players_prompt": "Table size ({{min}}-{{max}}, blank = {{min}}): ",
-  "challenge.menu.create.players_invalid": "Table size must be a whole number between {{min}} and {{max}} — nothing created.",
+  // U2: P3 — the bracket carries the default and an invalid size re-asks in
+  // place, so the reason line is a pure reason (nothing was abandoned).
+  "challenge.menu.create.players_prompt": "Table size ({{min}}-{{max}})",
+  "challenge.menu.create.players_invalid": "  Table size must be a whole number between {{min}} and {{max}}.",
   "challenge.menu.list.main": "List",
   "challenge.menu.list.hint": "your open & recent challenges",
   "challenge.menu.accept.main": "Accept",
@@ -113,8 +119,13 @@ export const en = {
   "menu.item.service.main": "Service",
   "menu.item.service.hint": "status · start · restart",
   "menu.item.service.hint.missing": "not installed · pick to install",
-  "menu.service.action_prompt": "Service action (status/start/stop/restart/install/uninstall, blank = cancel): ",
-  "menu.service.action_invalid": "Unknown service action — nothing done.",
+  // U2: the action is PICKED (P1); it used to be an English word you typed.
+  "menu.service.title": "Service — pick an action",
+  "menu.service.act.status": "Status",
+  "menu.service.act.start": "Start",
+  "menu.service.act.stop": "Stop",
+  "menu.service.act.restart": "Restart",
+  "menu.service.act.uninstall": "Uninstall",
   "menu.item.help.main": "Help",
   "menu.item.help.hint": "full command list",
   "menu.item.quit": "Quit",
@@ -161,6 +172,220 @@ export const en = {
   "telegram.value.on": "on",
   "telegram.value.off": "off",
 
+  // ── LLM hub + wizard (`aifight config llm`, `aifight setup`, U3) ─────
+  // The hub's own chrome. Provider labels, model ids, effort tiers and the
+  // streaming words are VALUES (what you would type / what the provider
+  // calls them), so they stay as they are in every language.
+  "llmhub.title": "LLM configurations",
+  "llmhub.tag.unresolvable": "key not resolvable",
+  "llmhub.tag.default": "default",
+  "llmhub.tag.clamped": "clamped when sent",
+  "llmhub.act.switch.main": "Switch active",
+  "llmhub.act.switch.hint": "which config is live",
+  "llmhub.act.edit.main": "Edit",
+  "llmhub.act.edit.hint": "change fields of one config",
+  "llmhub.act.add.main": "Add config",
+  "llmhub.act.add.hint": "connect another model",
+  "llmhub.act.remove.main": "Remove",
+  "llmhub.act.test.main": "Test",
+  "llmhub.act.test.hint": "one real request to verify",
+  "llmhub.pick.switch": "Switch active — which config?",
+  "llmhub.pick.edit": "Edit — which config?",
+  "llmhub.pick.remove": "Remove — which config?",
+  "llmhub.pick.test": "Test — which config?",
+  "llmhub.provider_title": "Which provider?",
+  "llmhub.model_title": "Which model?",
+  "llmhub.model_custom": "Type another model id",
+  "llmhub.effort_title": "Reasoning effort",
+  "llmhub.effort.auto": "the provider's own default",
+  "llmhub.effort.unknown_model": "(suggested tiers: this model isn't in the built-in list)",
+  "llmhub.stream_title": "Streaming",
+  "llmhub.invalid.tokens": "Max output tokens must be a whole number.",
+  "llmhub.invalid.temperature": "Temperature must be a number between 0 and 2.",
+
+  // ── The LLM wizard's own prose (onboard-llm.ts, 批 U7) ────────────────
+  // Everything the wizard SAYS between its frames and prompts. Model ids,
+  // protocol words, `aifight …` commands and URLs are values — untranslated
+  // in every language.
+  "llmhub.wizard.existing.found": "Found a saved LLM config ({{name}}). Testing…",
+  "llmhub.wizard.existing.ok": "  ✓ model responded.",
+  "llmhub.wizard.existing.stale": "  The saved key did not respond — let's set it up again.",
+  "llmhub.wizard.prune.removing": "  Removing leftover placeholder profile \"{{id}}\" (its env key is not set on this machine).",
+  "llmhub.wizard.baseurl.q": "  Base URL",
+  "llmhub.wizard.baseurl.required": "required, e.g. https://api.deepseek.com/v1, b = back",
+  "llmhub.wizard.baseurl.official": "Enter = official {{url}}, or paste a custom one, b = back",
+  "llmhub.wizard.baseurl.missing": "  A base URL is required for an OpenAI-compatible provider.",
+  "llmhub.wizard.model.q": "  Model",
+  "llmhub.wizard.model.default": "Enter = {{model}}, or type a name, b = back",
+  "llmhub.wizard.thinking.always_on": "  This model always reasons — thinking can't be turned off.",
+  "llmhub.wizard.thinking.ask": "  Enable thinking / reasoning? (recommended)",
+  "llmhub.wizard.thinking.ask_passthrough": "  Enable thinking / reasoning? (only if this endpoint's model reasons)",
+  "llmhub.wizard.tokens.raise": "  {{effort}} effort works best with max tokens ≥ {{recommended}} (currently {{current}}). Raise it?",
+  "llmhub.wizard.advanced.ask": "  Tune advanced settings (max tokens, streaming, temperature)?",
+  "llmhub.wizard.tokens.q": "  Max output tokens",
+  "llmhub.wizard.tokens.default": "Enter = {{tokens}}",
+  "llmhub.wizard.tokens.default_cap": "Enter = {{tokens}}, model max {{cap}}",
+  "llmhub.wizard.temperature.q": "  Temperature",
+  "llmhub.wizard.temperature.default": "Enter = omit (provider default); e.g. 0.2 for more rigour",
+  "llmhub.wizard.temperature.ignored": "  (This model ignores temperature, so it stays omitted.)",
+  // The settings sentence is assembled from these fragments ONCE and reused
+  // by the step's echo line and the summary's Reasoning row, so the two can
+  // never describe the same profile differently.
+  "llmhub.wizard.set.on": "on",
+  "llmhub.wizard.set.off": "off",
+  "llmhub.wizard.set.effort": "effort {{effort}}",
+  "llmhub.wizard.set.max_tokens": "max tokens {{tokens}}",
+  "llmhub.wizard.set.streaming": "streaming {{stream}}",
+  "llmhub.wizard.set.temperature": "temperature {{temperature}}",
+  "llmhub.wizard.echo": "  → thinking {{settings}}",
+  "llmhub.wizard.provider.none": "No provider selected.",
+  "llmhub.wizard.clash.ask": "  You already have \"{{id}}\" ({{model}}). Replace it? (No keeps it — use `aifight config add <name>` to add another alongside)",
+  "llmhub.wizard.clash.kept": "  Kept your existing \"{{id}}\". Run `aifight config add <name>` to add another provider alongside it.",
+  "llmhub.wizard.key.q": "  Paste your {{provider}} API key (hidden; b = back): ",
+  "llmhub.wizard.key.empty": "  No key entered.",
+  "llmhub.wizard.key.retry": "  Try again?",
+  "llmhub.wizard.key.received": "  ✓ Key received — stored locally (0600 file) once you confirm, never uploaded.",
+  "llmhub.wizard.summary.title": "Summary — {{provider}}",
+  "llmhub.wizard.summary.baseurl": "1) Base URL",
+  "llmhub.wizard.summary.official": "{{url}} (official)",
+  "llmhub.wizard.summary.unset": "(unset)",
+  "llmhub.wizard.summary.model": "2) Model",
+  "llmhub.wizard.summary.reasoning": "3) Reasoning",
+  "llmhub.wizard.summary.key": "Key",
+  "llmhub.wizard.summary.key.value": "staged — written to a 0600 file on save",
+  "llmhub.wizard.summary.ask": "  Save & test? [Enter = save, 1-3 = change that item, q = cancel]: ",
+  "llmhub.wizard.cancelled": "  Cancelled — nothing was saved.",
+  "llmhub.wizard.testing": "Testing {{provider}} ({{model}})…",
+  "llmhub.wizard.tip": "  Tip: change any field later with one command — `aifight config update {{id}} --model …` (see `aifight config --help`).",
+  "llmhub.wizard.no_response": "the model did not respond — the key, model name, or base URL may be wrong.",
+  "llmhub.wizard.retry.ask": "  Re-enter the key / pick another provider?",
+  "llmhub.wizard.giveup": "Could not confirm the model yet. Your config is saved; you can fix it later with:",
+  "llmhub.wizard.giveup.show": "  aifight config show      # review provider, base URL, model",
+  "llmhub.wizard.giveup.test": "  aifight config test      # try the model again",
+
+  // ── The live model test (config-probe.ts — `aifight config test`, and the
+  //    same block the wizard shows after it saves) ───────────────────────
+  "llmhub.probe.testing": "aifight config test: testing profile \"{{profile}}\" ({{protocol}}, {{model}})...",
+  "llmhub.probe.testing.reasoning": "aifight config test: testing profile \"{{profile}}\" ({{protocol}}, {{model}}) with reasoning — this may take a few seconds...",
+  "llmhub.probe.label.result": "result",
+  "llmhub.probe.label.latency": "latency",
+  "llmhub.probe.label.json": "json valid",
+  "llmhub.probe.label.model": "model",
+  "llmhub.probe.label.protocol": "protocol",
+  "llmhub.probe.label.error": "error",
+  "llmhub.probe.value.ok": "OK",
+  "llmhub.probe.value.failed": "FAILED",
+  "llmhub.probe.value.latency": "{{ms}} ms",
+  "llmhub.probe.value.yes": "yes",
+  "llmhub.probe.value.no": "no",
+  "llmhub.probe.value.error_unknown": "(unknown)",
+  "llmhub.probe.truncated": "the reply hit the max_tokens cap — raise it with `aifight config update <profile> --max-tokens <higher>`.",
+  "llmhub.probe.fail.load": "config probe: failed to load profile: {{error}}",
+  "llmhub.probe.fail.secret": "config probe: cannot resolve API key: {{error}}",
+  "llmhub.probe.fail.other": "config probe: {{error}}",
+
+  // ── `aifight setup` — the guided first run (批 U7) ────────────────────
+  // The V1 i18n boundary kept the wizard English "because it is deep"; the
+  // owner overturned that on 2026-08-02 — the ONE command a newcomer runs
+  // must speak their language end to end. Command names, `aifight.service`,
+  // file paths, model ids and URLs stay as they are: they are typed, not read.
+
+  // The bare-`aifight` door into the wizard (main.ts).
+  "wizard.welcome.title": "Welcome to AIFight",
+  "wizard.welcome.body1": "This machine isn't set up yet — let's walk through it: create your agent →",
+  "wizard.welcome.body2": "connect your LLM → (optionally) install the background service. You'll land",
+  "wizard.welcome.body3": "in the main menu right after.",
+  "wizard.welcome.done": "Setup complete — opening the main menu…",
+
+  // Pre-flight: this machine already has an identity (P1 frame).
+  "wizard.preflight.title": "Found an existing AIFight agent on this machine",
+  // Row hints keep the ≤29-column budget (IMPLEMENTATION_RULES «CLI Menu Copy
+  // Rules»); the caveat that makes Connect necessary is a subheader line, and
+  // picking Connect prints the full instructions anyway.
+  "wizard.preflight.note": "This identity only works on the machine it was set up on.",
+  "wizard.preflight.use.main": "Use it",
+  "wizard.preflight.use.hint": "keep this identity",
+  "wizard.preflight.connect.main": "Connect",
+  "wizard.preflight.connect.hint": "pair a claimed agent here",
+  "wizard.preflight.new.main": "New agent",
+  "wizard.preflight.new.hint": "replaces this identity",
+  "wizard.preflight.quit.main": "Quit",
+  "wizard.preflight.quit.hint": "make no changes",
+  "wizard.preflight.quit.done": "No changes made. Run `aifight setup` again any time.",
+  "wizard.connect.1": "To move this Agent to this machine, open the Dashboard → your Agent → \"Connect Bridge\",",
+  "wizard.connect.2": "copy the pairing code, then run:",
+  "wizard.connect.3": "  aifight connect <PAIRING_CODE>",
+  "wizard.connect.4": "This rotates the key, binds the Agent to this machine, and signs the old machine out.",
+  "wizard.connect.5": "(If this Agent isn't claimed yet, claim it from its claim link first, then pair.)",
+  "wizard.use.continue": "Continuing with your existing agent {{name}}.",
+  "wizard.new.replace": "Creating a new agent — this replaces the local identity on this machine.",
+  "wizard.new.archived": "Creating a new agent — the previous local identity is archived, not deleted.",
+
+  // Just registered.
+  "wizard.registered.title": "AIFight agent created.",
+  "wizard.registered.bootstrap": "Bootstrap ID",
+  "wizard.registered.name": "Name",
+  "wizard.registered.name.value": "{{name}}  (change any time: aifight rename <name>)",
+  "wizard.registered.status": "Status",
+  "wizard.registered.status.value": "unclaimed — claim to go live",
+  "wizard.registered.daily": "Daily matches",
+  "wizard.registered.daily.value": "{{limit}} ranked per day",
+  "wizard.registered.saved": "Local credentials saved on this machine.",
+
+  // Stage 2 — the LLM.
+  "wizard.llm.intro": "Now connect the LLM your agent will play with — your key stays on this machine.",
+  "wizard.llm.failed": "LLM setup didn't finish — you can run `aifight config` later.",
+  "wizard.llm.skipped": "Skipping LLM setup (non-interactive). Configure it with `aifight config` before playing.",
+
+  // Stage 2.5 — the daily automatic-match cap (bridge-set.ts onboardDailyCap).
+  "wizard.daily.title": "Daily automatic matches",
+  "wizard.daily.body1": "  Your agent joins ranked matches BY ITSELF, up to a daily cap — and every",
+  "wizard.daily.body2": "  match makes many model calls on your own API key. The cap is the token-burn",
+  "wizard.daily.body3": "  safety valve. 0 = manual only (the agent never starts matches by itself).",
+  "wizard.daily.body4": "  Manual matches and friendly challenges are never counted against it.",
+  "wizard.daily.off": "  Automatic matching is OFF — you start every match yourself (aifight start).",
+  "wizard.daily.on": "  Up to {{limit}} automatic matches per day. Change any time with `aifight set daily <N>`.",
+  "wizard.daily.on_one": "  Up to 1 automatic match per day. Change any time with `aifight set daily <N>`.",
+  "wizard.daily.sync_failed": "  Could not sync the cap right now — set it later with `aifight set daily <N>`.",
+  "wizard.daily.failed": "Daily-cap setup didn't finish — the default (2/day) stands; change it with `aifight set daily <N>`.",
+
+  // Stage 3 — the background service offer (bridge-service.ts).
+  "wizard.service.running1": "aifight.service is already running.",
+  "wizard.service.running2": "AIFight just saved bridge credentials, so the service must reload them before the Dashboard can show the new Agent online.",
+  "wizard.service.offer1": "AIFight needs a long-running local Bridge before your Agent can play scheduled matches and challenges.",
+  "wizard.service.offer2": "I can install a local background service named aifight.service.",
+  "wizard.service.offer3": "It runs `aifight run` after reboot and keeps the outbound Bridge online for normal use.",
+  "wizard.service.offer4": "This does not expose your machine to the public internet.",
+  "wizard.service.offer5": "AIFight Bridge only opens an outbound WebSocket to AIFight and calls your local Agent runtime on localhost.",
+  "wizard.service.offer6": "If you do not install it now, finish setup later with `aifight service install` or manage `aifight run` yourself.",
+  "wizard.service.approved.restart": "Using the previously approved AIFight local setup scope; restarting aifight.service now.",
+  "wizard.service.approved.install": "Using the previously approved AIFight local setup scope; installing aifight.service now.",
+  "wizard.service.restarted": "aifight.service restarted ({{platform}}).",
+  "wizard.service.installed": "aifight.service installed and started ({{platform}}).",
+  "wizard.service.unit": "unit: {{path}}",
+  "wizard.service.warning": "warning: {{warning}}",
+
+  // The closing checklist.
+  "wizard.summary.title": "Setup summary",
+  "wizard.summary.agent": "Agent",
+  "wizard.summary.agent.value": "{{name}} (unclaimed)",
+  "wizard.summary.llm": "LLM",
+  "wizard.summary.llm.ok": "configured & tested",
+  "wizard.summary.llm.todo": "not set up — run `aifight config`",
+  "wizard.summary.service": "Service",
+  "wizard.summary.service.ok": "aifight.service running",
+  "wizard.summary.service.todo": "not installed — run `aifight service install`",
+  "wizard.summary.claim": "Claim",
+  "wizard.summary.claim.todo": "open the link below to verify your email (required before it can play)",
+  "wizard.summary.strategy": "Strategy",
+  "wizard.summary.strategy.todo": "optional — starts empty (nothing is injected until you write one)",
+  "wizard.summary.strategy.tail": "edit: aifight strategy path   ·   templates: https://aifight.ai/how-to-win#strategy",
+  "wizard.commands.title": "Handy commands:",
+  "wizard.commands.status": "check your agent any time",
+  "wizard.commands.config": "change your LLM, daily matches, or style",
+  "wizard.commands.strategy": "print your strategy file locations",
+  "wizard.commands.setup": "re-run this guided setup",
+
   // ── Status banner (menu-status.ts) ───────────────────────────────────
   "banner.claimed": "✓ claimed",
   "banner.unclaimed": "⚠ unclaimed",
@@ -168,6 +393,9 @@ export const en = {
   "banner.offline": "○ offline",
   "banner.paused": "● paused",
   "banner.daily.cap": "auto {{cap}}/day",
+  // U5/T4: the same wording with the platform's own count in front of the cap,
+  // shown once the one-shot remote refresh has landed.
+  "banner.daily.used": "auto {{used}}/{{cap}}/day",
   "banner.daily.off": "auto-match off",
   "banner.daily.unset": "auto-match not set",
   "banner.games.sep": " · games: ",
@@ -248,6 +476,52 @@ export const en = {
   "prompt.daily.confirm.warn": "{{limit}} automatic matches per day means a lot of model calls on your key — token costs add up fast.",
   "prompt.daily.confirm.ask": "Allow up to {{limit}} automatic matches per day?",
   "prompt.rename.too_long": "  Names are limited to {{max}} characters — try a shorter one.",
+
+  // ── Confirmations outside the menu (批 U4, 统一交互规范 P4/P6) ────────
+  // Every one of these goes through promptYesNo, which appends the
+  // `[Y/n]` / `[y/N]` bracket itself — NEVER spell the suffix into a
+  // question string here, or the user sees it twice.
+
+  // apply-settings — the highest-traffic confirm in the whole CLI.
+  "confirm.restart.ask": "Restart the bridge now so it takes effect?",
+  "confirm.restart.declined": "Left running with the previous settings — `aifight service restart` when you're ready.",
+  "confirm.restart.ok": "aifight.service restarted ({{platform}}) — the new settings are live.",
+  "confirm.restart.failed": "aifight.service could not be restarted: {{error}}",
+  "confirm.restart.failed.tail": "The setting is saved — run `aifight service restart` once that is sorted.",
+
+  // aifight update
+  "confirm.update.ask": "Run npm update now?",
+  "confirm.update.declined": "Update skipped.",
+
+  // aifight uninstall — destructive, so BOTH confirms default to no and the
+  // credential deletion keeps its typed second confirmation.
+  "confirm.uninstall.ask": "Continue with local uninstall?",
+  "confirm.uninstall.declined": "Uninstall cancelled.",
+  "confirm.uninstall.credentials.ask": "Delete local bridge credentials too?",
+  "confirm.uninstall.credentials.declined": "Kept local bridge credentials.",
+  "confirm.uninstall.credentials.verify": "Type the last 6 characters of the Agent ID ({{suffix}}) to confirm credential deletion",
+  "confirm.uninstall.credentials.mismatch": "Confirmation did not match.",
+  "confirm.uninstall.credentials.removed": "Local bridge credentials removed from this machine.",
+  "confirm.uninstall.service.failed": "Could not uninstall aifight.service automatically: {{error}}",
+  "confirm.uninstall.service.failed.tail": "If you installed it, run `aifight service uninstall` manually before removing the npm package.",
+
+  // aifight accept-terms
+  "confirm.terms.ask": "I have read both documents and I agree. Accept now?",
+  "confirm.terms.declined": "Not accepted. Your agent stays inactive on the platform until you accept.",
+
+  // aifight run --force (a second foreground bridge)
+  "confirm.run.ask": "Continue anyway?",
+  "confirm.run.declined": "Foreground bridge not started.",
+
+  // The service offer (setup / connect).
+  "confirm.service.restart.ask": "Restart aifight.service now?",
+  "confirm.service.restart.failed": "aifight.service could not be restarted: {{error}}",
+  "confirm.service.install.ask": "Install and start aifight.service now?",
+  "confirm.service.install.failed": "aifight.service could not be installed: {{error}}",
+
+  // aifight config remove — typed confirmation, not a yes/no.
+  "confirm.config.remove.verify": "Type \"{{profile}}\" to confirm removal (or Enter to cancel)",
+  "confirm.config.remove.cancelled": "Cancelled — nothing removed.",
 
   // ── Checkbox multi-select + set daily/game apply truth (V3) ──────────
   "multiselect.nav": "  ↑/↓ move · space toggle · Enter confirm · q cancel",

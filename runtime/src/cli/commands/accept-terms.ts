@@ -1,8 +1,10 @@
 import { readBridgeConfig } from "../../bridge/config";
 import type { BridgeConfig } from "../../bridge/config";
 import { fetchNoFollow } from "../../net/guarded-fetch.js";
+import { resolveLocale, t } from "../i18n";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, expectArity } from "../shared";
+import { bindConfirm, type ConfirmFn } from "./onboard-io";
 
 const USAGE = [
   "usage: aifight accept-terms [--yes]",
@@ -21,7 +23,13 @@ interface LegalStatus {
   readonly currentPrivacyVersion: string;
 }
 
-export async function runAcceptTerms(args: HandlerArgs, env: HandlerEnv): Promise<number> {
+export async function runAcceptTerms(
+  args: HandlerArgs,
+  env: HandlerEnv,
+  /** P4 test seam (批 U4): supplying one also stands in for the terminal.
+   *  Production passes nothing and keeps the real isTTY gate. */
+  confirm?: ConfirmFn,
+): Promise<number> {
   expectArity(args, 0, 0, USAGE);
 
   let config: BridgeConfig;
@@ -76,7 +84,7 @@ export async function runAcceptTerms(args: HandlerArgs, env: HandlerEnv): Promis
   }
 
   if (args.flags.yes !== true) {
-    if (!process.stdin.isTTY) {
+    if (confirm === undefined && !process.stdin.isTTY) {
       if (args.jsonMode) {
         throw new CommandError("confirmation_required", "Accepting the Terms requires confirmation.", {
           hint: `Read ${termsUrl} and ${privacyUrl}, then run \`aifight accept-terms --yes\`.`,
@@ -86,9 +94,11 @@ export async function runAcceptTerms(args: HandlerArgs, env: HandlerEnv): Promis
       env.stderr("Run `aifight accept-terms --yes` after reading the linked documents.\n");
       return 1;
     }
-    const accepted = await promptYesNoDefaultNo(env, "I have read both documents and I agree. Accept now? [y/N] ");
+    // P4, default NO: agreeing to a legal document must always be a typed yes.
+    const loc = env.locale?.() ?? resolveLocale();
+    const accepted = await (confirm ?? bindConfirm(env))(t(loc, "confirm.terms.ask"), false);
     if (!accepted) {
-      env.stdout("Not accepted. Your agent stays inactive on the platform until you accept.\n");
+      env.stdout(`${t(loc, "confirm.terms.declined")}\n`);
       return 0;
     }
   }
@@ -183,16 +193,4 @@ async function postAcceptLegal(
   } finally {
     clearTimeout(timer);
   }
-}
-
-async function promptYesNoDefaultNo(env: HandlerEnv, question: string): Promise<boolean> {
-  env.stdout(question);
-  process.stdin.resume();
-  process.stdin.setEncoding("utf8");
-  const answer = await new Promise<string>((resolve) => {
-    process.stdin.once("data", (chunk) => resolve(String(chunk)));
-  });
-  process.stdin.pause();
-  const normalized = answer.trim().toLowerCase();
-  return normalized === "y" || normalized === "yes";
 }

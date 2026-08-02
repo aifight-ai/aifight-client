@@ -35,18 +35,25 @@ describe("challenge submenu", () => {
     expect(h.dispatched).toEqual([{ cmd: "challenge", positional: ["coup", "4"] }]);
   });
 
-  it("create: a blank table size lets the server seat the smallest legal table", async () => {
-    const h = harness(["1", "1", ""]); // Create → Texas → blank
+  it("create: keeping the bracketed default lets the server seat the smallest legal table", async () => {
+    const h = harness(["1", "1", ""]); // Create → Texas → Enter keeps [2]
     await runChallengeMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "challenge", positional: ["texas_holdem"] }]);
   });
 
-  it("create: an out-of-range size for the picked game dispatches nothing", async () => {
-    const h = harness(["1", "3", "2"]); // Coup minimum is 3 (platform pacing ruling)
+  // U2 (统一交互规范 P3): an out-of-range size is explained and asked AGAIN in
+  // place; it used to drop the user straight back to the panel.
+  it("create: an out-of-range size re-asks in place, then accepts the fix", async () => {
+    const h = harness(["1", "3", "2", "4"]); // Coup minimum is 3 (platform pacing ruling)
+    await runChallengeMenu(h.deps);
+    expect(h.out()).toContain("between 3 and 4");
+    expect(h.dispatched).toEqual([{ cmd: "challenge", positional: ["coup", "4"] }]);
+  });
+
+  it("create: q at the size prompt cancels without dispatching", async () => {
+    const h = harness(["1", "3", "q"]);
     await runChallengeMenu(h.deps);
     expect(h.dispatched).toEqual([]);
-    expect(h.out()).toContain("between 3 and 4");
-    expect(h.out()).toContain("nothing created");
   });
 
   it("list dispatches `challenge list`", async () => {

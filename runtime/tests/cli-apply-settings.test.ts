@@ -155,6 +155,41 @@ describe("applyPendingBridgeRestart", () => {
     expect(out.join("")).toContain("the new settings are live");
   });
 
+  // 批 U4 (统一交互规范 P4/P6): this is the most-asked question in the whole
+  // CLI, so it is also the one that must look like every other confirmation.
+  it("asks P4's bare question — the [Y/n] bracket belongs to the prompt, not the text", async () => {
+    const home = homeWithPendingEdit({ pending: true });
+    const calls: string[][] = [];
+    const out: string[] = [];
+    const asked: string[] = [];
+
+    await applyPendingBridgeRestart(makeEnv(out, serviceDeps(home, calls), "connected"), {
+      interactive: true,
+      promptYesNo: async (q) => {
+        asked.push(q);
+        return true;
+      },
+    });
+
+    // promptYesNo appends the bracket itself; a question that also spells it
+    // renders `... ? [Y/n] [Y/n] ` — the shape U4 removed everywhere.
+    expect(asked).toEqual(["Restart the bridge now so it takes effect?"]);
+  });
+
+  it("leads the restarted line with the success icon (P6)", async () => {
+    const home = homeWithPendingEdit({ pending: true });
+    const calls: string[][] = [];
+    const out: string[] = [];
+    const env: HandlerEnv = {
+      ...makeEnv(out, serviceDeps(home, calls), "connected"),
+      statusIcons: { ok: "✓", warn: "⚠" },
+    };
+
+    expect(await applyPendingBridgeRestart(env, { interactive: true, promptYesNo: async () => true }))
+      .toBe("restarted");
+    expect(out.join("")).toContain("✓ aifight.service restarted");
+  });
+
   it("does nothing at all when no setting changed since startup", async () => {
     const home = homeWithPendingEdit({ pending: false });
     const calls: string[][] = [];
@@ -379,7 +414,8 @@ describe("applyPendingBridgeRestart", () => {
     const outcome = await applyPendingBridgeRestart(env, { interactive: true, promptYesNo: async () => true });
 
     expect(outcome).toBe("failed");
-    expect(err.join("")).toContain("could not be restarted");
+    // P6 (U4): the failure line reads `✗ message`, hint plain underneath.
+    expect(err.join("")).toContain("✗ aifight.service could not be restarted");
     // The write already happened — the user must not think their edit was lost.
     expect(err.join("")).toContain("The setting is saved");
   });

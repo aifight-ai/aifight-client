@@ -19,16 +19,29 @@ interface Script {
   probe?: boolean[]; // consumed per probe() call
 }
 
-function makeIO(script: Script): { io: OnboardIO; stored: Record<string, string> } {
+function makeIO(script: Script): { io: OnboardIO; stored: Record<string, string>; asked: string[] } {
   const lines = [...(script.lines ?? [])];
   const hidden = [...(script.hidden ?? [])];
   const yesno = [...(script.yesno ?? [])];
   const probe = [...(script.probe ?? [])];
   const stored: Record<string, string> = {};
+  // Prompt QUESTIONS never reach stdout in this harness (the real terminal
+  // writes them), so record them here — U7 translated them and something has
+  // to be able to see that.
+  const asked: string[] = [];
   const io: OnboardIO = {
-    promptLine: async () => lines.shift() ?? "",
-    promptHidden: async () => hidden.shift() ?? "",
-    promptYesNo: async (_q, d) => (yesno.length ? (yesno.shift() as boolean) : d),
+    promptLine: async (q) => {
+      asked.push(q);
+      return lines.shift() ?? "";
+    },
+    promptHidden: async (q) => {
+      asked.push(q);
+      return hidden.shift() ?? "";
+    },
+    promptYesNo: async (q, d) => {
+      asked.push(q);
+      return yesno.length ? (yesno.shift() as boolean) : d;
+    },
     discoverModels: async () => script.models ?? null,
     storeKey: async (filePath, value) => {
       stored[filePath] = value;
@@ -37,13 +50,17 @@ function makeIO(script: Script): { io: OnboardIO; stored: Record<string, string>
     },
     probe: async () => (probe.length ? (probe.shift() as boolean) : false),
   };
-  return { io, stored };
+  return { io, stored, asked };
 }
 
-function captureEnv(): { env: HandlerEnv; out: () => string } {
+function captureEnv(locale?: "en" | "zh"): { env: HandlerEnv; out: () => string } {
   let buf = "";
   return {
-    env: { stdout: (s: string) => (buf += s), stderr: () => {} },
+    env: {
+      stdout: (s: string) => (buf += s),
+      stderr: () => {},
+      ...(locale !== undefined ? { locale: () => locale } : {}),
+    },
     out: () => buf,
   };
 }
@@ -190,11 +207,51 @@ describe("onboardDirectLLM", () => {
       models: ["gpt-4o", "gpt-4.1", "o3"],
       probe: [true],
     });
-    const { env } = captureEnv();
+    const { env, out } = captureEnv();
     const result = await onboardDirectLLM({ slug: SLUG, env, io });
     expect(result).toBe("configured");
     const cfg = readConfig();
     expect(cfg.profiles[cfg.activeProfile].model).toBe("gpt-4.1");
+    // U3: the discovered list is a frame, with a last row for anything not in it.
+    expect(out()).toContain("Which model?");
+    expect(out()).toContain("4) Type another model id");
+  });
+
+  it("the model frame's last row opens the typed prompt (id not in the list)", async () => {
+    const { io } = makeIO({
+      // provider 2, base URL Enter, model row 4 = "type another", then the id
+      lines: ["2", "", "4", "gpt-5.6-sol-preview"],
+      hidden: ["sk-openai"],
+      models: ["gpt-4o", "gpt-4.1", "o3"],
+      probe: [true],
+    });
+    const { env } = captureEnv();
+    expect(await onboardDirectLLM({ slug: SLUG, env, io })).toBe("configured");
+    const cfg = readConfig();
+    expect(cfg.profiles[cfg.activeProfile].model).toBe("gpt-5.6-sol-preview");
+  });
+
+  it("Enter on the model frame still means the provider's default model", async () => {
+    const { io } = makeIO({
+      lines: ["2", "", ""], // provider, base URL, Enter at the model frame
+      hidden: ["sk-openai"],
+      models: ["gpt-4o", "gpt-4.1", "o3"],
+      probe: [true],
+    });
+    const { env } = captureEnv();
+    expect(await onboardDirectLLM({ slug: SLUG, env, io })).toBe("configured");
+    const cfg = readConfig();
+    expect(cfg.profiles[cfg.activeProfile].model).toBe("gpt-5.6-sol");
+  });
+
+  it("q at the provider frame ends the wizard without writing or storing anything", async () => {
+    const { io, stored } = makeIO({ lines: ["q"] });
+    const { env, out } = captureEnv();
+    expect(await onboardDirectLLM({ slug: SLUG, env, io })).toBe("failed");
+    expect(out()).toContain("Which provider?");
+    expect(out()).toContain("No provider selected.");
+    expect(Object.keys(stored)).toEqual([]);
+    expect(fs.existsSync(path.join(agentDir(), "config.json"))).toBe(false);
   });
 
   it("retries after a failed probe, then succeeds", async () => {
@@ -248,7 +305,10 @@ describe("onboardDirectLLM", () => {
 
   it("offers to raise max tokens when the user explicitly picks max effort (D4)", async () => {
     const { io } = makeIO({
-      lines: ["1", "", "", "max"], // provider, baseURL, model(default sonnet), effort = max (explicit)
+      // provider, baseURL, model(default sonnet), effort row 5 = max (explicit).
+      // U3: the tiers are a P1 frame, so the answer is the ROW (low medium high
+      // xhigh max, then auto), not the typed word.
+      lines: ["1", "", "", "5"],
       hidden: ["sk-ant-xyz"],
       yesno: [true, true, false], // thinking on, raise-to-ceiling YES, advanced no
       models: null,
@@ -469,9 +529,9 @@ describe("onboard wizard navigation", () => {
     const cfg = readConfig();
     expect(cfg.profiles[cfg.activeProfile].model).toBe("claude-opus-4-8");
     // The jump went model → summary directly, not back through settings: the
-    // effort menu printed exactly once. (Prompt QUESTIONS don't reach stdout in
-    // this harness — the menu header does.)
-    expect(out().split("Reasoning effort:").length - 1).toBe(1);
+    // effort frame was drawn exactly once. (Prompt QUESTIONS don't reach stdout
+    // in this harness — the frame does, title included.)
+    expect(out().split("Reasoning effort").length - 1).toBe(1);
   });
 
   it("q at the summary cancels without writing a profile", async () => {
@@ -606,9 +666,74 @@ describe("onboard wizard navigation", () => {
     expect(cfg.profiles[cfg.activeProfile].thinking.effort).toBe("high");
   });
 
+  // ── 批 U7: the wizard's own prose follows the display locale ──────────
+  // Before U7 everything between the (already translated) frames was hardcoded
+  // English, so a zh user got a bilingual screen. These pin the three surfaces
+  // the owner actually reads: the review screen, the settings echo, and the
+  // save/test result.
+
+  it("speaks zh from the key step through the review screen and the result", async () => {
+    const { io, asked } = makeIO({
+      lines: ["1", "", "", "", ""], // provider, baseURL, model, effort, summary = save
+      hidden: ["sk-ant-xyz"],
+      models: null,
+      probe: [true],
+    });
+    const { env, out } = captureEnv("zh");
+    expect(await onboardDirectLLM({ slug: SLUG, env, io })).toBe("configured");
+    const text = out();
+    const questions = asked.join("\n");
+    // Every prompt the wizard opens is translated, brackets and all — and no
+    // yes/no question spells its own [Y/n] (promptYesNo appends it).
+    expect(questions).toContain("粘贴你的 Claude (Anthropic) API key（隐藏输入；b = 返回）：");
+    expect(questions).toContain("接口地址 [回车 = 官方地址 https://api.anthropic.com，也可粘贴自定义地址，b = 返回]:");
+    expect(questions).toContain("型号 [回车 = claude-sonnet-5，也可直接输入型号名，b = 返回]:");
+    expect(questions).toContain("调高级设置（最大输出 token、流式、温度）？");
+    expect(questions).toContain("保存并测试？（回车 = 保存，1-3 = 改那一项，q = 取消）：");
+    expect(questions).not.toMatch(/\[[Yy]\/[Nn]\]/);
+    // key step + settings echo
+    expect(text).toContain("✓ 已收到 key");
+    expect(text).toContain("→ 思考 开 · 强度 high · 最大输出 32000 · 流式 auto");
+    // the review screen, values (model id, URL) untranslated on purpose
+    expect(text).toContain("核对 —— Claude (Anthropic)");
+    expect(text).toContain("1) 接口地址");
+    expect(text).toContain("https://api.anthropic.com（官方）");
+    expect(text).toContain("2) 型号");
+    expect(text).toContain("claude-sonnet-5");
+    expect(text).toContain("3) 推理");
+    expect(text).toContain("密钥");
+    // the result + the follow-up tip
+    expect(text).toContain("正在测试 Claude (Anthropic)（claude-sonnet-5）…");
+    expect(text).toContain("✓ 模型有响应。");
+    expect(text).toContain("aifight config update claude --model");
+    // …and none of the English it used to be glued together from.
+    expect(text).not.toContain("Summary —");
+    expect(text).not.toContain("Save & test?");
+    expect(text).not.toContain("model responded");
+    expect(text).not.toContain("Key received");
+  });
+
+  it("zh: a failed test and the give-up block are translated too (P6 ✗ line)", async () => {
+    const { io } = makeIO({
+      lines: ["1", "", "", "", ""],
+      hidden: ["bad-key"],
+      yesno: [true, false, false], // thinking on, no advanced, decline the retry
+      models: null,
+      probe: [false],
+    });
+    const { env, out } = captureEnv("zh");
+    expect(await onboardDirectLLM({ slug: SLUG, env, io })).toBe("failed");
+    const text = out();
+    expect(text).toContain("✗ 模型没有响应——可能是 key、型号名或接口地址不对。");
+    expect(text).toContain("这次没能确认模型可用。配置已保存，之后可以这样修：");
+    expect(text).toContain("aifight config test");
+    expect(text).not.toContain("did not respond");
+  });
+
   it("the auto tier is accepted and stored as auto", async () => {
     const { io } = makeIO({
-      lines: ["1", "", "", "auto", ""],
+      // effort row 6 = auto (the row after the five anthropic tiers)
+      lines: ["1", "", "", "6", ""],
       hidden: ["sk-x"],
       models: null,
       probe: [true],

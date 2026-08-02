@@ -38,6 +38,8 @@ import { RUNTIME_VERSION } from "../../index";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, expectArity } from "../shared";
 import { SUPPORTED_GAMES, isSupportedGame } from "../shared";
+import { resolveLocale, t } from "../i18n";
+import { bindConfirm, type ConfirmFn } from "./onboard-io";
 
 type SupportedGame = "texas_holdem" | "liars_dice" | "coup";
 
@@ -92,6 +94,9 @@ const USAGE = [
 export async function runBridgeRun(
   args: HandlerArgs,
   env: HandlerEnv,
+  /** P4 test seam (批 U4): supplying one also stands in for the terminal, so
+   *  the `--force` second-bridge confirm is testable both ways. */
+  confirm?: ConfirmFn,
 ): Promise<number> {
   expectArity(args, 0, 0, USAGE);
   const force = args.flags.force === true;
@@ -107,14 +112,20 @@ export async function runBridgeRun(
       );
     }
   }
-  if (force && process.stdin.isTTY && process.env.AIFIGHT_SERVICE_RUN !== "1") {
+  if (force && (confirm !== undefined || process.stdin.isTTY) && process.env.AIFIGHT_SERVICE_RUN !== "1") {
     env.stdout([
       "AIFight service may already be running.",
       "Starting a second foreground Bridge can duplicate match handling.",
       "",
     ].join("\n"));
-    const accepted = await promptYesNoDefaultNo(env, "Continue anyway? [y/N] ");
-    if (!accepted) return 0;
+    // P4, default NO: a duplicate bridge double-handles matches, so a bare
+    // Enter must back out. Declining now says so instead of exiting silently.
+    const loc = env.locale?.() ?? resolveLocale();
+    const accepted = await (confirm ?? bindConfirm(env))(t(loc, "confirm.run.ask"), false);
+    if (!accepted) {
+      env.stdout(`${t(loc, "confirm.run.declined")}\n`);
+      return 0;
+    }
   }
 
   const config = readRunBridgeConfig();
@@ -742,16 +753,4 @@ async function waitForStopSignal(stop: () => Promise<void>): Promise<void> {
     process.on("SIGINT", handle);
     process.on("SIGTERM", handle);
   });
-}
-
-async function promptYesNoDefaultNo(env: HandlerEnv, question: string): Promise<boolean> {
-  env.stdout(question);
-  process.stdin.resume();
-  process.stdin.setEncoding("utf8");
-  const answer = await new Promise<string>((resolve) => {
-    process.stdin.once("data", (chunk) => resolve(String(chunk)));
-  });
-  process.stdin.pause();
-  const normalized = answer.trim().toLowerCase();
-  return normalized === "y" || normalized === "yes";
 }

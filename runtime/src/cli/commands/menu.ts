@@ -23,13 +23,16 @@
 import type { HandlerEnv } from "../shared.js";
 import { CommandError, SUPPORTED_GAMES, UsageError } from "../shared.js";
 import { createAnsi } from "../ansi.js";
+import { createOutput } from "../output.js";
 import { readBridgeConfig, writeBridgeConfig } from "../../bridge/config.js";
-import { resolveLocale, t, type Locale } from "../i18n.js";
+import { gameLabel, resolveLocale, t, type I18nKey, type Locale } from "../i18n.js";
 import { applyPendingBridgeRestart, withDeferredApply } from "./apply-settings.js";
 import { MAX_MANUAL_MATCHES } from "./bridge-start.js";
 import { renderMenuFrame, type MenuFrame } from "./menu-frame.js";
 import type { MenuStatusBoxProvider } from "./menu-status.js";
 import type { MenuChoose } from "./menu-select.js";
+import { pickOneKey, type PickOneDeps } from "./pick-one.js";
+import { promptDefault, promptValidatedDefault } from "./onboard-io.js";
 
 export interface MenuDeps {
   readonly env: HandlerEnv;
@@ -152,23 +155,91 @@ function localeOf(deps: MenuDeps): Locale {
   return deps.locale?.() ?? "en";
 }
 
+/** The panel's own deps, shaped for the shared P1 primitive (统一交互规范 §2):
+ *  the chooser when the host wired one, the panel's line prompt otherwise. */
+function pickDeps(deps: MenuDeps, loc: Locale): PickOneDeps {
+  return {
+    env: deps.env,
+    locale: loc,
+    ...(deps.choose !== undefined ? { choose: deps.choose } : {}),
+    prompt: deps.prompt,
+  };
+}
+
+/** The panel's line prompt shaped for the P3 helpers (which take an env they
+ *  do not use once a reader is injected). */
+function askLine(deps: MenuDeps): (env: HandlerEnv, question: string) => Promise<string> {
+  return (_env, question) => deps.prompt(question);
+}
+
+/** Per-game picker hints, same keys the games checkbox uses. A game id with
+ *  no entry (a future server-side game) simply shows no hint instead of
+ *  throwing on an unknown i18n key. */
+const GAME_HINT_KEYS: Readonly<Record<string, I18nKey>> = {
+  texas_holdem: "set.game.hint.texas_holdem",
+  liars_dice: "set.game.hint.liars_dice",
+  coup: "set.game.hint.coup",
+};
+
+/** The Service item's actions in row order (install is NOT here — a missing
+ *  service makes the row itself the install button). The dispatched word stays
+ *  the English CLI verb; only the row label is translated. */
+const SERVICE_ACTIONS = ["status", "start", "stop", "restart", "uninstall"] as const;
+const SERVICE_ACTION_KEYS: Readonly<Record<(typeof SERVICE_ACTIONS)[number], I18nKey>> = {
+  status: "menu.service.act.status",
+  start: "menu.service.act.start",
+  stop: "menu.service.act.stop",
+  restart: "menu.service.act.restart",
+  uninstall: "menu.service.act.uninstall",
+};
+
 const ITEMS: readonly MenuItem[] = [
   {
     key: "1",
     main: (loc) => t(loc, "menu.item.play.main"),
     hint: (loc) => t(loc, "menu.item.play.hint"),
     run: async (deps) => {
-      const { env, prompt, dispatch } = deps;
+      const { env, dispatch } = deps;
       const loc = localeOf(deps);
-      const game = (await prompt(t(loc, "menu.play.game_prompt", { games: SUPPORTED_GAMES.join(", ") }))).trim();
+      // U2 (统一交互规范 P1): the game used to be TYPED — a raw id, spelled
+      // right, from a comma list in the question. Now it is a one-column
+      // frame: Auto-pick first, then the platform's games by display name.
+      const frame: MenuFrame = {
+        title: t(loc, "menu.play.game_title"),
+        banner: [],
+        choices: [
+          { key: "1", main: t(loc, "menu.play.auto.main"), hint: t(loc, "menu.play.auto.hint") },
+          ...SUPPORTED_GAMES.map((id, i) => {
+            const hintKey = GAME_HINT_KEYS[id];
+            return {
+              key: String(i + 2),
+              main: gameLabel(loc, id),
+              ...(hintKey !== undefined ? { hint: t(loc, hintKey) } : {}),
+            };
+          }),
+          { key: "q", main: t(loc, "challenge.menu.back.main") },
+        ],
+      };
+      const key = await pickOneKey(pickDeps(deps, loc), frame);
+      if (key === null) return; // q / Esc / an exhausted script — back to the panel
+      const game = key === "1" ? "" : SUPPORTED_GAMES[Number.parseInt(key, 10) - 2] ?? "";
       // Validate against the same 1-20 ceiling `aifight start` enforces, here —
       // dispatching an out-of-range count only to be bounced back is a dead end.
-      const countRaw = (await prompt(t(loc, "menu.play.count_prompt", { max: MAX_MANUAL_MATCHES }))).trim() || "1";
-      const count = /^\d+$/.test(countRaw) ? Number.parseInt(countRaw, 10) : 0;
-      if (count < 1 || count > MAX_MANUAL_MATCHES) {
-        env.stdout(`${t(loc, "menu.play.count_invalid", { max: MAX_MANUAL_MATCHES })}\n`);
-        return;
-      }
+      // P3: the count RE-ASKS in place instead of dropping back to the panel.
+      const answer = await promptValidatedDefault(
+        env,
+        t(loc, "menu.play.count_q", { max: MAX_MANUAL_MATCHES }),
+        "1",
+        (value) => {
+          const n = /^\d+$/.test(value) ? Number.parseInt(value, 10) : 0;
+          return n >= 1 && n <= MAX_MANUAL_MATCHES
+            ? null
+            : `  ${t(loc, "menu.play.count_invalid", { max: MAX_MANUAL_MATCHES })}`;
+        },
+        askLine(deps),
+      );
+      if (answer.kind === "cancel") return;
+      const countRaw = answer.kind === "keep" ? "1" : answer.value;
       await dispatch("start", game ? [game, countRaw] : [countRaw]);
     },
   },
@@ -294,14 +365,22 @@ const ITEMS: readonly MenuItem[] = [
     main: (loc) => t(loc, "menu.item.rename.main"),
     hint: (loc) => t(loc, "menu.item.rename.hint"),
     run: async (deps) => {
-      const { env, prompt, dispatch } = deps;
+      const { env, dispatch } = deps;
       const loc = localeOf(deps);
-      const name = (await prompt(t(loc, "menu.rename.prompt"))).trim();
-      if (name === "") {
+      // P3: the CURRENT public name sits in the bracket — Enter keeps it,
+      // q/Esc cancels, anything else is the new name.
+      let current = "";
+      try {
+        current = readBridgeConfig().agentName;
+      } catch {
+        // Unreadable config — an empty bracket is still an honest prompt.
+      }
+      const answer = await promptDefault(env, t(loc, "menu.rename.prompt"), current, askLine(deps));
+      if (answer.kind !== "value") {
         env.stdout(`${t(loc, "menu.rename.empty")}\n`);
         return;
       }
-      await dispatch("rename", [name]);
+      await dispatch("rename", [answer.value]);
     },
   },
   {
@@ -384,14 +463,27 @@ const ITEMS: readonly MenuItem[] = [
     hintTone: (deps) => (deps.serviceInstalled === false ? "yellow" : "dim"),
     run: async (deps) => {
       const loc = localeOf(deps);
-      const action = deps.serviceInstalled === false
-        ? "install"
-        : (await deps.prompt(t(loc, "menu.service.action_prompt"))).trim().toLowerCase();
-      if (action === "") return;
-      if (!["install", "status", "start", "stop", "restart", "uninstall"].includes(action)) {
-        deps.env.stdout(`${t(loc, "menu.service.action_invalid")}\n`);
+      // Not installed → the row IS the install button (unchanged). Installed →
+      // P1 instead of the typed English action word this used to demand.
+      if (deps.serviceInstalled === false) {
+        await deps.dispatch("service", ["install"]);
         return;
       }
+      const frame: MenuFrame = {
+        title: t(loc, "menu.service.title"),
+        banner: [],
+        choices: [
+          ...SERVICE_ACTIONS.map((action, i) => ({
+            key: String(i + 1),
+            main: t(loc, SERVICE_ACTION_KEYS[action]),
+          })),
+          { key: "q", main: t(loc, "challenge.menu.back.main") },
+        ],
+      };
+      const key = await pickOneKey(pickDeps(deps, loc), frame);
+      if (key === null) return;
+      const action = SERVICE_ACTIONS[Number.parseInt(key, 10) - 1];
+      if (action === undefined) return;
       await deps.dispatch("service", [action]);
     },
   },
@@ -527,9 +619,9 @@ export async function runInteractiveMenu(deps: MenuDeps): Promise<number> {
       // A handler error (UsageError / CommandError / unexpected) must not drop
       // the panel — surface the message the same way the CLI funnel would,
       // hint included (a swallowed hint is a dead end).
-      env.stdout(`aifight: ${describeError(cause)}\n`);
-      const hint = errorHint(cause);
-      if (hint !== undefined) env.stdout(`${hint}\n`);
+      // P6 (统一交互规范 §2): one shape only — output.fail() renders the red
+      // `✗ message` + plain hint pair for every interactive failure.
+      env.stdout(createOutput().fail(describeError(cause), errorHint(cause)));
     }
   }
 }

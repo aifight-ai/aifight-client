@@ -31,11 +31,16 @@ import {
 } from "../../bridge/config";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError, expectArity } from "../shared";
+import { padEndVisible, visibleWidth } from "../ansi";
+import { resolveLocale, t, type Locale } from "../i18n";
+import { createOutput, type KvRow } from "../output";
 import { offerBridgeServiceInstall } from "./bridge-service";
 import { onboardDailyCap } from "./bridge-set";
 import { runConfigInit } from "./config-init";
+import type { MenuFrame } from "./menu-frame";
 import { onboardDirectLLM } from "./onboard-llm";
 import { createOnboardIO } from "./onboard-io";
+import { pickOneKey } from "./pick-one";
 import { scaffoldGlobalStrategy } from "../../strategy/local-strategy";
 
 const DEFAULT_BASE_URL = "https://aifight.ai";
@@ -58,8 +63,14 @@ const USAGE = [
   "         set up, archiving a redacted snapshot of the old identity (local sessions / LLM kept).",
 ].join("\n");
 
+/** The wizard's display locale (menu.ts's rule: read fresh, never cache). */
+function localeOf(env: HandlerEnv): Locale {
+  return env.locale?.() ?? resolveLocale();
+}
+
 export async function runSetup(args: HandlerArgs, env: HandlerEnv): Promise<number> {
   expectArity(args, 0, 1, USAGE);
+  const loc = localeOf(env);
   // No positional argument. A bare legacy `direct` token (old `register direct`
   // muscle memory / scripts) is accepted silently but never required.
   const legacy = args.positional[0];
@@ -94,7 +105,7 @@ export async function runSetup(args: HandlerArgs, env: HandlerEnv): Promise<numb
     // and the shared LLM config are untouched — only the active pointer moves.
     // Desktop "set up a new agent" / `aifight setup --json --replace` use this.
     archiveReplacedBridgeConfig(existing);
-    env.stdout("Creating a new agent — the previous local identity is archived, not deleted.\n\n");
+    env.stdout(`${t(loc, "wizard.new.archived")}\n\n`);
     config = await performRegistration(args, env, existing.baseUrl);
     registeredNow = true;
   } else if (existing !== undefined) {
@@ -115,20 +126,20 @@ export async function runSetup(args: HandlerArgs, env: HandlerEnv): Promise<numb
         ].join("\n"),
       );
     }
-    const choice = await preflightChoice(existing, env);
+    const choice = await preflightChoice(existing, env, loc);
     if (choice === "quit") {
-      env.stdout("No changes made. Run `aifight setup` again any time.\n");
+      env.stdout(`${t(loc, "wizard.preflight.quit.done")}\n`);
       return 0;
     }
     if (choice === "connect") {
       env.stdout(
         [
           "",
-          'To move this Agent to this machine, open the Dashboard → your Agent → "Connect Bridge",',
-          "copy the pairing code, then run:",
-          "  aifight connect <PAIRING_CODE>",
-          "This rotates the key, binds the Agent to this machine, and signs the old machine out.",
-          "(If this Agent isn't claimed yet, claim it from its claim link first, then pair.)",
+          t(loc, "wizard.connect.1"),
+          t(loc, "wizard.connect.2"),
+          t(loc, "wizard.connect.3"),
+          t(loc, "wizard.connect.4"),
+          t(loc, "wizard.connect.5"),
           "",
         ].join("\n"),
       );
@@ -136,9 +147,9 @@ export async function runSetup(args: HandlerArgs, env: HandlerEnv): Promise<numb
     }
     if (choice === "use") {
       config = existing;
-      env.stdout(`\nContinuing with your existing agent ${existing.agentName}.\n\n`);
+      env.stdout(`\n${t(loc, "wizard.use.continue", { name: existing.agentName })}\n\n`);
     } else {
-      env.stdout("\nCreating a new agent — this replaces the local identity on this machine.\n\n");
+      env.stdout(`\n${t(loc, "wizard.new.replace")}\n\n`);
       config = await performRegistration(args, env);
       registeredNow = true;
     }
@@ -173,7 +184,7 @@ export async function runSetup(args: HandlerArgs, env: HandlerEnv): Promise<numb
     return 0;
   }
 
-  if (registeredNow) printRegistrationSummary(config, env);
+  if (registeredNow) printRegistrationSummary(config, env, loc);
 
   // ── Stage 2: LLM (interactive only) ──
   let llmConfigured = false;
@@ -183,15 +194,15 @@ export async function runSetup(args: HandlerArgs, env: HandlerEnv): Promise<numb
         { positional: [slug], flags: {}, jsonMode: false },
         { ...env, stdout: () => {} },
       );
-      env.stdout("Now connect the LLM your agent will play with — your key stays on this machine.\n\n");
+      env.stdout(`${t(loc, "wizard.llm.intro")}\n\n`);
       const result = await onboardDirectLLM({ slug, env, io: createOnboardIO(env) });
       llmConfigured = result === "configured";
     } catch {
       // A setup hiccup must not look like a registration failure.
-      env.stdout("\nLLM setup didn't finish — you can run `aifight config` later.\n");
+      env.stdout(`\n${t(loc, "wizard.llm.failed")}\n`);
     }
   } else if (autoMode || approvedLocalSetup) {
-    env.stdout("Skipping LLM setup (non-interactive). Configure it with `aifight config` before playing.\n\n");
+    env.stdout(`${t(loc, "wizard.llm.skipped")}\n\n`);
   }
 
   // ── Stage 2.5: daily auto-match cap (interactive only) ──
@@ -201,7 +212,7 @@ export async function runSetup(args: HandlerArgs, env: HandlerEnv): Promise<numb
     try {
       await onboardDailyCap(env);
     } catch {
-      env.stdout("\nDaily-cap setup didn't finish — the default (2/day) stands; change it with `aifight set daily <N>`.\n");
+      env.stdout(`\n${t(loc, "wizard.daily.failed")}\n`);
     }
   }
 
@@ -211,35 +222,55 @@ export async function runSetup(args: HandlerArgs, env: HandlerEnv): Promise<numb
   });
 
   // ── Final checklist ──
-  printSetupChecklist(env, {
-    config,
-    llmConfigured,
-    serviceInstalled: service === "installed",
-  });
+  env.stdout(
+    renderSetupChecklist(loc, {
+      config,
+      llmConfigured,
+      serviceInstalled: service === "installed",
+    }).join("\n") + "\n\n",
+  );
   return 0;
 }
 
 // ─── Pre-flight choice ───────────────────────────────────────────────
 
+/**
+ * P1 (统一交互规范 §2, 批 U7): the four ways out of "this machine already has
+ * an agent". It used to be a hand-printed `[U] / [C] / [N] / [Q]` list read by
+ * a raw stdin line — the wizard's own version of the hand-typed action words
+ * §3 banned everywhere else. Same four outcomes, same order (so Enter on the
+ * chooser still means "use it"), now the shared frame.
+ */
 async function preflightChoice(
   existing: BridgeConfig,
   env: HandlerEnv,
+  loc: Locale,
 ): Promise<"use" | "new" | "connect" | "quit"> {
-  env.stdout("Found an existing AIFight agent on this machine:\n");
-  env.stdout(`  ${existing.agentName} (${existing.agentId})\n\n`);
-  env.stdout("  [U] Use it     — keep this identity (works only on the machine it was set up on)\n");
-  env.stdout("  [C] Connect    — move it here with a Dashboard pairing code (claimed agent on a new machine)\n");
-  env.stdout("  [N] New agent  — create a fresh agent (replaces this local identity)\n");
-  env.stdout("  [Q] Quit       — make no changes\n");
-  for (let i = 0; i < 3; i++) {
-    const ans = (await readLine(env, "  Choose [U/c/n/q]: ")).trim().toLowerCase();
-    if (ans === "" || ans === "u" || ans === "use") return "use";
-    if (ans === "c" || ans === "connect") return "connect";
-    if (ans === "n" || ans === "new") return "new";
-    if (ans === "q" || ans === "quit") return "quit";
-    env.stdout("  Please enter U, C, N, or Q.\n");
-  }
+  const io = createOnboardIO(env);
+  const key = await pickOneKey(
+    { env, locale: loc, ...(io.choose !== undefined ? { choose: io.choose } : {}), prompt: io.promptLine },
+    buildPreflightFrame(existing, loc),
+  );
+  if (key === "1") return "use";
+  if (key === "2") return "connect";
+  if (key === "3") return "new";
+  // q / Esc / an exhausted script: change nothing (the safe way out).
   return "quit";
+}
+
+/** The pre-flight frame. Exported for the rendering tests only. */
+export function buildPreflightFrame(existing: BridgeConfig, loc: Locale): MenuFrame {
+  return {
+    title: t(loc, "wizard.preflight.title"),
+    banner: [],
+    subheader: [`  ${existing.agentName} (${existing.agentId})`, `  ${t(loc, "wizard.preflight.note")}`],
+    choices: [
+      { key: "1", main: t(loc, "wizard.preflight.use.main"), hint: t(loc, "wizard.preflight.use.hint") },
+      { key: "2", main: t(loc, "wizard.preflight.connect.main"), hint: t(loc, "wizard.preflight.connect.hint") },
+      { key: "3", main: t(loc, "wizard.preflight.new.main"), hint: t(loc, "wizard.preflight.new.hint") },
+      { key: "q", main: t(loc, "wizard.preflight.quit.main"), hint: t(loc, "wizard.preflight.quit.hint") },
+    ],
+  };
 }
 
 // ─── Registration core ───────────────────────────────────────────────
@@ -329,37 +360,84 @@ export async function registerAgentConfig(
 
 // ─── Output helpers ──────────────────────────────────────────────────
 
-function printRegistrationSummary(config: BridgeConfig, env: HandlerEnv): void {
-  env.stdout("AIFight agent created.\n\n");
-  env.stdout(`  Bootstrap ID   : ${config.agentName}\n`);
-  env.stdout(`  Name           : ${config.agentName}  (change any time: aifight rename <name>)\n`);
-  env.stdout("  Status         : unclaimed — claim to go live\n");
-  env.stdout(`  Daily matches  : ${DEFAULT_AUTO_DAILY_LIMIT} ranked per day\n`);
-  env.stdout("  Local credentials saved on this machine.\n\n");
+function printRegistrationSummary(config: BridgeConfig, env: HandlerEnv, loc: Locale): void {
+  // V4 styled kit (批 U7): the hand-padded label column became kvRows, which
+  // sizes itself from the longest label — the zh labels are a different width
+  // and used to glue onto their values.
+  const out = createOutput();
+  env.stdout(`${out.section(t(loc, "wizard.registered.title"))}\n\n`);
+  env.stdout(
+    out
+      .kvRows([
+        [t(loc, "wizard.registered.bootstrap"), config.agentName],
+        [t(loc, "wizard.registered.name"), t(loc, "wizard.registered.name.value", { name: config.agentName })],
+        [t(loc, "wizard.registered.status"), t(loc, "wizard.registered.status.value")],
+        [
+          t(loc, "wizard.registered.daily"),
+          t(loc, "wizard.registered.daily.value", { limit: DEFAULT_AUTO_DAILY_LIMIT }),
+        ],
+      ])
+      .join("\n") + "\n",
+  );
+  env.stdout(`${out.note(t(loc, "wizard.registered.saved"))}\n\n`);
 }
 
-function printSetupChecklist(
-  env: HandlerEnv,
+/**
+ * The wizard's closing checklist, as lines. Exported so the zh/en rendering
+ * (and the alignment maths behind it) is unit-testable without driving a whole
+ * interactive `aifight setup`; runSetup is the only production caller.
+ */
+export function renderSetupChecklist(
+  loc: Locale,
   s: { config: BridgeConfig; llmConfigured: boolean; serviceInstalled: boolean },
-): void {
-  const mark = (ok: boolean): string => (ok ? "✓" : "☐");
-  env.stdout("Setup summary\n");
-  env.stdout(`  ✓ Agent     : ${s.config.agentName} (unclaimed)\n`);
-  env.stdout(
-    `  ${mark(s.llmConfigured)} LLM       : ${s.llmConfigured ? "configured & tested" : "not set up — run `aifight config`"}\n`,
-  );
-  env.stdout(
-    `  ${mark(s.serviceInstalled)} Service   : ${s.serviceInstalled ? "aifight.service running" : "not installed — run `aifight service install`"}\n`,
-  );
-  env.stdout("  ☐ Claim     : open the link below to verify your email (required before it can play)\n");
-  if (s.config.claimUrl) env.stdout(`               ${s.config.claimUrl}\n`);
-  env.stdout("  ☐ Strategy  : optional — starts empty (nothing is injected until you write one)\n");
-  env.stdout("               edit: aifight strategy path   ·   templates: https://aifight.ai/how-to-win#strategy\n");
-  env.stdout("\nHandy commands:\n");
-  env.stdout("  aifight status         check your agent any time\n");
-  env.stdout("  aifight config         change your LLM, daily matches, or style\n");
-  env.stdout("  aifight strategy path  print your strategy file locations\n");
-  env.stdout("  aifight setup          re-run this guided setup\n\n");
+): string[] {
+  // ✓ / ☐ stay literal here (not statusIcons): this is a two-state checklist,
+  // and the ☐ has no icon-kit counterpart — a mixed "OK" / "☐" would be worse
+  // than the pair. Done rows are green, pending rows plain (P6's colours).
+  const out = createOutput();
+  // Done rows carry the ✓ and go green; pending rows keep ☐ and stay plain
+  // (P6's colour grammar: green = it is actually done).
+  const item = (done: boolean, label: string, value: string): KvRow =>
+    done ? [`✓ ${label}`, value, "green"] : [`☐ ${label}`, value];
+  // One kvRows call for all five items so the label column is sized once —
+  // then the two continuation lines are spliced back in under their row.
+  const items: readonly KvRow[] = [
+    item(true, t(loc, "wizard.summary.agent"), t(loc, "wizard.summary.agent.value", { name: s.config.agentName })),
+    item(
+      s.llmConfigured,
+      t(loc, "wizard.summary.llm"),
+      t(loc, s.llmConfigured ? "wizard.summary.llm.ok" : "wizard.summary.llm.todo"),
+    ),
+    item(
+      s.serviceInstalled,
+      t(loc, "wizard.summary.service"),
+      t(loc, s.serviceInstalled ? "wizard.summary.service.ok" : "wizard.summary.service.todo"),
+    ),
+    item(false, t(loc, "wizard.summary.claim"), t(loc, "wizard.summary.claim.todo")),
+    item(false, t(loc, "wizard.summary.strategy"), t(loc, "wizard.summary.strategy.todo")),
+  ];
+  const rows = out.kvRows(items);
+  // The claim URL and the strategy tail are CONTINUATIONS of the row above,
+  // so they start where that row's value does — kvRows' own column rule
+  // (longest label + 2), measured in visible columns so zh lines up too.
+  const cont = (text: string): string =>
+    `  ${" ".repeat(Math.max(...items.map(([label]) => visibleWidth(label))) + 2)}${out.ansi.dim(text)}`;
+  const lines = [out.section(t(loc, "wizard.summary.title")), ...rows.slice(0, 4)];
+  if (s.config.claimUrl) lines.push(cont(s.config.claimUrl));
+  lines.push(rows[4]!, cont(t(loc, "wizard.summary.strategy.tail")));
+
+  // The commands stay cyan (help.ts's convention: what you type is cyan), so
+  // this block is padded by hand rather than run through kv's dim label.
+  const cmds: ReadonlyArray<readonly [string, string]> = [
+    ["aifight status", t(loc, "wizard.commands.status")],
+    ["aifight config", t(loc, "wizard.commands.config")],
+    ["aifight strategy path", t(loc, "wizard.commands.strategy")],
+    ["aifight setup", t(loc, "wizard.commands.setup")],
+  ];
+  const width = Math.max(...cmds.map(([cmd]) => visibleWidth(cmd))) + 2;
+  lines.push("", out.section(t(loc, "wizard.commands.title")));
+  for (const [cmd, desc] of cmds) lines.push(`  ${out.ansi.cyan(padEndVisible(cmd, width))}${desc}`);
+  return lines;
 }
 
 // ─── Small utilities (lifted from the former register command) ───────
@@ -403,14 +481,5 @@ function stringFlag(
   return value.trim();
 }
 
-function readLine(env: HandlerEnv, question: string): Promise<string> {
-  env.stdout(question);
-  process.stdin.resume();
-  process.stdin.setEncoding("utf8");
-  return new Promise<string>((resolve) => {
-    process.stdin.once("data", (chunk) => {
-      process.stdin.pause();
-      resolve(String(chunk).replace(/[\r\n]+$/, ""));
-    });
-  });
-}
+// (The wizard's own readLine died with the hand-typed pre-flight prompt in
+// U7 — every line read now comes from onboard-io's shared primitives.)
