@@ -1218,7 +1218,7 @@ describe("remote update — /update and the status panel button", () => {
     expect(spawned.unrefs()).toBe(1);                 // never holds the bridge open
   });
 
-  it("points the child's output at ~/.aifight/runtime/update.log", async () => {
+  it("points the child's output at the runtime home update.log", async () => {
     const spawned = spawnRecorder();
     const h = harness({ checkUpdate: async () => updateCheck(), spawnUpdate: spawned.fn });
 
