@@ -35,8 +35,12 @@ import {
 } from "../../notify/telegram/settings";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError, expectArity } from "../shared";
+import { createAnsi } from "../ansi";
 import { createOutput } from "../output";
+import { resolveLocale, t as ui, type Locale } from "../i18n";
 import { applyPendingBridgeRestart, bridgeRestartPending, withDeferredApply } from "./apply-settings";
+import { renderMenuFrame, type MenuFrame } from "./menu-frame";
+import { createMenuChooser } from "./menu-select";
 import type { OnboardIO } from "./onboard-llm";
 import { createOnboardIO } from "./onboard-io";
 
@@ -104,22 +108,31 @@ export type PanelIO = Pick<OnboardIO, "promptLine" | "promptYesNo">;
 
 interface PanelItem {
   readonly key: string;
-  readonly label: (section: BridgeTelegramConfig) => string;
-  readonly run: (env: HandlerEnv, io: PanelIO) => Promise<void>;
+  /** The row's action word, translated (CLI display locale). */
+  readonly main: (loc: Locale) => string;
+  /** The row's dim suffix — the CURRENT value for settings rows, a short
+   *  description for action rows. Re-evaluated on every repaint, so the
+   *  value shown is always the one just written. */
+  readonly hint?: (loc: Locale, section: BridgeTelegramConfig) => string;
+  readonly run: (env: HandlerEnv, io: PanelIO, loc: Locale) => Promise<void>;
 }
 
-/** Ask for one of a fixed set of values, re-asking until it is one of them. */
+/** Ask for one of a fixed set of values, re-asking until it is one of them.
+ *  The bracketed values stay raw config words — that is what you type. */
 async function pickValue(
   io: PanelIO,
   env: HandlerEnv,
+  loc: Locale,
   prompt: string,
   allowed: readonly string[],
 ): Promise<string | undefined> {
   for (;;) {
-    const raw = (await io.promptLine(`${prompt} [${allowed.join(" / ")}, b = back]: `)).trim().toLowerCase();
+    const raw = (await io.promptLine(
+      `${prompt} [${allowed.join(" / ")} · ${ui(loc, "telegram.panel.back_hint")}]: `,
+    )).trim().toLowerCase();
     if (raw === "" || raw === "b" || raw === "back") return undefined;
     if (allowed.includes(raw)) return raw;
-    env.stdout(`  Not one of: ${allowed.join(", ")}\n`);
+    env.stdout(`${ui(loc, "telegram.panel.not_one_of", { allowed: allowed.join(", ") })}\n`);
   }
 }
 
@@ -127,90 +140,107 @@ async function setSetting(env: HandlerEnv, key: string, value: string): Promise<
   await telegramSet({ positional: [key, value], flags: {}, jsonMode: false }, env);
 }
 
+function onOffText(loc: Locale, value: boolean): string {
+  return ui(loc, value ? "telegram.value.on" : "telegram.value.off");
+}
+
 const PANEL_ITEMS: readonly PanelItem[] = [
   {
     key: "1",
-    label: (s) => `Match results          ${s.results}`,
-    run: async (env, io) => {
-      const v = await pickValue(io, env, "  Send match results", ["per_match", "daily", "both", "off"]);
+    main: (loc) => ui(loc, "telegram.row.results.main"),
+    hint: (loc, s) =>
+      s.results === "off" ? ui(loc, "telegram.value.off") : ui(loc, `telegram.value.results.${s.results}`),
+    run: async (env, io, loc) => {
+      const v = await pickValue(io, env, loc, ui(loc, "telegram.row.results.ask"), ["per_match", "daily", "both", "off"]);
       if (v !== undefined) await setSetting(env, "results", v);
     },
   },
   {
     key: "2",
-    label: (s) => `Daily digest time      ${s.digestAt ?? TELEGRAM_DEFAULT_DIGEST_AT}`,
-    run: async (env, io) => {
-      const v = (await io.promptLine("  Digest time, 24-hour local (HH:MM, b = back): ")).trim();
+    main: (loc) => ui(loc, "telegram.row.digest.main"),
+    hint: (_loc, s) => s.digestAt ?? TELEGRAM_DEFAULT_DIGEST_AT,
+    run: async (env, io, loc) => {
+      const v = (await io.promptLine(ui(loc, "telegram.row.digest.ask"))).trim();
       if (v === "" || v.toLowerCase() === "b") return;
       await setSetting(env, "digest_at", v);
     },
   },
   {
     key: "3",
-    label: (s) => `Alerts                 ${onOff(s.alerts)}`,
-    run: async (env, io) => {
-      const v = await pickValue(io, env, "  Alerts (broken key, disconnects, forfeits)", ["on", "off"]);
+    main: (loc) => ui(loc, "telegram.row.alerts.main"),
+    hint: (loc, s) => onOffText(loc, s.alerts),
+    run: async (env, io, loc) => {
+      const v = await pickValue(io, env, loc, ui(loc, "telegram.row.alerts.ask"), ["on", "off"]);
       if (v !== undefined) await setSetting(env, "alerts", v);
     },
   },
   {
     key: "4",
-    label: (s) => `Challenge events       ${onOff(s.challengeEvents)}`,
-    run: async (env, io) => {
-      const v = await pickValue(io, env, "  Challenge events", ["on", "off"]);
+    main: (loc) => ui(loc, "telegram.row.challenge.main"),
+    hint: (loc, s) => onOffText(loc, s.challengeEvents),
+    run: async (env, io, loc) => {
+      const v = await pickValue(io, env, loc, ui(loc, "telegram.row.challenge.ask"), ["on", "off"]);
       if (v !== undefined) await setSetting(env, "challenge_events", v);
     },
   },
   {
     key: "5",
-    label: (s) => `Remote control         ${onOff(s.control)}`,
-    run: async (env, io) => {
-      const v = await pickValue(io, env, "  Let the chat control this agent", ["on", "off"]);
+    main: (loc) => ui(loc, "telegram.row.control.main"),
+    hint: (loc, s) => onOffText(loc, s.control),
+    run: async (env, io, loc) => {
+      const v = await pickValue(io, env, loc, ui(loc, "telegram.row.control.ask"), ["on", "off"]);
       if (v !== undefined) await setSetting(env, "control", v);
     },
   },
   {
+    // The TELEGRAM MESSAGE language (bridge.json telegram.locale), not the
+    // CLI display language — the row name says "message" for that reason.
     key: "6",
-    label: (s) => {
+    main: (loc) => ui(loc, "telegram.row.locale.main"),
+    hint: (loc, s) => {
       const locale = s.locale ?? "auto";
-      return `Language               ${locale === "auto" ? `auto (${resolveNotifyLocale(undefined)})` : locale}`;
+      return locale === "auto" ? ui(loc, "telegram.value.locale.auto", { lang: resolveNotifyLocale(undefined) }) : locale;
     },
-    run: async (env, io) => {
-      const v = await pickValue(io, env, "  Message language", ["zh", "en", "auto"]);
+    run: async (env, io, loc) => {
+      const v = await pickValue(io, env, loc, ui(loc, "telegram.row.locale.ask"), ["zh", "en", "auto"]);
       if (v !== undefined) await setSetting(env, "locale", v);
     },
   },
   {
     key: "7",
-    label: (s) =>
+    main: (loc) => ui(loc, "telegram.row.mute.main"),
+    hint: (loc, s) =>
       s.mutedUntil !== undefined && s.mutedUntil > Date.now()
-        ? `Mute                   muted until ${new Date(s.mutedUntil).toLocaleString()}`
-        : "Mute                   off",
-    run: async (env, io) => {
-      const v = await pickValue(io, env, "  Mute notifications (alerts always go through)", ["1h", "today", "off"]);
+        ? ui(loc, "telegram.value.muted_until", { time: new Date(s.mutedUntil).toLocaleString() })
+        : ui(loc, "telegram.value.off"),
+    run: async (env, io, loc) => {
+      const v = await pickValue(io, env, loc, ui(loc, "telegram.row.mute.ask"), ["1h", "today", "off"]);
       if (v !== undefined) await telegramMute({ positional: [v], flags: {}, jsonMode: false }, env);
     },
   },
   {
     key: "8",
-    label: () => "Send a test message",
+    main: (loc) => ui(loc, "telegram.row.test.main"),
+    hint: (loc) => ui(loc, "telegram.row.test.hint"),
     run: async (env) => {
       await telegramTest({ positional: [], flags: {}, jsonMode: false }, env);
     },
   },
   {
     key: "9",
-    label: () => "Pair a different chat / phone",
+    main: (loc) => ui(loc, "telegram.row.pair.main"),
+    hint: (loc) => ui(loc, "telegram.row.pair.hint"),
     run: async (env) => {
       await telegramSetup({ positional: [], flags: {}, jsonMode: false }, env);
     },
   },
   {
     key: "10",
-    label: () => "Unlink this chat",
-    run: async (env, io) => {
-      if (!(await io.promptYesNo("  Stop sending to this chat?", false))) {
-        env.stdout("  Left as is.\n");
+    main: (loc) => ui(loc, "telegram.row.unlink.main"),
+    hint: (loc) => ui(loc, "telegram.row.unlink.hint"),
+    run: async (env, io, loc) => {
+      if (!(await io.promptYesNo(ui(loc, "telegram.row.unlink.ask"), false))) {
+        env.stdout(`${ui(loc, "telegram.panel.left_as_is")}\n`);
         return;
       }
       await telegramUnlink({ positional: [], flags: {}, jsonMode: false }, env);
@@ -218,31 +248,57 @@ const PANEL_ITEMS: readonly PanelItem[] = [
   },
 ];
 
+/** The panel as a MenuFrame — same renderer as the main menu, so the 12 →
+ *  Telegram hop no longer changes visual worlds (A1, 2026-08-02). Rows carry
+ *  the live value as the hint; the header is a small status subline. */
+function panelFrame(loc: Locale, config: BridgeConfig, section: BridgeTelegramConfig): MenuFrame {
+  const linked = ui(loc, "telegram.panel.linked", { chat: section.chatId });
+  const bot = config.telegramBotToken !== undefined
+    ? ` · ${ui(loc, "telegram.panel.bot", { tail: tokenTailOf(config.telegramBotToken) })}`
+    : "";
+  return {
+    title: ui(loc, "telegram.panel.title"),
+    banner: [],
+    subheader: [`${linked}${bot}`],
+    choices: [
+      ...PANEL_ITEMS.map((item) => ({
+        key: item.key,
+        main: item.main(loc),
+        ...(item.hint !== undefined ? { hint: item.hint(loc, section) } : {}),
+      })),
+      { key: "q", main: ui(loc, "telegram.panel.done") },
+    ],
+  };
+}
+
 export async function telegramPanel(args: HandlerArgs, env: HandlerEnv, injectedIO?: PanelIO): Promise<number> {
   expectArity(args, 0, 0, USAGE);
   const io = injectedIO ?? createOnboardIO(env);
+  // The arrow-key chooser, only for a REAL terminal opened without injected
+  // IO: tests (and any chooser-less host) keep the printed-frame + line
+  // fallback below, same split as menu.ts. runTelegram already gates the
+  // panel to TTY stdin; stdout is checked here for the raw-repaint math.
+  const choose = injectedIO === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true
+    ? createMenuChooser(env)
+    : undefined;
 
   for (;;) {
+    const loc = resolveLocale();
     const config = readOptionalBridgeConfig();
-    const section = config?.telegram;
-    if (section === undefined) {
+    if (config === undefined || config.telegram === undefined) {
       // Unlinked from the panel (item 10) or from the chat itself.
-      env.stdout("\nTelegram is no longer linked on this machine.\n");
+      env.stdout(`\n${ui(loc, "telegram.panel.unlinked_now")}\n`);
       return 0;
     }
 
-    env.stdout("\nAIFight Telegram companion\n\n");
-    env.stdout(`  Linked to chat ${section.chatId}`);
-    if (config?.telegramBotToken !== undefined) {
-      env.stdout(`  ·  bot …${tokenTailOf(config.telegramBotToken)}`);
+    const frame = panelFrame(loc, config, config.telegram);
+    let choice: string;
+    if (choose !== undefined) {
+      choice = (await choose(frame, { locale: loc, singleColumn: true })).trim().toLowerCase();
+    } else {
+      env.stdout(`\n${renderMenuFrame(frame, -1, createAnsi({ enabled: false }), 0, { singleColumn: true }).join("\n")}\n\n`);
+      choice = (await io.promptLine(ui(loc, "menu.pick"))).trim().toLowerCase();
     }
-    env.stdout("\n\n");
-    for (const item of PANEL_ITEMS) {
-      env.stdout(`  ${item.key.padStart(2)}) ${item.label(section)}\n`);
-    }
-    env.stdout("   q) Done\n\n");
-
-    const choice = (await io.promptLine("  Choose [1-10, q]: ")).trim().toLowerCase();
     if (choice === "" || choice === "q" || choice === "quit" || choice === "done") {
       // One last chance to make pending edits real before dropping out.
       await applyPendingBridgeRestart(env, {});
@@ -250,16 +306,16 @@ export async function telegramPanel(args: HandlerArgs, env: HandlerEnv, injected
     }
     const item = PANEL_ITEMS.find((i) => i.key === choice);
     if (item === undefined) {
-      env.stdout("  Please enter 1-10 or q.\n");
+      env.stdout(`  ${ui(loc, "telegram.panel.unknown_choice")}\n`);
       continue;
     }
     try {
       // Deferred: the handlers below each end in an apply offer, and asking
       // after every single edit is the nagging this whole thing set out to fix.
       // One offer, on the way out (see the `q` branch above).
-      await withDeferredApply(() => item.run(env, io));
+      await withDeferredApply(() => item.run(env, io, loc));
     } catch (cause) {
-      env.stdout(`  Could not complete that: ${describeTelegramError(cause)}\n`);
+      env.stdout(`  ${ui(loc, "telegram.panel.failed", { error: describeTelegramError(cause) })}\n`);
       // CommandError/UsageError carry the fix in their hint (the allowed
       // values, the "HH:MM" format) — without it the user is told THAT it
       // failed but not what would succeed.

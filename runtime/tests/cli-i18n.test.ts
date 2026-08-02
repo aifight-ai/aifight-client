@@ -79,7 +79,7 @@ describe("dictionaries", () => {
   it("t() interpolates {{params}} in both locales", () => {
     expect(t("en", "menu.item.daily.hint.cap", { cap: 5 })).toBe("auto matches [5/day]");
     expect(t("zh", "menu.item.daily.hint.cap", { cap: 5 })).toBe("自动对局 [5/天]");
-    expect(t("zh", "banner.match.queued", { games: "texas_holdem" })).toBe("⚔ 匹配中：texas_holdem 队列");
+    expect(t("zh", "banner.match.queued", { games: "德州扑克" })).toBe("匹配：⚔ 排队中 · 德州扑克");
   });
 
   it("t() leaves unknown params visible rather than swallowing them", () => {
@@ -266,9 +266,9 @@ describe("menu in zh", () => {
       "1) 请求对局 — 发起一场排位赛",
       "2) 暂停匹配 — 暂停自动匹配",
       "3) 本机状态 — 本机与 agent 状态",
-      "4) 战绩积分 — 积分·排名·战绩",
-      "5) 约战 — 友谊对局——发起·查看·应战",
-      "6) 模型 — 模型·密钥·路由",
+      "4) 战绩积分 — 积分 · 排名 · 战绩",
+      "5) 约战 — 发起 · 查看 · 应战",
+      "6) 模型 — 模型 · 密钥 · 路由",
       "7) 每日上限 — 自动对局 [5/天]",
       "8) 参赛游戏 — 自动参赛 [已选 3 个]",
       "9) 策略文件 — 你的 agent 怎么打",
@@ -279,7 +279,7 @@ describe("menu in zh", () => {
       "14) 检查更新 — 检查并更新",
       "15) 当前配置 — 查看当前配置",
       "16) 语言 — 切换到 English",
-      "17) 常驻服务 — 管理 aifight.service（状态·重启）",
+      "17) 常驻服务 — 状态 · 启动 · 重启",
       "18) 全部命令 — 全部命令与说明",
       "q) 退出",
     ]) {
@@ -351,28 +351,28 @@ describe("banner in zh", () => {
   it("composes the zh identity line and keeps exactly three lines", () => {
     const lines = composeMenuStatusLines(statusData(), "zh");
     expect(lines).toHaveLength(3);
-    expect(lines[0]!.map((s) => s.text).join("")).toBe("Steel Mongoose · ✓ 已认领 · ● 在线 · auto: 5/天");
-    expect(lines[1]!.map((s) => s.text).join("")).toBe("匹配空闲 · auto: 5/天");
-    expect(lines[2]!.map((s) => s.text).join("")).toBe("claude-opus-4-6 · 游戏：texas_holdem, coup");
+    expect(lines[0]!.map((s) => s.text).join("")).toBe("Steel Mongoose · ✓ 已认领 · ● 在线 · 自动 5 局/天");
+    expect(lines[1]!.map((s) => s.text).join("")).toBe("匹配：空闲 · 自动 5 局/天");
+    expect(lines[2]!.map((s) => s.text).join("")).toBe("claude-opus-4-6 · 游戏：德州扑克、政变");
   });
 
   it("paused wins and warns yellow", () => {
     const lines = composeMenuStatusLines(statusData({ paused: true }), "zh");
-    expect(lines[1]).toEqual([{ text: "⏸ 匹配已暂停 · 恢复：aifight resume", style: "yellow" }]);
+    expect(lines[1]).toEqual([{ text: "匹配：⏸ 已暂停（aifight resume 恢复）", style: "yellow" }]);
   });
 
   it("queued shows the game queue in cyan", () => {
     expect(line2(statusData({ matching: { state: "queued", games: ["texas_holdem"] } })))
-      .toBe("⚔ 匹配中：texas_holdem 队列");
+      .toBe("匹配：⚔ 排队中 · 德州扑克");
   });
 
   it("bridge down is honest, with the cap", () => {
-    expect(line2(statusData({ matching: { state: "not_running" } }))).toBe("桥未运行 · auto: 5/天");
-    expect(line2(statusData({ dailyCap: 0, matching: { state: "not_running" } }))).toBe("桥未运行 · auto: 关");
+    expect(line2(statusData({ matching: { state: "not_running" } }))).toBe("匹配：桥未运行 · 自动 5 局/天");
+    expect(line2(statusData({ dailyCap: 0, matching: { state: "not_running" } }))).toBe("匹配：桥未运行 · 自动匹配关");
   });
 
-  it("unclaimed points at menu item 12", () => {
-    expect(line2(statusData({ claimed: false }))).toBe("⚠ 请先认领 agent——菜单第 12 项");
+  it("unclaimed points at the Claim item by NAME (numbering shifted twice already)", () => {
+    expect(line2(statusData({ claimed: false }))).toBe("匹配：⚠ 先认领 agent（菜单「认领」项）");
   });
 });
 

@@ -10,7 +10,7 @@
 // Accept (paste a URL or token), Back.
 
 import type { HandlerEnv } from "../shared";
-import { t, type Locale } from "../i18n";
+import { gameLabel, t, type Locale } from "../i18n";
 import { createAnsi } from "../ansi";
 import { renderMenuFrame, type MenuFrame, type MenuFrameChoice } from "./menu-frame";
 import type { MenuChoose } from "./menu-select";
@@ -38,15 +38,6 @@ const TABLE_SIZES: Record<string, { readonly min: number; readonly max: number }
 };
 
 const GAME_ROWS = ["texas_holdem", "liars_dice", "coup"] as const;
-
-function gameTitle(game: string): string {
-  switch (game) {
-    case "texas_holdem": return "Texas Hold'em";
-    case "liars_dice": return "Liar's Dice";
-    case "coup": return "Coup";
-  }
-  return game;
-}
 
 /** Run the Challenge submenu until the user backs out. One action per visit
  *  keeps it symmetrical with the other panel items: do the thing, land back
@@ -82,7 +73,7 @@ async function createFlow(deps: ChallengeMenuDeps, loc: Locale): Promise<void> {
     const size = TABLE_SIZES[game]!;
     return {
       key: String(i + 1),
-      main: gameTitle(game),
+      main: gameLabel(loc, game),
       hint: t(loc, "challenge.menu.create.game_hint", { min: size.min, max: size.max }),
     };
   });

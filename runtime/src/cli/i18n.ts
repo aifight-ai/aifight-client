@@ -66,3 +66,26 @@ export function t(locale: Locale, key: I18nKey, params?: Record<string, string |
     params[name] !== undefined ? String(params[name]) : raw,
   );
 }
+
+// ── Game display names ─────────────────────────────────────────────────
+// The same mapping the Telegram companion renders with (render.ts
+// game_* strings) — one vocabulary across every surface. Unknown ids fall
+// back to the raw id: a new server-side game must never crash the menu.
+
+const GAME_NAME_KEYS: Readonly<Record<string, I18nKey>> = {
+  texas_holdem: "game.texas_holdem",
+  liars_dice: "game.liars_dice",
+  coup: "game.coup",
+};
+
+/** One game's display name in `locale` ("texas_holdem" → "德州扑克"). */
+export function gameLabel(locale: Locale, id: string): string {
+  const key = GAME_NAME_KEYS[id];
+  return key === undefined ? id : t(locale, key);
+}
+
+/** A list of game ids as display names, joined with the locale's list
+ *  separator ("、" zh / ", " en). */
+export function joinGameLabels(locale: Locale, ids: readonly string[]): string {
+  return ids.map((id) => gameLabel(locale, id)).join(locale === "zh" ? "、" : ", ");
+}

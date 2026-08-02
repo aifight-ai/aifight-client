@@ -33,7 +33,7 @@ import { resolveEffectiveDeclaredModel } from "../../bridge/declared-model.js";
 import { checkBridgeUpdate } from "../../bridge/update-check.js";
 import { RUNTIME_VERSION } from "../../index.js";
 import { createControlClient } from "../control-client.js";
-import { t, type Locale } from "../i18n.js";
+import { joinGameLabels, t, type Locale } from "../i18n.js";
 import { readPort, readToken } from "../runtime-files.js";
 import { SUPPORTED_GAMES } from "../shared.js";
 import { agentSeatHolderPid } from "./bridge-start.js";
@@ -117,7 +117,7 @@ function composeMatchingLine(data: MenuStatusData, loc: Locale): MenuStatusLine 
   const daily = dailyText(loc, data.dailyCap);
   switch (data.matching.state) {
     case "queued":
-      return [{ text: t(loc, "banner.match.queued", { games: data.matching.games.join(", ") }), style: "cyan" }];
+      return [{ text: t(loc, "banner.match.queued", { games: joinGameLabels(loc, data.matching.games) }), style: "cyan" }];
     case "idle":
       return [{ text: t(loc, "banner.match.idle", { daily }), style: "dim" }];
     case "unknown":
@@ -161,7 +161,7 @@ export function composeMenuStatusLines(data: MenuStatusData, loc: Locale = "en")
   }
   line3.push(
     { text: t(loc, "banner.games.sep"), style: "dim" },
-    { text: data.games.join(", ") },
+    { text: joinGameLabels(loc, data.games) },
   );
   return [line1, composeMatchingLine(data, loc), line3];
 }

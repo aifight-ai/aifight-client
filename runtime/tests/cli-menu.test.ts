@@ -422,7 +422,7 @@ describe("service-not-installed hint", () => {
   it("is translated (zh)", async () => {
     const h = harness(["q"], { serviceInstalled: false, locale: () => "zh" as const });
     await runInteractiveMenu(h.deps);
-    expect(h.frames[0]?.banner.some((l) => l.includes("未安装 service"))).toBe(true);
+    expect(h.frames[0]?.banner.some((l) => l.includes("未安装常驻服务"))).toBe(true);
   });
 });
 
@@ -664,12 +664,12 @@ describe("menu frame handed to the chooser", () => {
     ]);
     const byKey = new Map(h.frames[0]!.choices.map((c) => [c.key, c]));
     expect(byKey.get("1")).toMatchObject({ main: "Play", hint: "request a ranked match" });
-    expect(byKey.get("5")).toMatchObject({ main: "Challenge", hint: "friendly duels — create, view, accept" });
+    expect(byKey.get("5")).toMatchObject({ main: "Challenge", hint: "create · view · accept" });
     expect(byKey.get("7")).toMatchObject({ main: "Daily cap", hint: "auto matches [5/day]" });
     expect(byKey.get("8")).toMatchObject({ main: "Games", hint: "auto-play [1 selected]" });
     expect(byKey.get("10")).toMatchObject({ main: "Profile", hint: "switch agent identity" });
     expect(byKey.get("16")).toMatchObject({ main: "Language", hint: "switch to 中文" });
-    expect(byKey.get("17")).toMatchObject({ main: "Service", hint: "manage aifight.service (status, restart)" });
+    expect(byKey.get("17")).toMatchObject({ main: "Service", hint: "status · start · restart" });
     expect(byKey.get("18")).toMatchObject({ main: "Help", hint: "full command list" });
   });
 

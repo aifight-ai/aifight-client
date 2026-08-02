@@ -79,9 +79,9 @@ function plain(lines: ReturnType<typeof composeMenuStatusLines>): string[] {
 describe("composeMenuStatusLines", () => {
   it("composes three lines: identity + matching + model/games", () => {
     const [l1, l2, l3] = plain(composeMenuStatusLines(data()));
-    expect(l1).toBe("Phantom Maverick · ✓ claimed · ● online · auto: 2/day");
-    expect(l2).toBe("matching: idle · auto: 2/day");
-    expect(l3).toBe("claude-opus-4-6 · games: texas_holdem, coup");
+    expect(l1).toBe("Phantom Maverick · ✓ claimed · ● online · auto 2/day");
+    expect(l2).toBe("matching: idle · auto 2/day");
+    expect(l3).toBe("claude-opus-4-6 · games: Texas Hold'em, Coup");
   });
 
   it("always returns exactly three lines, so a refresh repaint never shifts rows", () => {
@@ -89,7 +89,7 @@ describe("composeMenuStatusLines", () => {
       data(),
       data({ claimed: false }),
       data({ paused: true }),
-      data({ updateVersion: "0.2.0-beta.9" }),
+      data({ updateVersion: "0.2.0-beta.10" }),
       data({ dailyCap: undefined }),
       data({ matching: { state: "not_running" } }),
       data({ matching: { state: "unknown" } }),
@@ -100,18 +100,18 @@ describe("composeMenuStatusLines", () => {
   });
 
   it("styles: name bold, ✓ green, ● green when online, update hint yellow", () => {
-    const lines = composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.9" }));
+    const lines = composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.10" }));
     const styleOf = (text: string): string | undefined =>
       lines.flat().find((s) => s.text === text)?.style;
     expect(styleOf("Phantom Maverick")).toBe("bold");
     expect(styleOf("✓ claimed")).toBe("green");
     expect(styleOf("● online")).toBe("green");
-    expect(styleOf("↑ 0.2.0-beta.9")).toBe("yellow");
+    expect(styleOf("↑ 0.2.0-beta.10")).toBe("yellow");
   });
 
   it("puts the update hint before the games list, so truncation never eats the version", () => {
-    const [, , l3] = plain(composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.9" })));
-    expect(l3).toBe("claude-opus-4-6 · ↑ 0.2.0-beta.9 · games: texas_holdem, coup");
+    const [, , l3] = plain(composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.10" })));
+    expect(l3).toBe("claude-opus-4-6 · ↑ 0.2.0-beta.10 · games: Texas Hold'em, Coup");
   });
 
   it("unclaimed warns in yellow on line 1", () => {
@@ -129,9 +129,9 @@ describe("composeMenuStatusLines", () => {
   });
 
   it("daily cap wording: N/day, off at 0, not set when undefined", () => {
-    expect(plain(composeMenuStatusLines(data({ dailyCap: 5 })))[0]).toContain("auto: 5/day");
-    expect(plain(composeMenuStatusLines(data({ dailyCap: 0 })))[0]).toContain("auto: off");
-    expect(plain(composeMenuStatusLines(data({ dailyCap: undefined })))[0]).toContain("auto: not set");
+    expect(plain(composeMenuStatusLines(data({ dailyCap: 5 })))[0]).toContain("auto 5/day");
+    expect(plain(composeMenuStatusLines(data({ dailyCap: 0 })))[0]).toContain("auto-match off");
+    expect(plain(composeMenuStatusLines(data({ dailyCap: undefined })))[0]).toContain("auto-match not set");
   });
 });
 
@@ -144,7 +144,7 @@ describe("matching line state machine", () => {
       data({ paused: true, claimed: false, matching: { state: "queued", games: ["coup"] } }),
     );
     expect(lines[1]).toEqual([
-      { text: "⏸ matching: paused · resume with: aifight resume", style: "yellow" },
+      { text: "matching: ⏸ paused (resume: aifight resume)", style: "yellow" },
     ]);
   });
 
@@ -153,40 +153,40 @@ describe("matching line state machine", () => {
       data({ claimed: false, matching: { state: "queued", games: ["coup"] } }),
     );
     expect(unclaimed[1]).toEqual([
-      { text: "⚠ claim your agent first — menu item 12", style: "yellow" },
+      { text: "matching: ⚠ claim your agent first (Claim item)", style: "yellow" },
     ]);
     const pausedUnclaimed = composeMenuStatusLines(data({ claimed: false, paused: true }));
-    expect(plain(pausedUnclaimed)[1]).toContain("⏸ matching: paused");
+    expect(plain(pausedUnclaimed)[1]).toContain("matching: ⏸ paused");
   });
 
-  it("queued shows the games in cyan, joined with commas", () => {
+  it("queued shows the games in cyan, as display names", () => {
     const lines = composeMenuStatusLines(
       data({ matching: { state: "queued", games: ["texas_holdem", "coup"] } }),
     );
     expect(lines[1]).toEqual([
-      { text: "⚔ matching: queued texas_holdem, coup", style: "cyan" },
+      { text: "matching: ⚔ queued · Texas Hold'em, Coup", style: "cyan" },
     ]);
   });
 
   it("idle (bridge up, nothing queued) says so with the cap, dim", () => {
     const lines = composeMenuStatusLines(data({ matching: { state: "idle" } }));
-    expect(lines[1]).toEqual([{ text: "matching: idle · auto: 2/day", style: "dim" }]);
+    expect(lines[1]).toEqual([{ text: "matching: idle · auto 2/day", style: "dim" }]);
     expect(plain(composeMenuStatusLines(data({ dailyCap: 0, matching: { state: "idle" } })))[1])
-      .toBe("matching: idle · auto: off");
+      .toBe("matching: idle · auto-match off");
     expect(plain(composeMenuStatusLines(data({ dailyCap: undefined, matching: { state: "idle" } })))[1])
-      .toBe("matching: idle · auto: not set");
+      .toBe("matching: idle · auto-match not set");
   });
 
   it("unreachable control API claims no queue — config truth only", () => {
     const lines = composeMenuStatusLines(data({ matching: { state: "unknown" } }));
-    expect(lines[1]).toEqual([{ text: "matching: auto: 2/day", style: "dim" }]);
+    expect(lines[1]).toEqual([{ text: "matching: bridge running · queue unknown", style: "dim" }]);
   });
 
   it("no live bridge says so plainly, with the cap", () => {
     const lines = composeMenuStatusLines(data({ matching: { state: "not_running" } }));
-    expect(lines[1]).toEqual([{ text: "matching: bridge not running · auto: 2/day", style: "dim" }]);
+    expect(lines[1]).toEqual([{ text: "matching: bridge not running · auto 2/day", style: "dim" }]);
     expect(plain(composeMenuStatusLines(data({ dailyCap: 0, matching: { state: "not_running" } })))[1])
-      .toBe("matching: bridge not running · auto: off");
+      .toBe("matching: bridge not running · auto-match off");
   });
 });
 
@@ -245,10 +245,10 @@ describe("createMenuStatusBox", () => {
     const box = createMenuStatusBox({ fetchImpl: hanging, seatHolderPid: () => 4242 })!;
     expect(box).toBeDefined();
     const [l1, l2, l3] = box.lines().map((line) => line.map((s) => s.text).join(""));
-    expect(l1).toBe("Phantom Maverick · ✓ claimed · ● online · auto: 2/day");
+    expect(l1).toBe("Phantom Maverick · ✓ claimed · ● online · auto 2/day");
     // Seat exists but the probe has not answered: config truth, no queue claim.
-    expect(l2).toBe("matching: auto: 2/day");
-    expect(l3).toBe("claude-opus-4-6 · games: texas_holdem, coup");
+    expect(l2).toBe("matching: bridge running · queue unknown");
+    expect(l3).toBe("claude-opus-4-6 · games: Texas Hold'em, Coup");
     expect(box.title).toMatch(/^AIFight · v\d+\.\d+\.\d+-beta\./);
     // The one-shot refresh is still pending.
     const pending = box.refreshed();
@@ -260,7 +260,7 @@ describe("createMenuStatusBox", () => {
   it("enriches with the remote answers: server name, claim state, update hint", async () => {
     seedBridge();
     const box = createMenuStatusBox({
-      fetchImpl: remoteFetch({ claimed: true, name: "Server Name", npmLatest: "0.2.0-beta.9" }),
+      fetchImpl: remoteFetch({ claimed: true, name: "Server Name", npmLatest: "0.2.0-beta.10" }),
       seatHolderPid: () => undefined, // no local bridge process
     })!;
     const refresh = box.refreshed();
@@ -270,10 +270,10 @@ describe("createMenuStatusBox", () => {
     expect(l1).toContain("Server Name");
     expect(l1).toContain("✓ claimed");
     expect(l1).toContain("○ offline");
-    expect(l2).toBe("matching: bridge not running · auto: 2/day");
-    expect(l3).toContain("↑ 0.2.0-beta.9");
+    expect(l2).toBe("matching: bridge not running · auto 2/day");
+    expect(l3).toContain("↑ 0.2.0-beta.10");
     // The menu's Update item reads the same fact.
-    expect(box.updateVersion?.()).toBe("0.2.0-beta.9");
+    expect(box.updateVersion?.()).toBe("0.2.0-beta.10");
     // Settled: no second repaint hook.
     expect(box.refreshed()).toBeUndefined();
   });
@@ -288,8 +288,8 @@ describe("createMenuStatusBox", () => {
     const [l1, l2, l3] = box.lines().map((line) => line.map((s) => s.text).join(""));
     // Local signals survive: claim URL on file = unclaimed; local name; no
     // update hint (the check never answered).
-    expect(l1).toBe("Phantom Maverick · ⚠ unclaimed · ○ offline · auto: 2/day");
-    expect(l2).toBe("⚠ claim your agent first — menu item 12");
+    expect(l1).toBe("Phantom Maverick · ⚠ unclaimed · ○ offline · auto 2/day");
+    expect(l2).toBe("matching: ⚠ claim your agent first (Claim item)");
     expect(l3).not.toContain("available");
     expect(box.updateVersion?.()).toBeUndefined();
   });
@@ -302,7 +302,7 @@ describe("createMenuStatusBox", () => {
     })!;
     const [l1, l2] = box.lines().map((line) => line.map((s) => s.text).join(""));
     expect(l1).toContain("● paused");
-    expect(l2).toBe("⏸ matching: paused · resume with: aifight resume");
+    expect(l2).toBe("matching: ⏸ paused (resume: aifight resume)");
     await box.refreshed();
   });
 
@@ -336,7 +336,7 @@ describe("queue probe", () => {
     })!;
     await box.refreshed();
     expect(asked).toBe(0);
-    expect(plain(box.lines())[1]).toBe("matching: bridge not running · auto: 2/day");
+    expect(plain(box.lines())[1]).toBe("matching: bridge not running · auto 2/day");
   });
 
   it("queued games land on the repaint when the probe resolves", async () => {
@@ -347,9 +347,9 @@ describe("queue probe", () => {
       queueProbe: probe({ state: "queued", games: ["texas_holdem"] }),
     })!;
     // First paint: the probe is still in flight — no queue claim.
-    expect(plain(box.lines())[1]).toBe("matching: auto: 2/day");
+    expect(plain(box.lines())[1]).toBe("matching: bridge running · queue unknown");
     await box.refreshed();
-    expect(plain(box.lines())[1]).toBe("⚔ matching: queued texas_holdem");
+    expect(plain(box.lines())[1]).toBe("matching: ⚔ queued · Texas Hold'em");
     // The box still has exactly three lines after the refresh.
     expect(box.lines()).toHaveLength(3);
   });
@@ -362,7 +362,7 @@ describe("queue probe", () => {
       queueProbe: probe({ state: "idle" }),
     })!;
     await box.refreshed();
-    expect(plain(box.lines())[1]).toBe("matching: idle · auto: 2/day");
+    expect(plain(box.lines())[1]).toBe("matching: idle · auto 2/day");
   });
 
   it("a probe failure leaves the config-truth line, no error noise", async () => {
@@ -373,7 +373,7 @@ describe("queue probe", () => {
       queueProbe: () => Promise.reject(new Error("control API down")),
     })!;
     await box.refreshed();
-    expect(plain(box.lines())[1]).toBe("matching: auto: 2/day");
+    expect(plain(box.lines())[1]).toBe("matching: bridge running · queue unknown");
     expect(box.lines()).toHaveLength(3);
   });
 
@@ -385,7 +385,7 @@ describe("queue probe", () => {
       queueProbe: probe({ state: "queued", games: ["coup"] }),
     })!;
     await box.refreshed();
-    expect(plain(box.lines())[1]).toBe("⏸ matching: paused · resume with: aifight resume");
+    expect(plain(box.lines())[1]).toBe("matching: ⏸ paused (resume: aifight resume)");
   });
 });
 
@@ -416,7 +416,7 @@ describe("default queue probe (control API)", () => {
     }) as unknown as typeof fetch;
     const box = createMenuStatusBox({ fetchImpl, seatHolderPid: () => 4242 })!;
     await box.refreshed();
-    expect(plain(box.lines())[1]).toBe("⚔ matching: queued coup");
+    expect(plain(box.lines())[1]).toBe("matching: ⚔ queued · Coup");
   });
 
   it("an unreachable control API degrades to config truth", async () => {
@@ -427,6 +427,6 @@ describe("default queue probe (control API)", () => {
       seatHolderPid: () => 4242,
     })!;
     await box.refreshed();
-    expect(plain(box.lines())[1]).toBe("matching: auto: 2/day");
+    expect(plain(box.lines())[1]).toBe("matching: bridge running · queue unknown");
   });
 });

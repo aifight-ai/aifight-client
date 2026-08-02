@@ -75,7 +75,7 @@ export async function runProfileMenu(deps: ProfileMenuDeps): Promise<void> {
     } catch {
       // The panel only offers Profile when configured; a config that vanished
       // mid-session gets the plain truth instead of a crash.
-      env.stdout("No active identity on this machine — run `aifight setup` first.\n");
+      env.stdout(`${t(loc, "profile.none")}\n`);
       return;
     }
     // listIdentities seeds the store from bridge.json on first use (the

@@ -117,7 +117,7 @@ describe("aifight telegram — interactive panel", () => {
       "Alerts",
       "Challenge events",
       "Remote control",
-      "Language",
+      "Message language",
       "Mute",
       "Send a test message",
       "Pair a different chat",
@@ -125,9 +125,26 @@ describe("aifight telegram — interactive panel", () => {
     ]) {
       expect(text, label).toContain(label);
     }
-    // The values shown must be this machine's, not the defaults.
-    expect(text).toContain("Match results          daily");
-    expect(text).toContain("Alerts                 off");
+    // A1 (2026-08-02): the rows are MenuFrame rows now — the current value is
+    // the " — " hint, and it must be this machine's, not the defaults.
+    expect(text).toContain("Match results — daily digest");
+    expect(text).toContain("Alerts — off");
+    expect(text).toContain("q) Done");
+  });
+
+  it("renders fully in Chinese when the CLI display locale is zh", async () => {
+    useTempHome();
+    seedLinked({ results: "per_match" });
+    writeBridgeConfig({ ...readBridgeConfig(), locale: "zh" });
+    const h = harness(["q"]);
+
+    await telegramPanel(ARGS, h.env, h.io);
+
+    const text = h.out();
+    expect(text).toContain("Telegram 手机助手");
+    expect(text).toContain("已绑定聊天 4242");
+    expect(text).toContain("战报推送 — 每局一报");
+    expect(text).toContain("q) 完成");
   });
 
   it("editing match results writes it to bridge.json", async () => {

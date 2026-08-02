@@ -157,14 +157,16 @@ const ITEMS: readonly MenuItem[] = [
     key: "1",
     main: (loc) => t(loc, "menu.item.play.main"),
     hint: (loc) => t(loc, "menu.item.play.hint"),
-    run: async ({ env, prompt, dispatch }) => {
-      const game = (await prompt(`Game (blank = auto-pick; options: ${SUPPORTED_GAMES.join(", ")}): `)).trim();
+    run: async (deps) => {
+      const { env, prompt, dispatch } = deps;
+      const loc = localeOf(deps);
+      const game = (await prompt(t(loc, "menu.play.game_prompt", { games: SUPPORTED_GAMES.join(", ") }))).trim();
       // Validate against the same 1-20 ceiling `aifight start` enforces, here —
       // dispatching an out-of-range count only to be bounced back is a dead end.
-      const countRaw = (await prompt(`How many matches? (1-${MAX_MANUAL_MATCHES}, default 1): `)).trim() || "1";
+      const countRaw = (await prompt(t(loc, "menu.play.count_prompt", { max: MAX_MANUAL_MATCHES }))).trim() || "1";
       const count = /^\d+$/.test(countRaw) ? Number.parseInt(countRaw, 10) : 0;
       if (count < 1 || count > MAX_MANUAL_MATCHES) {
-        env.stdout(`Count must be a whole number between 1 and ${MAX_MANUAL_MATCHES}.\n`);
+        env.stdout(`${t(loc, "menu.play.count_invalid", { max: MAX_MANUAL_MATCHES })}\n`);
         return;
       }
       await dispatch("start", game ? [game, countRaw] : [countRaw]);
@@ -291,10 +293,12 @@ const ITEMS: readonly MenuItem[] = [
     key: "11",
     main: (loc) => t(loc, "menu.item.rename.main"),
     hint: (loc) => t(loc, "menu.item.rename.hint"),
-    run: async ({ env, prompt, dispatch }) => {
-      const name = (await prompt("New display name: ")).trim();
+    run: async (deps) => {
+      const { env, prompt, dispatch } = deps;
+      const loc = localeOf(deps);
+      const name = (await prompt(t(loc, "menu.rename.prompt"))).trim();
       if (name === "") {
-        env.stdout("No name entered — nothing changed.\n");
+        env.stdout(`${t(loc, "menu.rename.empty")}\n`);
         return;
       }
       await dispatch("rename", [name]);
@@ -311,12 +315,14 @@ const ITEMS: readonly MenuItem[] = [
     key: "13",
     main: (loc) => t(loc, "menu.item.claim.main"),
     hint: (loc) => t(loc, "menu.item.claim.hint"),
-    run: async ({ env, claim }) => {
+    run: async (deps) => {
+      const { env, claim } = deps;
+      const loc = localeOf(deps);
       if (claim?.pending !== true || claim.url === undefined) {
-        env.stdout("\nThis agent is already claimed. Manage it in the Dashboard: https://aifight.ai/dashboard\n");
+        env.stdout(`\n${t(loc, "menu.claim.already", { url: "https://aifight.ai/dashboard" })}\n`);
         return;
       }
-      env.stdout("\nOpen this link to claim your agent — until you do, it cannot play:\n");
+      env.stdout(`\n${t(loc, "menu.claim.open")}\n`);
       env.stdout(`  ${claim.url}\n`);
     },
   },
@@ -411,10 +417,12 @@ function buildFrame(deps: MenuDeps): MenuFrame {
     if (deps.claim.url !== undefined) banner.push(deps.claim.url);
   }
   // V3 ③: configured but no aifight.service — the bridge dies with this
-  // window. One gentle yellow line under the box, every repaint, no nag
-  // dialogs (owner decision ③).
+  // window. Two gentle yellow lines under the box (sentence + install
+  // command — one line truncated on normal terminals), every repaint, no
+  // nag dialogs (owner decision ③; A6 split).
   if (deps.serviceInstalled === false) {
     banner.push(t(loc, "menu.banner.no_service"));
+    banner.push(t(loc, "menu.banner.no_service.install"));
   }
   return {
     title: t(loc, "menu.title"),
@@ -510,7 +518,7 @@ export async function runInteractiveMenu(deps: MenuDeps): Promise<number> {
     if (choice === "") continue;
     const item = byKey.get(choice);
     if (item === undefined) {
-      env.stdout(`Unknown choice '${choice}'.\n`);
+      env.stdout(`${t(localeOf(deps), "menu.unknown_choice", { choice })}\n`);
       continue;
     }
     try {

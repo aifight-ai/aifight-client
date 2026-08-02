@@ -48,13 +48,13 @@ function statusBox(over: Partial<MenuStatusBox> = {}): MenuStatusBox {
         { text: " · " },
         { text: "● online", style: "green" },
         { text: " · " },
-        { text: "auto: 2/day", style: "dim" },
+        { text: "auto 2/day", style: "dim" },
       ],
-      [{ text: "⚔ matching: queued texas_holdem", style: "cyan" }],
+      [{ text: "matching: ⚔ queued · Texas Hold'em", style: "cyan" }],
       [
         { text: "claude-opus-4-6", style: "cyan" },
         { text: " · games: ", style: "dim" },
-        { text: "texas_holdem, coup" },
+        { text: "Texas Hold'em, Coup" },
       ],
     ],
     ...over,
@@ -272,23 +272,23 @@ describe("status box", () => {
     const lines = renderMenuFrame(frame({ statusBox: statusBox() }), -1, COLOR, 100);
     const plain = lines.map(stripAnsi);
     expect(plain[0]).toMatch(/^╭─ AIFight · v0\.1\.0-beta\.40 ─+╮$/);
-    expect(plain[1]).toMatch(/^│ Phantom Maverick · ✓ claimed · ● online · auto: 2\/day +│$/);
-    expect(plain[2]).toMatch(/^│ ⚔ matching: queued texas_holdem +│$/);
-    expect(plain[3]).toMatch(/^│ claude-opus-4-6 · games: texas_holdem, coup +│$/);
+    expect(plain[1]).toMatch(/^│ Phantom Maverick · ✓ claimed · ● online · auto 2\/day +│$/);
+    expect(plain[2]).toMatch(/^│ matching: ⚔ queued · Texas Hold'em +│$/);
+    expect(plain[3]).toMatch(/^│ claude-opus-4-6 · games: Texas Hold'em, Coup +│$/);
     expect(plain[4]).toMatch(/^╰─+╯$/);
     // Border is dimmed (the whole border line is one dim wrap), name bold,
     // the ✓/● green — asserted via the helper, never literal escapes.
     expect(lines[0]).toBe(COLOR.dim(plain[0]!));
     expect(lines[1]).toContain(COLOR.bold("Phantom Maverick"));
     expect(lines[1]).toContain(COLOR.green("✓ claimed"));
-    expect(lines[2]).toContain(COLOR.cyan("⚔ matching: queued texas_holdem"));
+    expect(lines[2]).toContain(COLOR.cyan("matching: ⚔ queued · Texas Hold'em"));
     expect(lines[3]).toContain(COLOR.cyan("claude-opus-4-6"));
   });
 
   it("draws the same box as a plain ASCII frame without colors", () => {
     const lines = renderMenuFrame(frame({ statusBox: statusBox() }), -1, PLAIN, 100);
     expect(lines[0]).toMatch(/^\+- AIFight · v0\.1\.0-beta\.40 -+\+$/);
-    expect(lines[1]).toMatch(/^\| Phantom Maverick · ✓ claimed · ● online · auto: 2\/day +\|$/);
+    expect(lines[1]).toMatch(/^\| Phantom Maverick · ✓ claimed · ● online · auto 2\/day +\|$/);
     expect(lines[4]).toMatch(/^\+-+\+$/);
     // No SGR codes anywhere in plain mode.
     expect(lines.join("\n")).not.toContain("\x1b[");
@@ -298,26 +298,26 @@ describe("status box", () => {
     const box = statusBox({
       lines: [
         [{ text: "Phantom Maverick", style: "bold" }],
-        [{ text: "⏸ matching: paused · resume with: aifight resume", style: "yellow" }],
+        [{ text: "matching: ⏸ paused (resume: aifight resume)", style: "yellow" }],
         [{ text: "claude-opus-4-6", style: "cyan" }],
       ],
     });
     const plain = renderMenuFrame(frame({ statusBox: box }), -1, PLAIN, 100);
-    expect(plain[2]).toContain("|| matching: paused");
+    expect(plain[2]).toContain("matching: || paused");
     expect(plain[2]).not.toContain("⏸");
     const colored = renderMenuFrame(frame({ statusBox: box }), -1, COLOR, 100);
-    expect(stripAnsi(colored[2]!)).toContain("⏸ matching: paused");
+    expect(stripAnsi(colored[2]!)).toContain("matching: ⏸ paused");
     // And the queued / claim glyphs behave the same way.
     const queued = statusBox();
-    expect(renderMenuFrame(frame({ statusBox: queued }), -1, PLAIN, 100)[2]).toContain("> matching: queued");
+    expect(renderMenuFrame(frame({ statusBox: queued }), -1, PLAIN, 100)[2]).toContain("matching: > queued");
     const claim = statusBox({
       lines: [
         [{ text: "Phantom Maverick", style: "bold" }],
-        [{ text: "⚠ claim your agent first — menu item 12", style: "yellow" }],
+        [{ text: "matching: ⚠ claim your agent first (Claim item)", style: "yellow" }],
         [{ text: "claude-opus-4-6", style: "cyan" }],
       ],
     });
-    expect(renderMenuFrame(frame({ statusBox: claim }), -1, PLAIN, 100)[2]).toContain("! claim your agent first");
+    expect(renderMenuFrame(frame({ statusBox: claim }), -1, PLAIN, 100)[2]).toContain("matching: ! claim your agent first");
   });
 
   it("keeps every line inside min(terminal, 72) columns", () => {
@@ -364,8 +364,8 @@ function zhFrame(): MenuFrame {
     ["1", "请求对局", "发起一场排位赛"],
     ["2", "暂停匹配", "暂停自动匹配"],
     ["3", "本机状态", "本机与 agent 状态"],
-    ["4", "战绩积分", "积分·排名·战绩"],
-    ["5", "模型", "模型·密钥·路由"],
+    ["4", "战绩积分", "积分 · 排名 · 战绩"],
+    ["5", "模型", "模型 · 密钥 · 路由"],
     ["6", "每日上限", "自动对局 [5/天]"],
     ["7", "参赛游戏", "自动参赛 [已选 3 个]"],
     ["8", "策略文件", "你的 agent 怎么打"],
@@ -396,13 +396,13 @@ function zhStatusBox(): MenuStatusBox {
         { text: " · " },
         { text: "● 在线", style: "green" },
         { text: " · " },
-        { text: "auto: 5/天", style: "dim" },
+        { text: "自动 5 局/天", style: "dim" },
       ],
-      [{ text: "⚔ 匹配中：texas_holdem 队列", style: "cyan" }],
+      [{ text: "匹配：⚔ 排队中 · 德州扑克", style: "cyan" }],
       [
         { text: "claude-opus-4-6", style: "cyan" },
         { text: " · 游戏：", style: "dim" },
-        { text: "texas_holdem, coup" },
+        { text: "Texas Hold'em, Coup" },
       ],
     ],
   };
@@ -464,6 +464,9 @@ describe("zh layout (CJK width math)", () => {
   });
 
   it("EN rendering is byte-identical to the pre-fix output (no wide chars → no change)", () => {
+    // Frozen HISTORICAL fixture (pre-A3 wording, pinned 2026-07-31): this
+    // test guards the RENDERER's bytes, not the live status copy — do not
+    // update these strings when the banner wording changes.
     const lines = renderMenuFrame(
       frame({
         statusBox: {

@@ -6,13 +6,32 @@ export const en = {
   // ── Interactive menu (menu.ts / menu-select.ts) ──────────────────────
   "menu.title": "AIFight — what would you like to do?",
   "menu.banner.unclaimed": "⚠ NOT CLAIMED{{who}} — this agent cannot play until you claim it.",
-  "menu.banner.no_service": "service not installed — the bridge stops when this window closes · install: aifight service install",
+  // A6: the service warning is TWO banner lines (sentence + command) so
+  // neither half truncates on a normal terminal.
+  "menu.banner.no_service": "service not installed — the bridge stops when this window closes",
+  "menu.banner.no_service.install": "install: aifight service install (or pick the Service item)",
   "menu.nav.two": "  ↑/↓ ←/→ move · Enter select · number runs · q quit",
   "menu.nav.one": "  ↑/↓ move · Enter select · number runs · q quit",
   "menu.pick": "Pick an action (number, or q to quit): ",
+  "menu.unknown_choice": "Unknown choice '{{choice}}'.",
   "menu.firstrun.intro": "AIFight isn't set up on this machine yet — starting the guided setup.",
   "menu.firstrun.done": "✓ Setup complete — this is your control panel.",
   "menu.firstrun.aborted": "Setup didn't finish — run `aifight setup` any time to pick up where you left off.",
+
+  // ── Menu inline prompts (A2: the last hardcoded-English holdouts) ────
+  "menu.play.game_prompt": "Game (blank = auto-pick; options: {{games}}): ",
+  "menu.play.count_prompt": "How many matches? (1-{{max}}, default 1): ",
+  "menu.play.count_invalid": "Count must be a whole number between 1 and {{max}}.",
+  "menu.rename.prompt": "New display name: ",
+  "menu.rename.empty": "No name entered — nothing changed.",
+  "menu.claim.already": "This agent is already claimed. Manage it in the Dashboard: {{url}}",
+  "menu.claim.open": "Open this link to claim your agent — until you do, it cannot play:",
+
+  // ── Game display names (shared: status box, pickers, challenge menu;
+  //    same mapping the Telegram companion uses) ────────────────────────
+  "game.texas_holdem": "Texas Hold'em",
+  "game.liars_dice": "Liar's Dice",
+  "game.coup": "Coup",
 
   // ── Profile submenu (V3 ④) ───────────────────────────────────────────
   "profile.title": "Profile Manage",
@@ -35,6 +54,7 @@ export const en = {
   "profile.create.switch_ask": "Switch to {{name}} now? [Y/n] ",
   "profile.create.kept": "Staying with {{name}} — the new identity is stored; switch any time from Profile.",
   "profile.create.failed": "Could not create the agent: {{error}}",
+  "profile.none": "No active identity on this machine — run `aifight setup` first.",
 
   "menu.item.play.main": "Play",
   "menu.item.play.hint": "request a ranked match",
@@ -47,7 +67,7 @@ export const en = {
   "menu.item.record.main": "Record",
   "menu.item.record.hint": "ratings, rank, matches",
   "menu.item.challenge.main": "Challenge",
-  "menu.item.challenge.hint": "friendly duels — create, view, accept",
+  "menu.item.challenge.hint": "create · view · accept",
   "challenge.menu.title": "Challenge — friendly duels (no rating impact)",
   "challenge.menu.create.main": "Create",
   "challenge.menu.create.hint": "pick a game & table size, share the link",
@@ -91,13 +111,55 @@ export const en = {
   "menu.item.language.main": "Language",
   "menu.item.language.hint": "switch to 中文",
   "menu.item.service.main": "Service",
-  "menu.item.service.hint": "manage aifight.service (status, restart)",
-  "menu.item.service.hint.missing": "not installed — the bridge stops with this window",
+  "menu.item.service.hint": "status · start · restart",
+  "menu.item.service.hint.missing": "not installed · pick to install",
   "menu.service.action_prompt": "Service action (status/start/stop/restart/install/uninstall, blank = cancel): ",
   "menu.service.action_invalid": "Unknown service action — nothing done.",
   "menu.item.help.main": "Help",
   "menu.item.help.hint": "full command list",
   "menu.item.quit": "Quit",
+
+  // ── Telegram companion panel (bare `aifight telegram`, A1) ───────────
+  // Rows show the CURRENT value as the hint; the bracketed allowed values in
+  // the edit prompts stay raw config words (that is what you type).
+  "telegram.panel.title": "AIFight Telegram companion",
+  "telegram.panel.linked": "Linked to chat {{chat}}",
+  "telegram.panel.bot": "bot …{{tail}}",
+  "telegram.panel.done": "Done",
+  "telegram.panel.unknown_choice": "Please enter 1-10 or q.",
+  "telegram.panel.unlinked_now": "Telegram is no longer linked on this machine.",
+  "telegram.panel.failed": "Could not complete that: {{error}}",
+  "telegram.panel.not_one_of": "  Not one of: {{allowed}}",
+  "telegram.panel.back_hint": "b = back",
+  "telegram.panel.left_as_is": "  Left as is.",
+  "telegram.row.results.main": "Match results",
+  "telegram.row.results.ask": "  Send match results",
+  "telegram.value.results.per_match": "each match",
+  "telegram.value.results.daily": "daily digest",
+  "telegram.value.results.both": "each match + digest",
+  "telegram.row.digest.main": "Daily digest time",
+  "telegram.row.digest.ask": "  Digest time, 24-hour local (HH:MM, b = back): ",
+  "telegram.row.alerts.main": "Alerts",
+  "telegram.row.alerts.ask": "  Alerts (broken key, disconnects, forfeits)",
+  "telegram.row.challenge.main": "Challenge events",
+  "telegram.row.challenge.ask": "  Challenge events",
+  "telegram.row.control.main": "Remote control",
+  "telegram.row.control.ask": "  Let the chat control this agent",
+  "telegram.row.locale.main": "Message language",
+  "telegram.row.locale.ask": "  Message language",
+  "telegram.value.locale.auto": "auto ({{lang}})",
+  "telegram.row.mute.main": "Mute",
+  "telegram.row.mute.ask": "  Mute notifications (alerts always go through)",
+  "telegram.value.muted_until": "until {{time}}",
+  "telegram.row.test.main": "Send a test message",
+  "telegram.row.test.hint": "check it reaches your phone",
+  "telegram.row.pair.main": "Pair a different chat / phone",
+  "telegram.row.pair.hint": "run pairing again",
+  "telegram.row.unlink.main": "Unlink this chat",
+  "telegram.row.unlink.hint": "keeps the bot token",
+  "telegram.row.unlink.ask": "  Stop sending to this chat?",
+  "telegram.value.on": "on",
+  "telegram.value.off": "off",
 
   // ── Status banner (menu-status.ts) ───────────────────────────────────
   "banner.claimed": "✓ claimed",
@@ -105,15 +167,19 @@ export const en = {
   "banner.online": "● online",
   "banner.offline": "○ offline",
   "banner.paused": "● paused",
-  "banner.daily.cap": "auto: {{cap}}/day",
-  "banner.daily.off": "auto: off",
-  "banner.daily.unset": "auto: not set",
+  "banner.daily.cap": "auto {{cap}}/day",
+  "banner.daily.off": "auto-match off",
+  "banner.daily.unset": "auto-match not set",
   "banner.games.sep": " · games: ",
-  "banner.match.paused": "⏸ matching: paused · resume with: aifight resume",
-  "banner.match.unclaimed": "⚠ claim your agent first — menu item 12",
-  "banner.match.queued": "⚔ matching: queued {{games}}",
+  // A3: every matching line leads with the same "matching:" prefix so the
+  // middle row always reads as a STATE, then glyph + state word. Items are
+  // referenced by NAME, never by number — numbering shifted twice already
+  // (the old "menu item 12" pointed at Claim, which is 13 since V4).
+  "banner.match.paused": "matching: ⏸ paused (resume: aifight resume)",
+  "banner.match.unclaimed": "matching: ⚠ claim your agent first (Claim item)",
+  "banner.match.queued": "matching: ⚔ queued · {{games}}",
   "banner.match.idle": "matching: idle · {{daily}}",
-  "banner.match.unknown": "matching: {{daily}}",
+  "banner.match.unknown": "matching: bridge running · queue unknown",
   "banner.match.not_running": "matching: bridge not running · {{daily}}",
   "banner.update": "↑ {{version}}",
 
@@ -189,8 +255,8 @@ export const en = {
   "set.game.picker.nav": "  ↑/↓ move · space toggle · Enter confirm (keep at least 1) · q cancel",
   "set.game.picker.empty": "  select at least 1 (to turn auto-play off entirely, use: aifight set daily 0)",
   "set.game.hint.texas_holdem": "poker · 4-max table",
-  "set.game.hint.liars_dice": "bluffing dice · 3-6 players",
-  "set.game.hint.coup": "hidden roles · 2-6 players",
+  "set.game.hint.liars_dice": "bluffing dice · 2-4 players",
+  "set.game.hint.coup": "hidden roles · 3-4 players",
   "set.apply.edge": "saved — a running bridge picks it up on its next (re)connect, no restart needed.",
   "set.apply.next_start": "saved — applies on next bridge start.",
 
