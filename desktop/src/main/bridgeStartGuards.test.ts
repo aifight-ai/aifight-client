@@ -8,8 +8,11 @@
 //   #4  the seat retry is QUIET: while another bridge holds the lock it no
 //       longer broadcasts "starting" on every 5s pass (the status flickered
 //       starting↔error); only acquiring the seat enters the starting flow.
-//   #5  joinAutoMatch skips enrollment when the policy fetch FAILED (null) —
-//       the daily cap is the token-burn valve, so a failed read never joins.
+//
+// (#5, "joinAutoMatch skips enrollment when the policy fetch failed", retired
+// with joinAutoMatch itself in D1/U8d — the desktop no longer picks a game for
+// any automatic path, so there is no blind-enrollment risk left to gate. The
+// replacement behaviour lives in resumeStandby.test.ts.)
 //
 // The engine and the version check are mocked at their import specifiers, so
 // nothing native loads and no network is touched.
@@ -53,6 +56,10 @@ vi.mock("@aifight/aifight/bridge/runner", () => ({
       this.#self.joinCalls.push({ game, mode });
     }
     leaveQueue(): void {}
+    /** U8a: every status emit mirrors the runner's standby belief. */
+    standbyGames(): readonly string[] | null {
+      return null;
+    }
     poke(): void {}
     suspendConnection(): void {}
     resumeConnection(): void {}
@@ -224,36 +231,3 @@ describe("quiet seat retry (#4)", () => {
   });
 });
 
-describe("joinAutoMatch policy gate (#5)", () => {
-  it("a FAILED policy read (null) skips enrollment and logs — never joins blind", async () => {
-    const logs: BridgeLogEvent[] = [];
-    const host = new BridgeHost({ onLog: (e) => logs.push(e) });
-    await host.start();
-    expect(runners).toHaveLength(1);
-
-    // /api/agents/me/status is unreachable this round.
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline blip")));
-    await host.joinAutoMatch();
-
-    expect(runners[0].joinCalls, "enrolled despite the policy read failing").toEqual([]);
-    expect(logs.some((e) => e.code === "desktop.automatch_policy_unknown" && e.level === "warning")).toBe(true);
-  });
-
-  it("a fetched cap > 0 still enrolls (the gate did not close on success)", async () => {
-    const host = new BridgeHost();
-    await host.start();
-    expect(runners).toHaveLength(1);
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ max_games_per_day: 2, max_games_per_hour: 1, cooldown_seconds: 0 }),
-      }),
-    );
-    await host.joinAutoMatch();
-
-    expect(runners[0].joinCalls).toHaveLength(1);
-    expect(runners[0].joinCalls[0]?.mode).toBe("ranked");
-  });
-});

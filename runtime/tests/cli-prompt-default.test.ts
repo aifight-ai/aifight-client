@@ -226,7 +226,8 @@ describe("bare `aifight set game` (interactive)", () => {
     expect(code).toBe(0);
     expect(offered).toEqual(["coup"]);
     expect(readBridgeConfig().autoGames).toEqual(["texas_holdem", "coup"]);
-    expect(out()).toContain("Automatic match games set to: texas_holdem, coup");
+    // U8d: the receipt speaks display names, like the picker one line above.
+    expect(out()).toContain("Automatic match games set to: Texas Hold'em, Coup");
   });
 
   it("an unset preference pre-checks ALL supported games", async () => {
@@ -305,6 +306,98 @@ describe("bare `aifight rename` (interactive)", () => {
     const name = await runRenameInteractive(env, reader(["N".repeat(60), "q"], []));
     expect(name).toBeUndefined();
     expect(out()).toContain("No changes made.");
+  });
+
+  // P7 (U8b): the platform's rules come BEFORE the question — a name refused
+  // by internal/agentname after the PATCH reads as a bug, not as a rule.
+  it("states the naming rules before asking", async () => {
+    seedBridge({ agentName: "Phantom Maverick" });
+    const { env, out } = makeEnv();
+    await runRenameInteractive(env, reader(["Dark Knight"], []));
+    const text = out();
+    expect(text).toContain("2-50 characters");
+    expect(text).toContain("ASCII letters, numbers, spaces and . _ -");
+    expect(text).toContain("no leading, trailing or doubled spaces");
+    expect(text).toContain("Brand and model names");
+  });
+
+  it("states the naming rules in zh too", async () => {
+    seedBridge({ agentName: "Phantom Maverick", locale: "zh" });
+    const { env, out } = makeEnv();
+    await runRenameInteractive(env, reader(["Dark Knight"], []));
+    expect(out()).toContain("显示名 2 到 50 个字符");
+    expect(out()).toContain("品牌名和模型名");
+  });
+});
+
+// ── The Daily cap menu item (config.ts configureDailyInteractive, 批 U8b) ──
+//
+// Every line of this flow was hardcoded English until U8b, and the number
+// arrived with no statement of what it does or does not cover.
+
+describe("Daily cap menu item (interactive)", () => {
+  it("explains the scope and the rolling window before asking, in en", async () => {
+    seedBridge({ autoDailyLimit: 5 });
+    const { env, out } = makeEnv();
+    const { configureDailyInteractive } = await import("../src/cli/commands/config");
+    const asked: string[] = [];
+    await configureDailyInteractive(
+      { promptLine: (q: string) => { asked.push(q); return Promise.resolve(""); } },
+      env,
+    );
+    const text = out();
+    expect(text).toContain("Daily automatic matches");
+    // The three load-bearing facts, all verified against the server code.
+    expect(text).toContain("joins BY ITSELF");
+    expect(text).toContain("Matches you request yourself and friendly challenges never count against it");
+    expect(text).toContain("rolling 24 hours");
+    expect(text).toContain("not from midnight");
+    // The prompt itself keeps the P3 shape: current value in the bracket.
+    expect(asked).toEqual(["  Daily cap (0-100, 0 = off) [keep 5]: "]);
+    // Enter keeps — nothing written, nothing synced.
+    expect(text).toContain("Kept 5.");
+    expect(readBridgeConfig().autoDailyLimit).toBe(5);
+  });
+
+  it("speaks zh — question, bracket, and both explanation lines", async () => {
+    seedBridge({ autoDailyLimit: 5, locale: "zh" });
+    const { env, out } = makeEnv();
+    const { configureDailyInteractive } = await import("../src/cli/commands/config");
+    const asked: string[] = [];
+    await configureDailyInteractive(
+      { promptLine: (q: string) => { asked.push(q); return Promise.resolve("q"); } },
+      env,
+    );
+    const text = out();
+    expect(text).toContain("每日自动对局");
+    expect(text).toContain("这是桥「自己」去参加对局的预算");
+    expect(text).toContain("滚动 24 小时窗口");
+    expect(asked).toEqual(["  每日自动对局上限（0-100，0 = 关闭） [保持 5]: "]);
+    expect(text).toContain("未做任何修改。");
+    // No English left in the flow the owner screenshotted.
+    expect(text).not.toContain("Automatic ranked matches per day");
+  });
+
+  it("re-asks in place on a bad number instead of dropping back to the panel", async () => {
+    seedBridge({ autoDailyLimit: 5 });
+    const { env, out } = makeEnv();
+    const { configureDailyInteractive } = await import("../src/cli/commands/config");
+    const answers = ["999", "q"];
+    let i = 0;
+    const asked: string[] = [];
+    await configureDailyInteractive(
+      { promptLine: (q: string) => { asked.push(q); return Promise.resolve(answers[i++] ?? ""); } },
+      env,
+    );
+    expect(asked).toHaveLength(2);
+    expect(out()).toContain("Enter a whole number between 0 and 100.");
+  });
+
+  it("says so in the display language when there is no agent yet", async () => {
+    const { env, out } = makeEnv();
+    const { configureDailyInteractive } = await import("../src/cli/commands/config");
+    await configureDailyInteractive({ promptLine: () => Promise.resolve("") }, env);
+    expect(out()).toContain("No agent on this machine yet.");
   });
 });
 

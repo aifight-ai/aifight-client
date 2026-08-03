@@ -33,6 +33,7 @@ import {
   startTelegramCompanion,
   type TelegramCompanion,
 } from "../../notify/telegram/companion";
+import type { PanelRunner } from "../../notify/telegram/panels";
 import { MatchNarrator, type NarratorLine } from "../../bridge/match-narrator";
 import { RUNTIME_VERSION } from "../../index";
 import type { HandlerArgs, HandlerEnv } from "../shared";
@@ -318,7 +319,7 @@ export async function runBridgeWithConfig(opts: {
     try {
       telegram = startTelegramCompanion({
         config,
-        runner,
+        runner: panelRunnerFor(runner),
         onLog: (event) => writeBridgeLog(event, env),
         ...(env.fetchImpl !== undefined ? { fetchImpl: env.fetchImpl } : {}),
       });
@@ -597,6 +598,36 @@ export function autoUpdateOptedIn(): boolean {
   return v === "1" || v === "true" || v === "yes" || v === "on";
 }
 
+/**
+ * The Telegram panel's narrow view of this process's bridge. Everything is
+ * straight delegation except the snapshot, which folds the runner's standby
+ * set (U8a) into the state slice — the panel then reads "queued or standing
+ * by" off ONE shape, the same one the control API hands the CLI status box.
+ */
+function panelRunnerFor(runner: BridgeRunner): PanelRunner {
+  return {
+    snapshot: () => {
+      const snap = runner.snapshot();
+      if (snap === null) return null;
+      const standby = runner.standbyGames();
+      if (snap.state === null) return { state: null };
+      return {
+        state: {
+          ...snap.state,
+          ...(standby !== null && standby.length > 0 ? { standby: { games: standby } } : {}),
+        },
+      };
+    },
+    connectionSnapshot: () => runner.connectionSnapshot(),
+    joinQueue: (game, mode, opts) => runner.joinQueue(game, mode, opts),
+    leaveQueue: () => runner.leaveQueue(),
+    // U8d: the panel's Resume button hands the decision back to the runner —
+    // the bridge re-declares standby (default) or self-joins (legacy knob),
+    // and Telegram never picks a game for the user again.
+    resumeMatching: () => runner.resumeMatching(),
+  };
+}
+
 function singleRunnerRouter(
   config: BridgeConfig,
   runner: BridgeRunner,
@@ -622,6 +653,14 @@ function singleRunnerRouter(
         snapshot: () => runner.snapshot() ?? snapshot,
       };
     },
+    // U8a: the standby set lives on the runner (it is the thing that declared
+    // it), so the control API reads it from here rather than from the agent's
+    // protocol snapshot. Unknown agent = no claim, not a 404: this only
+    // decorates a read that already resolved.
+    standbyGames: (selector) =>
+      selector.name === config.agentName || selector.name === "default"
+        ? runner.standbyGames()
+        : null,
     joinQueue: (selector, game, mode, joinOpts) => {
       if (selector.name !== config.agentName && selector.name !== "default") {
         throw Object.assign(new Error(`agent '${selector.name}' not found`), {
@@ -643,6 +682,16 @@ function singleRunnerRouter(
         });
       }
       runner.leaveQueue();
+    },
+    // U8d: `aifight resume` no longer POSTs a game to /join — it asks the
+    // runner to restore its posture, and the runner answers with what it did.
+    resumeMatching: (selector) => {
+      if (selector.name !== config.agentName && selector.name !== "default") {
+        throw Object.assign(new Error(`agent '${selector.name}' not found`), {
+          kind: "router_agent_not_found",
+        });
+      }
+      return runner.resumeMatching();
     },
   };
 }

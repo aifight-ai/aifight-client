@@ -5,6 +5,9 @@
 // old code returned early when no runner existed, silently dropping the pause).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const flags = new Map<string, boolean>();
 vi.mock("./ui-flags", () => ({
@@ -16,11 +19,31 @@ vi.mock("./ui-flags", () => ({
 
 const { BridgeHost } = await import("./bridge-host");
 
+// setMatchingPaused mirrors the flag into the SHARED bridge.json. Without a
+// throwaway AIFIGHT_RUNTIME_HOME that lands in the developer's own
+// ~/.aifight/runtime/bridge.json — flipping their live agent's pause bit and
+// bumping updatedAt (which a running bridge reads as "restart pending"). Same
+// temp-home discipline as bridgeStartGuards.test.ts / config-host.test.ts.
+const ORIGINAL_HOME = process.env.AIFIGHT_RUNTIME_HOME;
+const tmpDirs: string[] = [];
+
 beforeEach(() => {
   flags.clear();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aifight-matching-pause-"));
+  tmpDirs.push(dir);
+  process.env.AIFIGHT_RUNTIME_HOME = dir;
 });
 afterEach(() => {
   vi.restoreAllMocks();
+  for (const dir of tmpDirs.splice(0)) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+  }
+  if (ORIGINAL_HOME === undefined) delete process.env.AIFIGHT_RUNTIME_HOME;
+  else process.env.AIFIGHT_RUNTIME_HOME = ORIGINAL_HOME;
 });
 
 describe("matching pause persistence", () => {

@@ -15,7 +15,7 @@ import path from "node:path";
 
 import { readBridgeConfig, writeBridgeConfig, type BridgeConfig } from "@aifight/aifight/bridge/config";
 import { FALLBACK_LIVE_GAMES } from "../shared/games";
-import { BridgeHost, pickAutoGame, safeExternalClaimUrl } from "./bridge-host";
+import { BridgeHost, safeExternalClaimUrl } from "./bridge-host";
 
 const ORIGINAL_HOME = process.env.AIFIGHT_RUNTIME_HOME;
 const tmpDirs: string[] = [];
@@ -280,25 +280,10 @@ describe("live-game list follows the backend", () => {
   });
 });
 
-describe("pickAutoGame (auto-match pool follows the live list)", () => {
-  it("uses configured autoGames filtered to the live list", () => {
-    for (let i = 0; i < 20; i++) {
-      expect(pickAutoGame(["coup", "retired_game"], ["texas_holdem", "coup"])).toBe("coup");
-    }
-  });
-
-  it("falls back to the whole live list when nothing configured survives the filter", () => {
-    const live = ["liars_dice", "bocce_ball"];
-    for (let i = 0; i < 20; i++) {
-      expect(live).toContain(pickAutoGame(["retired_game"], live));
-      expect(live).toContain(pickAutoGame(undefined, live));
-    }
-  });
-
-  it("never returns undefined even on an empty live list (defensive fallback)", () => {
-    expect(FALLBACK_LIVE_GAMES).toContain(pickAutoGame(undefined, []));
-  });
-});
+// pickAutoGame's suite retired with the function itself (D1/U8d, owner ruling
+// 2026-08-03): the desktop no longer chooses a game for any automatic path, so
+// there is no local picker left to pin. The live-game list above still matters
+// — it is the standby POOL the platform picks from. See resumeStandby.test.ts.
 
 // F41/AIF-11: the claim URL comes from tamperable local config — only http(s)
 // on the paired host may ever reach shell.openExternal.

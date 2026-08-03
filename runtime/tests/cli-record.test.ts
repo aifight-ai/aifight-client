@@ -95,8 +95,8 @@ function profileJson(over: ProfileOverrides = {}): Record<string, unknown> {
       ],
     recent_matches:
       over.recent_matches ?? [
-        { game: "texas_holdem", agent_result: "win", opponent_names: ["GPT-5"], finished_at: "2026-06-18T10:00:00Z" },
-        { game: "coup", agent_result: "loss", opponent_names: ["Gemini 2.5 Pro"], finished_at: "2026-06-18T08:00:00Z" },
+        { id: "replay_abc123", game: "texas_holdem", agent_result: "win", opponent_names: ["GPT-5"], finished_at: "2026-06-18T10:00:00Z" },
+        { id: "replay_def456", game: "coup", agent_result: "loss", opponent_names: ["Gemini 2.5 Pro"], finished_at: "2026-06-18T08:00:00Z" },
       ],
     achievements:
       over.achievements ?? [
@@ -303,9 +303,58 @@ describe("aifight record", () => {
     expect(res.stdout).toContain("24-11-3 （胜-负-平）");
     expect(res.stdout).toContain("共 38 场 · 覆盖 3 款游戏");
     expect(res.stdout).toContain("已解锁 2 个");
-    // Game names and model ids stay untranslated.
-    expect(res.stdout).toContain("Texas Hold'em");
+    // U8b: game names go through the shared gameLabel(), so zh finally reads
+    // as zh instead of a Chinese frame around English game ids.
+    expect(res.stdout).toContain("德州扑克");
+    expect(res.stdout).toContain("政变");
+    expect(res.stdout).not.toContain("Texas Hold'em");
+    // Model ids and opponent names are VALUES — untranslated in every locale.
     expect(res.stdout).toContain("claude-opus-4-8");
+    expect(res.stdout).toContain("vs GPT-5");
+  });
+
+  // P7 (U8b): the record screen has to say what it IS and hand over the links
+  // the payload has always carried.
+  it("prints the public agent page and a replay URL under every recent match", async () => {
+    useTempHome();
+    writeBridgeConfig(testBridgeConfig());
+    const fetchImpl = vi.fn(async () => jsonResponse(profileJson())) as unknown as typeof fetch;
+
+    const res = await runCapture(["record"], fetchImpl);
+
+    expect(res.code).toBe(0);
+    expect(res.stdout).toContain("Your public record on AIFight");
+    expect(res.stdout).toContain("https://aifight.ai/agents/00000000-0000-4000-8000-000000000001");
+    // Same id the website's agent page links with, one plain line per row.
+    expect(res.stdout).toContain("https://aifight.ai/replay/replay_abc123");
+    expect(res.stdout).toContain("https://aifight.ai/replay/replay_def456");
+    expect(res.stdout).toContain("Open a replay link above");
+    // The URL sits on its OWN line and carries no ANSI wrapper.
+    const line = res.stdout.split("\n").find((l) => l.includes("/replay/replay_abc123"))!;
+    expect(line.trim()).toBe("https://aifight.ai/replay/replay_abc123");
+    // It follows its match row, not the header.
+    const lines = res.stdout.split("\n");
+    expect(lines[lines.indexOf(line) - 1]).toContain("vs GPT-5");
+  });
+
+  it("omits the replay line for a match the server sent without an id", async () => {
+    useTempHome();
+    writeBridgeConfig(testBridgeConfig());
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(
+        profileJson({
+          recent_matches: [
+            { game: "coup", agent_result: "win", opponent_names: ["GPT-5"], finished_at: "2026-06-18T10:00:00Z" },
+          ],
+        }),
+      ),
+    ) as unknown as typeof fetch;
+
+    const res = await runCapture(["record"], fetchImpl);
+
+    expect(res.code).toBe(0);
+    expect(res.stdout).not.toContain("/replay/");
+    expect(res.stdout).not.toContain("Open a replay link above");
   });
 
   it("applies tones with colors on (rank green, model cyan, dim-bold table header)", async () => {

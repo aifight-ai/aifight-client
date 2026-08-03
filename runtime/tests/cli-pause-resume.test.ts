@@ -186,32 +186,116 @@ describe("aifight pause", () => {
   });
 });
 
+/** The control API's answer to POST /v1/agents/:name/resume-matching. */
+function resumeAnswer(resume: unknown): Response {
+  return new Response(JSON.stringify({ resume }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/** A control-plane error envelope (the shape the client parses; an unparseable
+ *  body would be reported as contract drift instead). */
+function controlError(status: number, code: string): Response {
+  return new Response(JSON.stringify({ error: { code, message: "nope" } }), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+// U8d (owner ruling 2026-08-03): resume no longer picks a game. It asks the
+// running bridge to restore its POSTURE — standing by by default, self-joining
+// only behind the explicit `standbyFallbackJoinMinutes` escape hatch.
 describe("aifight resume", () => {
-  it("clears the flag and re-joins through the running bridge (non-one-shot ranked)", async () => {
+  it("asks the running bridge to resume, and reports standing by (no game picked)", async () => {
     useTempHome();
     writeBridgeConfig(testBridgeConfig({ matchingPaused: true }));
     seedRunningBridge(tmpDir!);
     const { fetchImpl, seen } = recordingFetch([
-      { urlIncludes: "/v1/agents/existing-agent/join", response: new Response(null, { status: 204 }) },
+      {
+        urlIncludes: "/v1/agents/existing-agent/resume-matching",
+        response: resumeAnswer({ mode: "standby", games: ["texas_holdem", "liars_dice", "coup"] }),
+      },
     ]);
 
     const r = await runCapture(["resume"], fetchImpl);
 
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("resumed");
+    expect(r.stdout).toContain("standing by; the platform picks the game");
+    // The old behavior — POST /join with a locally chosen game — is gone.
     expect(seen).toHaveLength(1);
-    expect(seen[0]!.url).toBe("http://127.0.0.1:45991/v1/agents/existing-agent/join");
+    expect(seen[0]!.url).toBe("http://127.0.0.1:45991/v1/agents/existing-agent/resume-matching");
+    expect(seen[0]!.method).toBe("POST");
     expect(seen[0]!.headers.Authorization).toBe("Bearer test-control-token");
-    // The automatic (daily) path, not a manual one-shot: same shape startup
-    // auto-join produces.
-    expect(seen[0]!.body).toMatchObject({ mode: "ranked", one_shot: false });
-    expect(["texas_holdem", "liars_dice", "coup"]).toContain((seen[0]!.body as { game: string }).game);
+    expect(seen[0]!.body).toBeUndefined(); // body-free, like /leave
     const cfg = readBridgeConfig();
     expect(cfg.matchingPaused).toBeUndefined();
     expect(cfg.autoDailyLimit).toBe(2); // the cap survives a pause/resume round trip
   });
 
-  it("clears the flag without a join when no bridge is running", async () => {
+  // The escape hatch stays whole: a user who set standbyFallbackJoinMinutes
+  // keeps the pre-U8a self-join, and the receipt names the game it joined.
+  it("reports the re-joined game when the bridge is in the legacy posture", async () => {
+    useTempHome();
+    writeBridgeConfig(testBridgeConfig({ matchingPaused: true, standbyFallbackJoinMinutes: 5 }));
+    seedRunningBridge(tmpDir!);
+    const { fetchImpl, seen } = recordingFetch([
+      {
+        urlIncludes: "/v1/agents/existing-agent/resume-matching",
+        response: resumeAnswer({ mode: "joined", game: "liars_dice" }),
+      },
+    ]);
+
+    const r = await runCapture(["resume"], fetchImpl);
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("re-joined the Liar's Dice queue");
+    expect(seen).toHaveLength(1);
+  });
+
+  // An older bridge is still running with the previous build: the route does
+  // not exist there. Nothing to do but be honest — the cleared flag gets there
+  // on its own at the next connect edge.
+  it("degrades honestly when the running bridge does not know the endpoint", async () => {
+    useTempHome();
+    writeBridgeConfig(testBridgeConfig({ matchingPaused: true }));
+    seedRunningBridge(tmpDir!);
+    const { fetchImpl, seen } = recordingFetch([
+      {
+        urlIncludes: "/v1/agents/existing-agent/resume-matching",
+        response: controlError(404, "not_found"),
+      },
+    ]);
+
+    const r = await runCapture(["resume"], fetchImpl);
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("Automatic matching resumed.");
+    expect(r.stdout).toContain("goes back on standby the next time it connects");
+    expect(seen).toHaveLength(1);
+    expect(readBridgeConfig().matchingPaused).toBeUndefined();
+  });
+
+  // A newer host that registered the route but wired a router without the
+  // capability answers 501 — same user-visible outcome as the 404 above.
+  it("treats a 501 from the bridge the same way as a missing route", async () => {
+    useTempHome();
+    writeBridgeConfig(testBridgeConfig({ matchingPaused: true }));
+    seedRunningBridge(tmpDir!);
+    const { fetchImpl } = recordingFetch([
+      {
+        urlIncludes: "/v1/agents/existing-agent/resume-matching",
+        response: controlError(501, "not_implemented"),
+      },
+    ]);
+
+    const r = await runCapture(["resume"], fetchImpl);
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("goes back on standby the next time it connects");
+  });
+
+  it("clears the flag without reaching a bridge when none is running", async () => {
     useTempHome();
     writeBridgeConfig(testBridgeConfig({ matchingPaused: true }));
     const { fetchImpl, seen } = recordingFetch([]);
@@ -220,8 +304,73 @@ describe("aifight resume", () => {
 
     expect(r.code).toBe(0);
     expect(r.stdout).toContain("the next time one starts");
+    expect(r.stdout).toContain("goes back on standby the next time it connects");
     expect(seen).toHaveLength(0);
     expect(readBridgeConfig().matchingPaused).toBeUndefined();
+  });
+
+  it("--json says what actually happened, per outcome", async () => {
+    useTempHome();
+
+    writeBridgeConfig(testBridgeConfig({ matchingPaused: true }));
+    seedRunningBridge(tmpDir!);
+    const standby = recordingFetch([
+      {
+        urlIncludes: "/resume-matching",
+        response: resumeAnswer({ mode: "standby", games: ["coup"] }),
+      },
+    ]);
+    const a = await runCapture(["resume", "--json"], standby.fetchImpl);
+    expect(JSON.parse(a.stdout.trim())).toEqual({
+      status: "resumed",
+      matchingPaused: false,
+      matching: "standby",
+      games: ["coup"],
+    });
+
+    writeBridgeConfig(testBridgeConfig({ matchingPaused: true }));
+    const joined = recordingFetch([
+      { urlIncludes: "/resume-matching", response: resumeAnswer({ mode: "joined", game: "coup" }) },
+    ]);
+    const b = await runCapture(["resume", "--json"], joined.fetchImpl);
+    expect(JSON.parse(b.stdout.trim())).toEqual({
+      status: "resumed",
+      matchingPaused: false,
+      matching: "joined",
+      game: "coup",
+    });
+
+    writeBridgeConfig(testBridgeConfig({ matchingPaused: true }));
+    const old = recordingFetch([
+      { urlIncludes: "/resume-matching", response: controlError(404, "not_found") },
+    ]);
+    const c = await runCapture(["resume", "--json"], old.fetchImpl);
+    expect(JSON.parse(c.stdout.trim())).toEqual({
+      status: "resumed",
+      matchingPaused: false,
+      matching: "pending",
+      bridge: "unsupported",
+    });
+
+    writeBridgeConfig(testBridgeConfig({ matchingPaused: true, autoDailyLimit: 0 }));
+    const d = await runCapture(["resume", "--json"], recordingFetch([]).fetchImpl);
+    expect(JSON.parse(d.stdout.trim())).toEqual({
+      status: "resumed",
+      matchingPaused: false,
+      matching: "cap_off",
+    });
+
+    // No control files left → no bridge to ask.
+    fs.rmSync(path.join(tmpDir!, "token"));
+    fs.rmSync(path.join(tmpDir!, "port"));
+    writeBridgeConfig(testBridgeConfig({ matchingPaused: true }));
+    const e = await runCapture(["resume", "--json"], recordingFetch([]).fetchImpl);
+    expect(JSON.parse(e.stdout.trim())).toEqual({
+      status: "resumed",
+      matchingPaused: false,
+      matching: "pending",
+      bridge: "not_running",
+    });
   });
 
   it("does not queue by itself when the daily cap is 0", async () => {

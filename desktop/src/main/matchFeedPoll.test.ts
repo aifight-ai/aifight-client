@@ -57,6 +57,10 @@ vi.mock("@aifight/aifight/bridge/runner", () => ({
     }
     joinQueue(): void {}
     leaveQueue(): void {}
+    /** U8a: every status emit mirrors the runner's standby belief. */
+    standbyGames(): readonly string[] | null {
+      return null;
+    }
     poke(): void {}
     suspendConnection(): void {}
     resumeConnection(): void {}

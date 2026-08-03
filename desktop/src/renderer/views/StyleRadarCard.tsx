@@ -40,9 +40,11 @@ export type HexagonDim = (typeof HEXAGON_DIMS)[number];
 /** Render-contract single-layer color (01 brand orange). */
 const LAYER_COLOR = "#FF700A";
 
-/** Mirror of the server's sample gates (internal/rating/hexagon.go).
- *  Execution's gate is mixed-unit server-side (30 Hold'em hands OR 10
- *  dice/coup matches); the hover hint uses the common 10-match case. */
+/** Mirror of the server's calibration floors (internal/rating/hexagon.go
+ *  HexDimSampleGate). Hexagon v2: no longer display gates — every axis
+ *  scores from the first match, shrunk toward the 50 prior — but the floor
+ *  still marks where "calibrating" ends. Execution counts matches in every
+ *  game since v2 (Texas included). */
 const DIM_THRESHOLD: Record<HexagonDim, number> = {
   bluff: 30,
   aggression: 30,
@@ -81,7 +83,11 @@ function axisTooltip(d: HexagonData | null, k: HexagonDim, t: TFunc): string {
   if (lit) {
     const rate = d?.rates?.[k];
     if (rate != null) parts.push(t(`radar.rate.${k}`, { pct: Math.round(rate * 100) }));
-    parts.push(t("radar.sample", { count: sample }));
+    if (d?.calibrating?.[k] === true) {
+      parts.push(t("radar.calibrating", { count: sample }));
+    } else {
+      parts.push(t("radar.sample", { count: sample }));
+    }
   } else {
     parts.push(t("radar.needMore", { count: Math.max(1, DIM_THRESHOLD[k] - sample) }));
   }
@@ -108,6 +114,9 @@ export function StyleHexagon({ data, t }: { data: HexagonData | null; t: TFunc }
 
   const values = HEXAGON_DIMS.map((k) => data?.dimensions?.[k] ?? null);
   const anyLit = values.some((v) => v !== null);
+  // Render contract §4.4 (hexagon v2): axes under their calibration floor are
+  // scored but softened — hollow vertex dot, value at ~70% opacity.
+  const soft = HEXAGON_DIMS.map((k) => data?.calibrating?.[k] === true);
 
   return (
     <svg viewBox={`0 0 ${w} ${h}`} className="h-auto w-full" role="img">
@@ -151,7 +160,15 @@ export function StyleHexagon({ data, t }: { data: HexagonData | null; t: TFunc }
       {anyLit &&
         values.map((v, i) =>
           v !== null ? (
-            <circle key={HEXAGON_DIMS[i]} cx={point(i, v)[0]} cy={point(i, v)[1]} r={2.6} fill={LAYER_COLOR} />
+            <circle
+              key={HEXAGON_DIMS[i]}
+              cx={point(i, v)[0]}
+              cy={point(i, v)[1]}
+              r={2.6}
+              fill={soft[i] ? "var(--bg, #ffffff)" : LAYER_COLOR}
+              stroke={soft[i] ? LAYER_COLOR : undefined}
+              strokeWidth={soft[i] ? 1.4 : undefined}
+            />
           ) : null,
         )}
       {HEXAGON_DIMS.map((k, i) => {
@@ -187,6 +204,7 @@ export function StyleHexagon({ data, t }: { data: HexagonData | null; t: TFunc }
                 fontSize={14}
                 fill={LAYER_COLOR}
                 fontWeight={600}
+                opacity={soft[i] ? 0.7 : 1}
                 style={{ fontVariantNumeric: "tabular-nums" }}
               >
                 {values[i]}

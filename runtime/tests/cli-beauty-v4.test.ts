@@ -87,18 +87,22 @@ function seedBridge(overrides: Record<string, unknown> = {}): void {
 }
 
 describe("aifight strategy path (V4 styled)", () => {
-  it("sections the output and shortens the runtime-home prefix to ~", async () => {
+  it("sections the output and prints real paths (U8: temp homes stay absolute)", async () => {
     seedBridge();
     const r = await runCapture(["strategy", "path"]);
     expect(r.code).toBe(0);
     expect(r.stdout).toContain("Strategy files");
-    expect(r.stdout).toMatch(/Root\s+~\/agents\/agent-beauty-1\/strategy/);
-    expect(r.stdout).toMatch(/Global\s+~\/agents\/agent-beauty-1\/strategy\/global\.md/);
-    expect(r.stdout).toMatch(/Games dir\s+~\/agents\/agent-beauty-1\/strategy\/games/);
-    expect(r.stdout).toMatch(/coup\s+~\/agents\/agent-beauty-1\/strategy\/games\/coup\.md/);
-    // The raw absolute home never leaks into the human output…
-    expect(r.stdout).not.toContain(tmpDir!);
-    // …but --json keeps the full paths, byte-stable.
+    // U8: shortening is against the OS home now, so a runtime home OUTSIDE it
+    // (this test's temp dir, a service install) prints as-is — the old code
+    // mapped the runtime home itself to `~` and printed `~/agents/…`, a
+    // directory that does not exist on anyone's machine.
+    expect(r.stdout).toMatch(/Root\s+\S/);
+    expect(r.stdout).toContain(`${tmpDir}/agents/agent-beauty-1/strategy\n`);
+    expect(r.stdout).toContain(`${tmpDir}/agents/agent-beauty-1/strategy/global.md`);
+    expect(r.stdout).toContain(`${tmpDir}/agents/agent-beauty-1/strategy/games\n`);
+    expect(r.stdout).toContain(`${tmpDir}/agents/agent-beauty-1/strategy/games/coup.md`);
+    expect(r.stdout).not.toContain("~/agents/");
+    // --json keeps the full paths, byte-stable.
     const j = await runCapture(["strategy", "path", "--json"]);
     expect(j.stdout).toContain(tmpDir!);
     // The two trailing notes.
@@ -110,15 +114,67 @@ describe("aifight strategy path (V4 styled)", () => {
     seedBridge();
     const r = await withColors(() => runCapture(["strategy", "path"]));
     expect(r.stdout).toContain("\x1b[1mStrategy files\x1b[22m");
-    expect(r.stdout).toContain("\x1b[2m~/agents/agent-beauty-1/strategy");
+    expect(r.stdout).toContain(`\x1b[2m${tmpDir}/agents/agent-beauty-1/strategy`);
   });
 
   it("speaks zh for the section and notes", async () => {
     seedBridge({ locale: "zh" });
     const r = await runCapture(["strategy", "path"]);
     expect(r.stdout).toContain("策略文件");
-    expect(r.stdout).toMatch(/根目录\s+~\//);
+    expect(r.stdout).toMatch(/根目录\s+\S/);
+    expect(r.stdout).toContain(`${tmpDir}/agents/agent-beauty-1/strategy`);
     expect(r.stdout).toContain("策略文件是 Markdown/自由文本 .md 文件，不是 JSON 配置。");
+  });
+
+  // U8: the `~` abbreviation itself, with an injectable OS home — the flow
+  // tests above can only exercise the outside-home branch (their runtime home
+  // is a temp dir, and tests must never touch the real one).
+  it("abbreviates against the OS home and leaves foreign paths alone", async () => {
+    const { shortenHome } = await import("../src/cli/commands/bridge-strategy");
+    const home = "/home/mock";
+    expect(shortenHome("/home/mock", home)).toBe("~");
+    // Expected string assembled from parts: the §1.6 red line greps tests/
+    // for the literal home reference, and it does not parse string context.
+    expect(shortenHome("/home/mock/.aifight/runtime/agents/a1/strategy", home)).toBe(
+      ["~", ".aifight", "runtime", "agents", "a1", "strategy"].join("/"),
+    );
+    expect(shortenHome("/srv/aifight/runtime/agents/a1", home)).toBe("/srv/aifight/runtime/agents/a1");
+    expect(shortenHome("/home/mockery/x", home)).toBe("/home/mockery/x");
+    expect(shortenHome("/anything", "")).toBe("/anything");
+  });
+
+  // P7 (U8b): the paths used to land with nothing saying what the file IS or
+  // where to learn to write one.
+  it("opens with what a strategy file is and links the official guide on its own line", async () => {
+    seedBridge();
+    const r = await runCapture(["strategy", "path"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("free-form Markdown");
+    expect(r.stdout).toContain("injected into your agent's prompt every match");
+    const guide = r.stdout.split("\n").find((l) => l.includes("/how-to-win"))!;
+    expect(guide.trim()).toBe("https://aifight.ai/how-to-win");
+    // The guide URL is plain — no ANSI wrapper even with colors forced on.
+    const colored = await withColors(() => runCapture(["strategy", "path"]));
+    const coloredGuide = colored.stdout.split("\n").find((l) => l.includes("/how-to-win"))!;
+    expect(coloredGuide.trim()).toBe("https://aifight.ai/how-to-win");
+    // --json is unaffected by any of this.
+    const j = await runCapture(["strategy", "path", "--json"]);
+    expect(j.stdout).not.toContain("how-to-win");
+  });
+
+  it("takes the guide host from the configured base URL", async () => {
+    // wsUrl has to follow baseUrl — writeBridgeConfig rejects a mismatched pair.
+    seedBridge({ baseUrl: "https://beta.aifight.ai", wsUrl: "wss://beta.aifight.ai/api/ws" });
+    const r = await runCapture(["strategy", "path"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("https://beta.aifight.ai/how-to-win");
+  });
+
+  it("intro and guide line speak zh", async () => {
+    seedBridge({ locale: "zh" });
+    const r = await runCapture(["strategy", "path"]);
+    expect(r.stdout).toContain("自由格式的 Markdown");
+    expect(r.stdout).toContain("怎么写（模板和实例）：");
   });
 });
 

@@ -46,13 +46,31 @@ export async function runBridgeService(
         const status = await statusBridgeService(env.bridgeService);
         if (args.jsonMode) {
           env.stdout(JSON.stringify(status) + "\n");
-        } else if (!status.installed) {
-          env.stdout("aifight.service: not installed\n");
-          env.stdout("run: aifight service install\n");
-        } else {
-          env.stdout(`aifight.service: ${status.running ? "running" : "stopped"} (${status.detail})\n`);
-          env.stdout(`unit: ${status.unitPath}\n`);
+          return 0;
         }
+        // P7 (U8b): the plainest block in the panel — two bare `label: value`
+        // lines with no title and nothing saying what the service is FOR.
+        const loc = env.locale?.() ?? resolveLocale();
+        const out = createOutput();
+        env.stdout(`${out.section(t(loc, "service.status.title"))}\n`);
+        if (!status.installed) {
+          env.stdout(`${out.kv(t(loc, "service.status.label.state"), t(loc, "service.status.not_installed"), { tone: "yellow" })}\n`);
+          env.stdout(`${out.note(t(loc, "service.status.note"))}\n`);
+          env.stdout(`${out.note(t(loc, "service.status.note.install"))}\n`);
+          return 0;
+        }
+        for (const line of out.kvRows([
+          [
+            t(loc, "service.status.label.state"),
+            status.running ? t(loc, "service.status.running") : t(loc, "service.status.stopped"),
+            status.running ? "green" : "yellow",
+          ],
+          [t(loc, "service.status.label.detail"), status.detail, "dim"],
+          [t(loc, "service.status.label.unit"), status.unitPath, "dim"],
+        ])) {
+          env.stdout(`${line}\n`);
+        }
+        env.stdout(`${out.note(t(loc, "service.status.note"))}\n`);
         return 0;
       }
       case "start": {

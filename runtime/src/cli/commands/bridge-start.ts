@@ -9,6 +9,8 @@ import { BridgeServiceError, statusBridgeService } from "../../bridge/service";
 import { RUNTIME_VERSION } from "../../index";
 import { getRuntimeHome } from "../../store/paths";
 import { createStatusIcons } from "../ansi";
+import { gameLabel, resolveLocale, t } from "../i18n";
+import { createOutput } from "../output";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError, isSupportedGame, makeClient, SUPPORTED_GAMES } from "../shared";
 import { ControlClientError } from "../control-client";
@@ -107,10 +109,18 @@ export async function runBridgeStart(
       manual: true,
     }) + "\n");
   } else {
-    const noun = request.count === 1 ? "match" : "matches";
+    // P7 (U8b): menu item Play lands here, so the confirmation follows the
+    // display language and the game arrives as a display name. The second line
+    // states the fact the daily-cap screen leans on: a manual request is not
+    // charged to the automatic budget.
+    const loc = env.locale?.() ?? resolveLocale();
     const icons = env.statusIcons ?? createStatusIcons();
-    env.stdout(`${icons.ok} Requested ${request.count} manual ranked ${displayGameName(request.game)} ${noun} for ${config.agentName}.\n`);
-    env.stdout("The running Bridge will keep your Agent online and handle the match when AIFight pairs it.\n");
+    env.stdout(`${icons.ok} ${t(loc, request.count === 1 ? "start.requested.one" : "start.requested.many", {
+      count: request.count,
+      game: gameLabel(loc, request.game),
+      agent: config.agentName,
+    })}\n`);
+    env.stdout(`${createOutput().note(t(loc, "start.note"))}\n`);
   }
   return 0;
 }
@@ -289,13 +299,3 @@ function processAlive(pid: number): boolean {
   }
 }
 
-function displayGameName(game: SupportedGame): string {
-  switch (game) {
-    case "texas_holdem":
-      return "Texas Hold'em";
-    case "liars_dice":
-      return "Liar's Dice";
-    case "coup":
-      return "Coup";
-  }
-}

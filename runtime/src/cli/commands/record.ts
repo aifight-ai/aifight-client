@@ -9,7 +9,7 @@
 
 import { formatPublicNo } from "../../account/public-no";
 import { readBridgeConfig } from "../../bridge/config";
-import { resolveLocale, t, type Locale } from "../i18n";
+import { gameLabel, resolveLocale, t, type Locale } from "../i18n";
 import { createOutput, type Output, type TableColumn } from "../output";
 import { visibleWidth } from "../ansi";
 import type { HandlerArgs, HandlerEnv } from "../shared";
@@ -17,15 +17,6 @@ import { expectArity, CommandError } from "../shared";
 
 const USAGE = "usage: aifight record";
 const RECORD_TIMEOUT_MS = 4000;
-
-const GAME_LABELS: Readonly<Record<string, string>> = {
-  texas_holdem: "Texas Hold'em",
-  liars_dice: "Liar's Dice",
-  coup: "Coup",
-};
-function gameLabel(game: string): string {
-  return GAME_LABELS[game] ?? game;
-}
 
 export async function runRecord(
   args: HandlerArgs,
@@ -58,7 +49,12 @@ export async function runRecord(
     return 0;
   }
 
-  env.stdout(renderRecord(profile, config.agentName, base, { loc, out: createOutput(), claimUrl: config.claimUrl }));
+  env.stdout(renderRecord(profile, config.agentName, base, {
+    loc,
+    out: createOutput(),
+    claimUrl: config.claimUrl,
+    agentId: config.agentId,
+  }));
   return 0;
 }
 
@@ -98,6 +94,10 @@ export interface RenderRecordDeps {
   readonly loc: Locale;
   readonly out: Output;
   readonly claimUrl?: string;
+  /** The local agent id — turns the header into a pointer at the public agent
+   *  page (`{base}/agents/{id}`, P7: one line that says what this screen IS).
+   *  Absent = the pointer is skipped. */
+  readonly agentId?: string;
 }
 
 /** Exported for tests: the styled human rendering (colors/width injectable). */
@@ -121,6 +121,12 @@ export function renderRecord(profile: unknown, fallbackName: string, base: strin
   const idSuffix = publicNo !== undefined && publicNo > 0 ? out.ansi.dim(`  (ID ${formatPublicNo(publicNo)})`) : "";
   lines.push(`${out.section(t(loc, "record.title"))} · ${out.ansi.bold(name)}${idSuffix}`);
   if (model) lines.push(out.kv(t(loc, "record.model"), model, { tone: "cyan" }));
+  // P7 (U8b): one line that says what this screen IS, then the public page it
+  // mirrors — the URL plain on its own line so the terminal can link it.
+  lines.push(out.note(t(loc, "record.intro")));
+  if (deps.agentId !== undefined && deps.agentId !== "") {
+    lines.push(`  ${base}/agents/${deps.agentId}`);
+  }
   lines.push("");
 
   if (totalGames <= 0) {
@@ -150,7 +156,7 @@ export function renderRecord(profile: unknown, fallbackName: string, base: strin
   lines.push(...out.kvRows([
     [t(loc, "record.rank"), ranked ? `#${globalRank}` : t(loc, "record.rank.unranked"), ranked ? "green" : "default"],
     ...(bestRating !== undefined && bestGame
-      ? [[t(loc, "record.best"), `${Math.round(bestRating)} · ${gameLabel(bestGame)}`] as const]
+      ? [[t(loc, "record.best"), `${Math.round(bestRating)} · ${gameLabel(loc, bestGame)}`, "cyan"] as const]
       : []),
     [t(loc, "record.record"), `${wins}-${losses}-${draws} ${t(loc, "record.wld")}`],
     [t(loc, "record.winrate"), pct(winRate)],
@@ -170,7 +176,7 @@ export function renderRecord(profile: unknown, fallbackName: string, base: strin
     lines.push(out.section(t(loc, "record.section.pergame")));
     const columns: TableColumn[] = [
       { label: t(loc, "record.col.game") },
-      { label: t(loc, "record.col.rating"), align: "right" },
+      { label: t(loc, "record.col.rating"), align: "right", tone: "cyan" },
       { label: t(loc, "record.col.games"), align: "right" },
       { label: t(loc, "record.col.wld"), align: "right" },
       { label: t(loc, "record.col.winpct"), align: "right" },
@@ -178,7 +184,7 @@ export function renderRecord(profile: unknown, fallbackName: string, base: strin
     const rows = rated.map((r) => {
       const rating = asNum(r.display_rating) ?? asNum(r.rating) ?? 0;
       return [
-        gameLabel(asStr(r.game) ?? "-"),
+        gameLabel(loc, asStr(r.game) ?? "-"),
         String(Math.round(rating)),
         String(asNum(r.games_played) ?? 0),
         `${asNum(r.wins) ?? 0}-${asNum(r.losses) ?? 0}-${asNum(r.draws) ?? 0}`,
@@ -193,7 +199,7 @@ export function renderRecord(profile: unknown, fallbackName: string, base: strin
   if (recentRows.length > 0) {
     lines.push("");
     lines.push(out.section(t(loc, "record.section.recent")));
-    const gamesCol = recentRows.map((m) => gameLabel(asStr(m.game) ?? "-"));
+    const gamesCol = recentRows.map((m) => gameLabel(loc, asStr(m.game) ?? "-"));
     const resultsCol = recentRows.map((m) => asStr(m.agent_result) ?? "-");
     const gameW = Math.max(visibleWidth(t(loc, "record.col.game")), ...gamesCol.map(visibleWidth));
     const resultW = Math.max(visibleWidth(t(loc, "record.col.result")), ...resultsCol.map(visibleWidth));
@@ -219,7 +225,21 @@ export function renderRecord(profile: unknown, fallbackName: string, base: strin
         (asStr(m.finished_at) ?? "").slice(0, 10),
       ];
     });
-    lines.push(...out.table(columns, rows));
+    // U8b: every row gets its replay link underneath. `id` is the encrypted
+    // public_replay_id the website's agent page links with (`/replay/{id}`) —
+    // the CLI has always had it in the payload and never shown it. Plain and
+    // on its own line so terminals turn it into something clickable.
+    const replayIds = recentRows.map((m) => asStr(m.id));
+    const table = out.table(columns, rows);
+    lines.push(table[0]!);
+    table.slice(1).forEach((row, i) => {
+      lines.push(row);
+      const id = replayIds[i];
+      if (id !== undefined) lines.push(`    ${base}/replay/${id}`);
+    });
+    if (replayIds.some((id) => id !== undefined)) {
+      lines.push(out.note(t(loc, "record.recent.replay")));
+    }
   }
 
   // ── Achievements ──
@@ -258,16 +278,19 @@ function rankedStatusNote(
   deps: RenderRecordDeps,
 ): string | undefined {
   const { loc, out } = deps;
+  // The "Note: " lead-in is translated too (it used to be hardcoded English in
+  // front of a Chinese sentence).
+  const prefix = t(loc, "record.note.prefix");
   if (!isClaimed) {
     // Point at the REAL claim link when it is still on file locally — sending
     // the user to the dashboard without the link is a dead end.
     if (deps.claimUrl !== undefined) {
-      return `${out.note(`Note: ${t(loc, "record.note.unclaimed_link")}`)}\n  ${deps.claimUrl}`;
+      return `${out.note(`${prefix}${t(loc, "record.note.unclaimed_link")}`)}\n  ${deps.claimUrl}`;
     }
-    return out.note(`Note: ${t(loc, "record.note.unclaimed", { url: `${base}/dashboard` })}`);
+    return out.note(`${prefix}${t(loc, "record.note.unclaimed", { url: `${base}/dashboard` })}`);
   }
   if (!eligible && gamesNeeded > 0) {
-    return out.note(`Note: ${t(loc, "record.note.qualify", { count: gamesNeeded, match: t(loc, gamesNeeded === 1 ? "record.note.match.one" : "record.note.match.many") })}`);
+    return out.note(`${prefix}${t(loc, "record.note.qualify", { count: gamesNeeded, match: t(loc, gamesNeeded === 1 ? "record.note.match.one" : "record.note.match.many") })}`);
   }
   return undefined;
 }

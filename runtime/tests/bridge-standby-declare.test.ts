@@ -1,10 +1,16 @@
 // R2 platform orchestration — the bridge's standby declaration + fallback join
-// (MATCH_FORMATION_V2_SPEC §5). These tests pin the NEW default path: a daily
-// bridge no longer self-joins a game at the connect edge; it PATCHes its
-// standby set and lets the platform's supply sweep assign a game, self-joining
-// only after the fallback window passes with nothing to do. The legacy
-// immediate-join behavior (standbyFallbackJoinMinutes: 0) stays pinned by
-// bridge-runner.test.ts.
+// (MATCH_FORMATION_V2_SPEC §5). A daily bridge does not self-join a game at the
+// connect edge; it PATCHes its standby set and lets the platform's supply sweep
+// assign a game.
+//
+// What happens when the platform assigns nothing depends on the posture, and
+// U8a (owner ruling 2026-08-03) made the switch the knob's PRESENCE:
+//   * `standbyFallbackJoinMinutes` UNSET (the default) → re-declare forever,
+//     never self-join. Pinned by the "default standby posture" block below.
+//   * explicit N > 0 → the legacy self-join after N quiet minutes. Pinned by
+//     the first block (its fixture sets 5).
+//   * explicit 0 → self-join right at the connect edge; also covered by
+//     bridge-runner.test.ts, whose fixture sets 0 throughout.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -108,7 +114,19 @@ class FakeReconnectClient implements ReconnectingWSClient {
   }
 }
 
-function bridgeConfig(): BridgeConfig {
+/** The `standbyFallbackJoinMinutes` knob as the tests set it. "unset" leaves
+ *  the field OUT of the config entirely — the U8a default posture — and is a
+ *  word rather than `undefined` because `undefined` would silently re-trigger
+ *  the parameter default below. */
+type FallbackKnob = number | "unset";
+
+/**
+ * @param fallbackMinutes "unset" = the U8a default posture (declare, never
+ *   self-join); a number = the legacy escape hatch these tests originally
+ *   pinned. (No bridge.json exists in the temp home, so the runner's
+ *   disk-fresh reads fall back to exactly this snapshot.)
+ */
+function bridgeConfig(fallbackMinutes: FallbackKnob = 5): BridgeConfig {
   return {
     version: 1,
     baseUrl: "https://aifight.ai",
@@ -120,10 +138,7 @@ function bridgeConfig(): BridgeConfig {
     runtimeLocalUrl: "mock://local",
     runtimeModel: "mock",
     updatedAt: "2026-05-06T00:00:00.000Z",
-    // The R2 default under test: declare first, self-join after 5 quiet
-    // minutes. (No bridge.json exists in the temp home, so the runner's
-    // disk-fresh reads fall back to exactly this snapshot.)
-    standbyFallbackJoinMinutes: 5,
+    ...(fallbackMinutes !== "unset" ? { standbyFallbackJoinMinutes: fallbackMinutes } : {}),
   };
 }
 
@@ -216,13 +231,13 @@ type Started = {
   logs: Array<{ code: string; message: string }>;
 };
 
-async function startDailyRunner(): Promise<Started> {
+async function startDailyRunner(fallbackMinutes: FallbackKnob = 5): Promise<Started> {
   const client = new FakeReconnectClient();
   const connect = vi.fn(async (_opts: ReconnectingWSClientOptions) => client);
   const logs: Array<{ code: string; message: string }> = [];
   const runner = new BridgeRunner({
     clientKind: "cli",
-    config: bridgeConfig(),
+    config: bridgeConfig(fallbackMinutes),
     runtimeProvider: createMockRuntimeProvider(),
     // Daily automatic matching (NOT one-shot) — the mode R2 orchestrates.
     autoJoinGame: "liars_dice",
@@ -346,5 +361,205 @@ describe("bridge standby declaration (R2)", () => {
     await runner.stop();
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(joinFrames(client)).toHaveLength(0);
+  });
+});
+
+// U8a (owner ruling 2026-08-03): with `standbyFallbackJoinMinutes` UNSET —
+// which is every install that never touched the knob — the bridge must never
+// pick a game for the user. The timer only re-declares. The knob's PRESENCE,
+// not its size, is what buys the legacy self-join back.
+describe("default standby posture (knob unset)", () => {
+  it("never self-joins, however long it waits — it re-declares instead", async () => {
+    const calls: FetchCall[] = [];
+    stubFetch(calls);
+    const { runner, client, logs } = await startDailyRunner("unset");
+
+    expect(joinFrames(client)).toHaveLength(0);
+    expect(policyPatches(calls)).toHaveLength(1);
+    const declared = logs.find((e) => e.code === "bridge.standby_declared");
+    expect(declared?.message).toContain("no self-join");
+    expect(declared?.message).not.toContain("self-join fallback in");
+    expect(runner.standbyGames()).toEqual(["texas_holdem", "liars_dice", "coup"]);
+
+    // Six windows — an hour of nothing to do. The legacy posture would have
+    // queued six times by now.
+    for (let i = 0; i < 6; i += 1) {
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+    }
+    expect(joinFrames(client)).toHaveLength(0);
+    expect(policyPatches(calls)).toHaveLength(7); // connect + 6 refreshes
+    expect(logs.filter((e) => e.code === "bridge.standby_redeclared")).toHaveLength(6);
+    expect(logs.some((e) => e.code === "bridge.standby_fallback_join")).toBe(false);
+    expect(runner.standbyGames()).toEqual(["texas_holdem", "liars_dice", "coup"]);
+
+    await runner.stop();
+  });
+
+  it("a reconnect does not revive a self-join (there was never a queue to restore)", async () => {
+    const calls: FetchCall[] = [];
+    stubFetch(calls);
+    const { runner, client } = await startDailyRunner("unset");
+
+    const fire = (): void => {
+      for (const h of [...client.stateHandlers]) h(client.snapshot());
+    };
+    for (let i = 0; i < 3; i += 1) {
+      client.state = "backoff";
+      fire();
+      client.state = "connected";
+      fire();
+      await flush();
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+    }
+
+    expect(joinFrames(client)).toHaveLength(0);
+    expect(policyPatches(calls).length).toBeGreaterThanOrEqual(4);
+
+    await runner.stop();
+  });
+
+  it("a refused declaration means NOT standing by, and still no self-join", async () => {
+    const calls: FetchCall[] = [];
+    stubFetch(calls, { failPolicyPatch: true });
+    const { runner, client, logs } = await startDailyRunner("unset");
+
+    expect(runner.standbyGames()).toBeNull();
+    const failed = logs.find((e) => e.code === "bridge.standby_declare_failed");
+    expect(failed?.message).toContain("cannot assign a match");
+    expect(failed?.message).not.toContain("self-join fallback will queue");
+
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    expect(joinFrames(client)).toHaveLength(0);
+    expect(runner.standbyGames()).toBeNull();
+
+    await runner.stop();
+  });
+
+  it("stop() and pause clear the standby set the hosts read", async () => {
+    const calls: FetchCall[] = [];
+    stubFetch(calls);
+    const { runner, client } = await startDailyRunner("unset");
+    expect(runner.standbyGames()).not.toBeNull();
+
+    // `aifight pause` mid-run: the timer reads the flag fresh, drops the
+    // standby claim and keeps NOT queueing.
+    writeBridgeConfig({
+      version: 1,
+      baseUrl: "https://aifight.ai",
+      wsUrl: "wss://aifight.ai/api/ws",
+      agentId: "agent-1",
+      agentName: "alpha",
+      apiKey: "sk-local-agent-key",
+      runtimeType: "mock",
+      runtimeLocalUrl: "mock://local",
+      runtimeModel: "mock",
+      matchingPaused: true,
+      updatedAt: "2026-08-03T00:00:00.000Z",
+    });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(runner.standbyGames()).toBeNull();
+    expect(joinFrames(client)).toHaveLength(0);
+
+    await runner.stop();
+    expect(runner.standbyGames()).toBeNull();
+  });
+
+  it("resumeMatching() re-declares standby instead of picking a game", async () => {
+    const calls: FetchCall[] = [];
+    stubFetch(calls);
+    const { runner, client, logs } = await startDailyRunner("unset");
+    expect(policyPatches(calls)).toHaveLength(1);
+
+    // What `aifight resume` and the Telegram Resume button now do.
+    const result = runner.resumeMatching();
+    await flush();
+
+    expect(result).toEqual({ mode: "standby", games: ["texas_holdem", "liars_dice", "coup"] });
+    expect(joinFrames(client)).toHaveLength(0);
+    expect(policyPatches(calls)).toHaveLength(2);
+    expect(runner.standbyGames()).toEqual(["texas_holdem", "liars_dice", "coup"]);
+    const resumed = logs.find((e) => e.code === "bridge.matching_resumed");
+    expect(resumed?.message).toContain("standing by");
+    expect(resumed?.message).toContain("no self-join");
+
+    // The timer is re-armed by the resume, not left dead: still no self-join.
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(joinFrames(client)).toHaveLength(0);
+    expect(policyPatches(calls)).toHaveLength(3);
+
+    await runner.stop();
+  });
+
+  it("resumeMatching() keeps the legacy self-join for the escape-hatch user", async () => {
+    const calls: FetchCall[] = [];
+    stubFetch(calls);
+    const { runner, client, logs } = await startDailyRunner(5);
+
+    const result = runner.resumeMatching();
+    await flush();
+
+    expect(result).toEqual({ mode: "joined", game: "liars_dice" });
+    expect(joinFrames(client)).toEqual([
+      { type: "join_queue", data: { game: "liars_dice", mode: "ranked" } },
+    ]);
+    // Queued for a game = not standing by; the hosts must not show both.
+    expect(runner.standbyGames()).toBeNull();
+    expect(logs.find((e) => e.code === "bridge.matching_resumed")?.message).toContain("legacy self-join");
+
+    // The fallback timer is left armed, so this user keeps the rescue they
+    // bought by setting the knob.
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(joinFrames(client).length).toBeGreaterThanOrEqual(2);
+
+    await runner.stop();
+  });
+
+  it("resumeMatching() reports cap_off and queues nothing when the cap is 0", async () => {
+    const calls: FetchCall[] = [];
+    stubFetch(calls);
+    const { runner, client } = await startDailyRunner("unset");
+
+    // `aifight set daily 0` mid-run — read fresh from disk, like every other
+    // connect-edge knob.
+    writeBridgeConfig({
+      version: 1,
+      baseUrl: "https://aifight.ai",
+      wsUrl: "wss://aifight.ai/api/ws",
+      agentId: "agent-1",
+      agentName: "alpha",
+      apiKey: "sk-local-agent-key",
+      runtimeType: "mock",
+      runtimeLocalUrl: "mock://local",
+      runtimeModel: "mock",
+      autoDailyLimit: 0,
+      updatedAt: "2026-08-03T00:00:00.000Z",
+    });
+
+    const result = runner.resumeMatching();
+    await flush();
+
+    expect(result).toEqual({ mode: "cap_off" });
+    expect(joinFrames(client)).toHaveLength(0);
+    expect(runner.standbyGames()).toBeNull();
+    // And nothing wakes back up later.
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    expect(joinFrames(client)).toHaveLength(0);
+
+    await runner.stop();
+  });
+
+  it("an explicit 0 still self-joins at the connect edge (the escape hatch)", async () => {
+    const calls: FetchCall[] = [];
+    stubFetch(calls);
+    const { runner, client } = await startDailyRunner(0);
+
+    // Straight to the queue, no declaration at all.
+    expect(joinFrames(client)).toEqual([
+      { type: "join_queue", data: { game: "liars_dice", mode: "ranked" } },
+    ]);
+    expect(policyPatches(calls)).toHaveLength(0);
+    expect(runner.standbyGames()).toBeNull();
+
+    await runner.stop();
   });
 });

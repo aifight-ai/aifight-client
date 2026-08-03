@@ -59,9 +59,11 @@ function runnerStub(overrides: Partial<PanelRunner> = {}): {
   runner: PanelRunner;
   joined: Array<{ game: string; mode?: string; oneShot?: boolean }>;
   left: number;
+  resumed: number;
 } {
   const joined: Array<{ game: string; mode?: string; oneShot?: boolean }> = [];
   let left = 0;
+  let resumed = 0;
   const runner: PanelRunner = {
     snapshot: () => ({ state: { phase: "idle" } }),
     connectionSnapshot: () => ({ state: "connected", connectedAt: Date.now() - 60_000 }),
@@ -71,6 +73,12 @@ function runnerStub(overrides: Partial<PanelRunner> = {}): {
     leaveQueue: () => {
       left += 1;
     },
+    // U8d: the default bridge posture — resuming re-declares standby and the
+    // platform picks the game. Nothing here ever joins a queue.
+    resumeMatching: () => {
+      resumed += 1;
+      return { mode: "standby", games: ["texas_holdem", "liars_dice", "coup"] };
+    },
     ...overrides,
   };
   return {
@@ -79,7 +87,15 @@ function runnerStub(overrides: Partial<PanelRunner> = {}): {
     get left() {
       return left;
     },
-  } as { runner: PanelRunner; joined: Array<{ game: string; mode?: string; oneShot?: boolean }>; left: number };
+    get resumed() {
+      return resumed;
+    },
+  } as {
+    runner: PanelRunner;
+    joined: Array<{ game: string; mode?: string; oneShot?: boolean }>;
+    left: number;
+    resumed: number;
+  };
 }
 
 function bridgeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -150,7 +166,10 @@ function harness(opts: {
     runner: opts.runner === null ? null : runner.runner,
     nonces,
     onLog: (e) => logs.push(e.code),
-    ...(opts.fetchImpl !== undefined ? { fetchImpl: opts.fetchImpl } : {}),
+    // U8c: the menu card reads the platform now, so EVERY case needs an answer
+    // — a test that says nothing about the network must still get the fixture
+    // rather than the real internet.
+    fetchImpl: opts.fetchImpl ?? statusFetch(),
     ...(opts.now !== undefined ? { now: opts.now } : {}),
     ...(opts.pauseState !== undefined ? { pauseState: opts.pauseState } : {}),
     ...(opts.declaredModel !== undefined ? { declaredModel: opts.declaredModel } : {}),
@@ -574,10 +593,13 @@ describe("play panel", () => {
     expect(h.lastText()).toContain("Left the matchmaking queue");
     expect(h.buttons().some((b) => b === "v1:play:ask_resume")).toBe(true);
 
+    // U8d: resuming asks the bridge to restore its posture — it does NOT pick
+    // a game here any more. The default posture stands by for the platform.
     await h.handle(tap("v1:play:ask_resume"));
     await h.handle(tap(h.buttons().find((b) => b.startsWith("v1:play:resume"))!));
-    expect(h.runner.joined).toHaveLength(1);
-    expect(h.runner.joined[0]!.oneShot).toBeUndefined(); // a standing queue, not one match
+    expect(h.runner.resumed).toBe(1);
+    expect(h.runner.joined).toHaveLength(0);
+    expect(h.lastText()).toContain("standing by; the platform picks the game");
   });
 
   // The panel writes the SAME persisted flag `aifight pause` does, so the
@@ -594,7 +616,51 @@ describe("play panel", () => {
     await h.handle(tap("v1:play:ask_resume"));
     await h.handle(tap(h.buttons().find((b) => b.startsWith("v1:play:resume"))!));
     expect(h.config().matchingPaused).toBe(false);
-    expect(h.runner.joined).toHaveLength(1);
+    expect(h.runner.resumed).toBe(1);
+    expect(h.runner.joined).toHaveLength(0);
+  });
+
+  // The escape hatch survives: a user who set standbyFallbackJoinMinutes still
+  // gets the pre-U8a self-join, and the receipt names the game.
+  it("names the game when the bridge is in the legacy self-join posture", async () => {
+    const h = harness({
+      runner: { resumeMatching: () => ({ mode: "joined", game: "coup" }) },
+      config: { matchingPaused: true },
+    });
+
+    await h.handle(tap("v1:play:ask_resume"));
+    await h.handle(tap(h.buttons().find((b) => b.startsWith("v1:play:resume"))!));
+
+    expect(h.lastText()).toContain("back in the Coup queue");
+    expect(h.runner.joined).toHaveLength(0); // the runner queued, not the panel
+  });
+
+  it("says the cap is 0 when there is nothing automatic to resume", async () => {
+    const h = harness({
+      runner: { resumeMatching: () => ({ mode: "cap_off" }) },
+      config: { matchingPaused: true },
+    });
+
+    await h.handle(tap("v1:play:ask_resume"));
+    await h.handle(tap(h.buttons().find((b) => b.startsWith("v1:play:resume"))!));
+
+    expect(h.lastText()).toContain("the daily cap is 0");
+  });
+
+  // A host that cannot orchestrate matching: the cleared flag is the whole
+  // answer. It must NOT fall back to the self-join U8a removed.
+  it("clears the pause without queueing when the host cannot resume", async () => {
+    const h = harness({
+      runner: { resumeMatching: undefined },
+      config: { matchingPaused: true },
+    });
+
+    await h.handle(tap("v1:play:ask_resume"));
+    await h.handle(tap(h.buttons().find((b) => b.startsWith("v1:play:resume"))!));
+
+    expect(h.config().matchingPaused).toBe(false);
+    expect(h.runner.joined).toHaveLength(0);
+    expect(h.lastText()).toContain("goes back on standby the next time it connects");
   });
 
   // A pause made from the CLI or the desktop app while this bridge runs must
@@ -852,6 +918,7 @@ describe("panel resilience", () => {
       config: () => bridgeConfig(),
       updateConfig: () => true,
       runner: null,
+      fetchImpl: statusFetch(),
       onLog: (e) => logs.push(e.code),
     });
 
@@ -1011,6 +1078,62 @@ describe("status panel — the CLI status box's rows", () => {
     expect(h.lastText()).toContain("matching: idle");
   });
 
+  // U8a: the state a default bridge actually sits in — declared to the
+  // platform, no queue entry of its own. It used to read as flat "idle".
+  it("says standing by when the bridge declared a standby set instead", async () => {
+    const h = harness({
+      fetchImpl: statusFetch(),
+      runner: {
+        snapshot: () => ({
+          state: { phase: "idle", standby: { games: ["texas_holdem", "coup"] } },
+        }),
+      },
+    });
+    await h.handle(command("/status"));
+    expect(h.lastText()).toContain("matching: standing by · platform assigns the game");
+    expect(h.lastText()).not.toContain("matching: idle");
+
+    // A real queue entry still wins over the standby declaration...
+    const queued = harness({
+      fetchImpl: statusFetch(),
+      runner: {
+        snapshot: () => ({
+          state: { phase: "matching", queue: { game: "coup" }, standby: { games: ["coup"] } },
+        }),
+      },
+    });
+    await queued.handle(command("/status"));
+    expect(queued.lastText()).toContain("matching: ⚔ queued · Coup");
+
+    // ...and pause still wins over both.
+    const paused = harness({
+      fetchImpl: statusFetch(),
+      pauseState: () => true,
+      runner: { snapshot: () => ({ state: { phase: "idle", standby: { games: ["coup"] } } }) },
+    });
+    await paused.handle(command("/status"));
+    expect(paused.lastText()).toContain("matching: ⏸ paused");
+    expect(paused.lastText()).not.toContain("standing by");
+
+    // An empty declaration is not a claim.
+    const empty = harness({
+      fetchImpl: statusFetch(),
+      runner: { snapshot: () => ({ state: { phase: "idle", standby: { games: [] } } }) },
+    });
+    await empty.handle(command("/status"));
+    expect(empty.lastText()).toContain("matching: idle");
+  });
+
+  it("says standing by in Chinese too", async () => {
+    const h = harness({
+      section: { locale: "zh" },
+      fetchImpl: statusFetch(),
+      runner: { snapshot: () => ({ state: { phase: "idle", standby: { games: ["coup"] } } }) },
+    });
+    await h.handle(command("/status"));
+    expect(h.lastText()).toContain("匹配：待命 · 游戏由平台安排");
+  });
+
   // A row that cannot be resolved is left OUT: a "Public model: —" would be a
   // claim of its own (the leaderboard shows something, this just cannot see it).
   it("drops the model row entirely when the companion cannot resolve one", async () => {
@@ -1052,6 +1175,237 @@ describe("status panel — the CLI status box's rows", () => {
     expect(text).toContain("公开模型：claude-opus-4-6");
     expect(text).toContain("参赛游戏：德州扑克、政变");
     expect(text).toContain("今日自动 1/3");
+  });
+});
+
+// ── U8c (2026-08-03): the menu card carries the same body /status does, and
+// both end on the per-game ratings ──────────────────────────────────────────
+
+describe("menu card — the widened home panel", () => {
+  /** The home keyboard, which U8c may not touch by one byte. */
+  const HOME_BUTTONS = [
+    "v1:status:open",
+    "v1:play:open",
+    "v1:duel:open",
+    "v1:record:open",
+    "v1:notify:open",
+    "v1:settings:open",
+    "v1:links:open",
+  ];
+
+  it("carries every row owner asked for, in order, ratings last", async () => {
+    const h = harness({
+      config: { autoGames: ["texas_holdem", "liars_dice", "coup"] },
+      declaredModel: () => "claude-opus-4-6",
+      runner: {
+        snapshot: () => ({ state: { phase: "matching", queue: { game: "coup" } } }),
+        connectionSnapshot: () => ({ state: "connected", connectedAt: null }),
+      },
+    });
+
+    await h.handle(command("/menu"));
+
+    const lines = h.lastText().split("\n");
+    expect(lines[0]).toBe("🏟 <b>AIFight · PokerMind</b>");
+    expect(lines[1]).toBe("🟢 Online");
+    expect(lines[2]).toBe("matching: ⚔ queued · Coup");
+    expect(lines[3]).toBe("Auto today: 1/3");
+    expect(lines[4]).toBe("Public model: claude-opus-4-6");
+    expect(lines[5]).toBe("Games: Texas Hold'em, Liar's Dice, Coup");
+    expect(lines[6]).toBe(`CLI version: v${RUNTIME_VERSION}`);
+    expect(lines[7]).toBe("Coup 1520");
+    expect(lines).toHaveLength(8);
+    // The phase line stays /status's alone — on the card it would only repeat
+    // the matching row one line below it.
+    expect(h.lastText()).not.toContain("Now: matching");
+    // A wider card, the same grid: not one callback_data moved.
+    expect(h.buttons()).toEqual(HOME_BUTTONS);
+  });
+
+  it("says standing by and the daily cap on the card too", async () => {
+    const h = harness({
+      config: { autoDailyLimit: 0 },
+      runner: { snapshot: () => ({ state: { phase: "idle", standby: { games: ["coup"] } } }) },
+    });
+
+    await h.handle(command("/start"));
+
+    expect(h.lastText()).toContain("matching: standing by · platform assigns the game");
+    expect(h.lastText()).toContain("Auto today: 1/manual only");
+  });
+
+  it("lists one number per game played, newest platform order, joined by a dot", async () => {
+    const threeGames = (async (url: string | URL) => {
+      const text = String(url);
+      if (text.endsWith("/api/agents/me/status")) {
+        return new Response(JSON.stringify({ games_today: 4, max_games_per_day: 5 }), { status: 200 });
+      }
+      if (text.includes("/profile")) {
+        return new Response(JSON.stringify({
+          ratings: [
+            { game: "coup", rating: 1300, display_rating: 1177.6, games_played: 9 },
+            { game: "liars_dice", rating: 1300, display_rating: 1196.4, games_played: 12 },
+            { game: "texas_holdem", rating: 1300, display_rating: 1095.2, games_played: 31 },
+            // Never played: a starting rating is not a result.
+            { game: "hearts", rating: 1500, display_rating: 1500, games_played: 0 },
+          ],
+        }), { status: 200 });
+      }
+      return new Response("{}", { status: 404 });
+    }) as unknown as typeof fetch;
+    const h = harness({ fetchImpl: threeGames });
+
+    await h.handle(command("/menu"));
+
+    expect(h.lastText()).toContain("Coup 1178 · Liar's Dice 1196 · Texas Hold'em 1095");
+    expect(h.lastText()).not.toContain("1500");
+  });
+
+  it("speaks Chinese, game names included", async () => {
+    const h = harness({
+      section: { locale: "zh" },
+      config: { autoGames: ["texas_holdem", "coup"] },
+      declaredModel: () => "claude-opus-4-6",
+      runner: {
+        snapshot: () => ({ state: { phase: "idle" } }),
+        connectionSnapshot: () => ({ state: "connected", connectedAt: null }),
+      },
+    });
+
+    await h.handle(command("/menu"));
+
+    const text = h.lastText();
+    expect(text).toContain("匹配：空闲");
+    expect(text).toContain("今日自动 1/3");
+    expect(text).toContain("公开模型：claude-opus-4-6");
+    expect(text).toContain("参赛游戏：德州扑克、政变");
+    expect(text).toContain(`CLI 版本：v${RUNTIME_VERSION}`);
+    expect(text).toContain("政变 1520");
+  });
+
+  // The ratings row is a bonus, not something the user asked for: when the
+  // profile cannot be read the row is simply absent — no "unavailable", no
+  // placeholder, and every other row still there.
+  it("drops the ratings row alone when the profile 404s", async () => {
+    const noProfile = (async (url: string | URL) => {
+      if (String(url).endsWith("/api/agents/me/status")) {
+        return new Response(JSON.stringify({ games_today: 2, max_games_per_day: 5 }), { status: 200 });
+      }
+      return new Response("{}", { status: 404 });
+    }) as unknown as typeof fetch;
+    const h = harness({ fetchImpl: noProfile, declaredModel: () => "claude-opus-4-6" });
+
+    await h.handle(command("/menu"));
+
+    const text = h.lastText();
+    expect(text).toContain("Auto today: 2/5");
+    expect(text).toContain("Public model: claude-opus-4-6");
+    expect(text).toContain(`CLI version: v${RUNTIME_VERSION}`);
+    expect(text).not.toContain("1520");
+    expect(text).not.toMatch(/rating/i);
+  });
+
+  it("does the same when the profile read times out", async () => {
+    const slowProfile = (async (url: string | URL) => {
+      if (String(url).endsWith("/api/agents/me/status")) {
+        return new Response(JSON.stringify({ games_today: 2, max_games_per_day: 5 }), { status: 200 });
+      }
+      if (String(url).includes("/profile")) {
+        throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+      }
+      return new Response("{}", { status: 404 });
+    }) as unknown as typeof fetch;
+    const h = harness({ fetchImpl: slowProfile });
+
+    await h.handle(command("/menu"));
+
+    expect(h.lastText()).toContain("Auto today: 2/5");
+    expect(h.lastText()).not.toContain("Coup 1520");
+    expect(h.logs).toHaveLength(0); // a silent degrade, not a warning storm
+  });
+
+  // The card is the most-opened panel there is; without this it would cost
+  // three network calls per tap.
+  it("reuses what it just learned for a minute, and /status still re-asks", async () => {
+    let profiles = 0;
+    const counting = (async (url: string | URL) => {
+      const text = String(url);
+      if (text.endsWith("/api/agents/me/status")) {
+        return new Response(JSON.stringify({ games_today: 1, max_games_per_day: 3 }), { status: 200 });
+      }
+      if (text.includes("/profile")) {
+        profiles += 1;
+        return new Response(JSON.stringify({ ratings: [{ game: "coup", display_rating: 1520, games_played: 12 }] }), { status: 200 });
+      }
+      return new Response("{}", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    let clock = 1_700_000_000_000;
+    const h = harness({
+      fetchImpl: counting,
+      now: () => clock,
+      runner: { connectionSnapshot: () => ({ state: "connected", connectedAt: null }) },
+    });
+
+    await h.handle(command("/menu"));
+    await h.handle(command("/menu"));
+    expect(profiles).toBe(1);
+    expect(h.lastText()).toContain("Coup 1520"); // the cached row, still shown
+
+    // Refresh has to mean refresh: /status never serves the card's copy.
+    await h.handle(command("/status"));
+    expect(profiles).toBe(2);
+
+    // ...and the card follows the fresher read for the rest of the minute.
+    await h.handle(command("/menu"));
+    expect(profiles).toBe(2);
+
+    clock += 61_000;
+    await h.handle(command("/menu"));
+    expect(profiles).toBe(3);
+  });
+
+  // The one thing a cache must never do: quote back a number the user changed
+  // through this very panel a tap ago.
+  it("forgets the cached copy as soon as the daily cap changes", async () => {
+    let cap = 3;
+    const movingCap = (async (url: string | URL, init?: RequestInit) => {
+      const text = String(url);
+      if (text.endsWith("/api/agents/me/policy") && init?.method === "PATCH") {
+        cap = 5;
+        return new Response(JSON.stringify({ max_games_per_day: 5, auto_requeue: true }), { status: 200 });
+      }
+      if (text.endsWith("/api/agents/me/status")) {
+        return new Response(JSON.stringify({ games_today: 1, max_games_per_day: cap }), { status: 200 });
+      }
+      return new Response("{}", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    let clock = 1_700_000_000_000;
+    const h = harness({
+      fetchImpl: movingCap,
+      now: () => clock,
+      runner: { connectionSnapshot: () => ({ state: "connected", connectedAt: null }) },
+    });
+
+    await h.handle(command("/menu"));
+    expect(h.lastText()).toContain("Auto today: 1/3");
+
+    await h.handle(tap("v1:settings:ask_daily:5"));
+    await h.handle(tap(h.buttons().find((b) => b.startsWith("v1:settings:daily"))!));
+    expect(h.config().autoDailyLimit).toBe(5);
+
+    await h.handle(command("/menu")); // same minute, new truth
+    expect(h.lastText()).toContain("Auto today: 1/5");
+  });
+
+  it("escapes an agent name that looks like markup", async () => {
+    const h = harness({ config: { agentName: "<b>Steel</b> & Mongoose" } });
+
+    await h.handle(command("/menu"));
+
+    expect(h.lastText()).toContain("🏟 <b>AIFight · &lt;b&gt;Steel&lt;/b&gt; &amp; Mongoose</b>");
+    expect(h.lastText()).not.toContain("<b>Steel");
   });
 });
 

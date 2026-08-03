@@ -302,8 +302,11 @@ describe("bridge-first CLI command surface", () => {
 
     const paths = await runCapture(["strategy", "path", "texas_holdem"]);
     expect(paths.code).toBe(0);
-    expect(paths.stdout).toMatch(/Global\s+~\/agents\/agent-strategy-1\/strategy\/global\.md/);
-    expect(paths.stdout).toMatch(/texas_holdem\s+~\/agents\/agent-strategy-1/);
+    // U8: paths are shown truthfully — a runtime home outside the OS home
+    // (this test's temp dir) prints absolute, never a fake `~/agents/…`.
+    expect(paths.stdout).toContain(`${home}/agents/agent-strategy-1/strategy/global.md`);
+    expect(paths.stdout).toMatch(/texas_holdem\s+\S/);
+    expect(paths.stdout).toContain(`${home}/agents/agent-strategy-1/strategy/games/texas_holdem.md`);
 
     const init = await runCapture(["strategy", "init", "texas_holdem"]);
     expect(init.code).toBe(0);
@@ -356,6 +359,30 @@ describe("bridge-first CLI command surface", () => {
       },
     ]);
     expect(r.stdout).toContain("Requested 3 manual ranked Coup matches");
+    // P7 (U8b): the confirmation now carries the fact the daily-cap screen
+    // leans on — a manual request is NOT charged to the automatic budget.
+    expect(r.stdout).toContain("Manual matches do not use your daily automatic budget.");
+  });
+
+  // P7 (U8b): the Play item is the busiest door in the panel, and its answer
+  // used to arrive in English with a hardcoded game label.
+  it("start speaks the display language, game name included", async () => {
+    configuredBridge({ locale: "zh" } as Partial<BridgeConfig>);
+    writeToken("a".repeat(64));
+    writePort(40123);
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/bridge/version")) return versionPolicyResp();
+      if (url.startsWith("https://registry.npmjs.org/")) return jsonResp({ version: "0.1.0-alpha.5" });
+      return new Response(null, { status: 204 });
+    };
+
+    const r = await runCapture(["start", "coup"], { fetchImpl });
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("场手动排位 政变 对局");
+    expect(r.stdout).toContain("手动对局不占用每日自动对局额度。");
+    expect(r.stdout).not.toContain("Requested");
   });
 
   it("start explains when the Bridge is not running", async () => {
@@ -550,8 +577,12 @@ describe("aifight service", () => {
     });
 
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("aifight.service: running");
+    // P7 (U8b): title + kv block instead of two bare `label: value` lines. The
+    // running/stopped verdict and the unit path are still what this asserts.
+    expect(r.stdout).toContain("Background service");
+    expect(r.stdout).toMatch(/State\s+running/);
     expect(r.stdout).toContain(unitPath);
+    expect(r.stdout).toContain("keeps your agent online in the background");
   });
 
   it("installs a macOS launchd service cleanly — bootstrap + print confirm, no kickstart warning (⑤)", async () => {
@@ -652,8 +683,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.2.0-beta.11",
-          latest_version: "0.2.0-beta.11",
+          recommended_version: "0.2.0-beta.12",
+          latest_version: "0.2.0-beta.12",
           update_command: "npm install -g @aifight/aifight",
         });
       }
@@ -692,8 +723,8 @@ describe("aifight service", () => {
       if (String(input).endsWith("/api/bridge/version")) {
         return jsonResp({
           minimum_supported_version: "0.1.0-alpha.1",
-          recommended_version: "0.2.0-beta.11",
-          latest_version: "0.2.0-beta.11",
+          recommended_version: "0.2.0-beta.12",
+          latest_version: "0.2.0-beta.12",
           update_command: "npm install -g @aifight/aifight",
         });
       }
@@ -1088,10 +1119,15 @@ describe("aifight set", () => {
     configuredBridge();
     const r = await runCapture(["set", "game", "liars_dice,coup,coup"]);
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("liars_dice, coup");
+    // U8d: the receipt de-duplicates AND translates; the ids live in --json.
+    expect(r.stdout).toContain("Liar's Dice, Coup");
 
     const status = await runCapture(["status"], { fetchImpl: async () => versionPolicyResp() });
-    expect(status.stdout).toMatch(/Games\s+liars_dice, coup/);
+    // U8b: the status screen shows display names (Copy Rules — no raw game ids
+    // in human output); the ids themselves stay in --json.
+    expect(status.stdout).toMatch(/Games\s+Liar's Dice, Coup/);
+    const statusJson = await runCapture(["status", "--json"], { fetchImpl: async () => versionPolicyResp() });
+    expect(JSON.parse(statusJson.stdout).config.autoGames).toEqual(["liars_dice", "coup"]);
   });
 
   it("rejects unsupported automatic games", async () => {
@@ -1120,8 +1156,16 @@ describe("challenge and accept", () => {
     expect(calls[0]?.init?.method).toBe("POST");
     expect((calls[0]?.init?.headers as Record<string, string>)["X-API-Key"]).toBe(config.apiKey);
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ game: "coup", accept_mode: "single" });
-    expect(r.stdout).toContain("accepted once");
-    expect(r.stdout).toContain("does not affect ratings or daily auto-play");
+    // P7 (U8b): a styled kv block, the game as a display name, and the link on
+    // its own line. Omitting the count on coup still opens a 3-seat table —
+    // the block now says so instead of claiming "accepted once".
+    expect(r.stdout).toContain("Friendly challenge created");
+    expect(r.stdout).toMatch(/Game\s+Coup/);
+    expect(r.stdout).toMatch(/Table size\s+3 players/);
+    expect(r.stdout).toMatch(/Accepts\s+2 · one per open seat/);
+    expect(r.stdout).toContain("does not use your daily automatic matches");
+    const shareLine = r.stdout.split("\n").find((l) => l.trim().startsWith("https://beta.aifight.ai/challenge/"))!;
+    expect(shareLine.trim()).toBe("https://beta.aifight.ai/challenge/dl_0123456789abcdef0123456789abcdef");
   });
 
   it("creates Texas Hold'em as a direct two-player friendly challenge", async () => {
@@ -1205,13 +1249,17 @@ describe("challenge and accept", () => {
     const r = await runCapture(["challenge", "list"], { fetchImpl });
     expect(r.code).toBe(0);
     expect(calledURL).toBe(`${config.baseUrl}/api/agents/me/challenges`);
-    expect(r.stdout).toContain("Active challenges (2):");
+    // P7 (U8b): a titled screen with one line saying what a friendly duel is,
+    // then the same rows under section headers.
+    expect(r.stdout).toContain("Friendly challenges");
+    expect(r.stdout).toContain("no rating impact");
+    expect(r.stdout).toContain("Active (2)");
     expect(r.stdout).toContain("Coup · hosted by you · 2 of 4 seats taken · expires in 1h 30m");
     expect(r.stdout).toContain("Texas Hold'em · vs Rival · playing now");
     // No local create record on this machine → the list explains where links
     // live instead of leaving a host hunting for one it cannot have.
     expect(r.stdout).toContain("Links are stored on the machine that created the challenge");
-    expect(r.stdout).toContain("Recent (2 of 2):");
+    expect(r.stdout).toContain("Recent (2 of 2)");
     expect(r.stdout).toContain("Liar's Dice · hosted by you · expired");
   });
 

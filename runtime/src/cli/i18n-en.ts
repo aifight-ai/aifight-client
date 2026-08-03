@@ -22,8 +22,11 @@ export const en = {
   // U2: the game is PICKED from a frame (P1) and the count re-asks in place
   // (P3) — the two typed-answer questions this used to open with are gone.
   "menu.play.game_title": "Request a match — which game?",
-  "menu.play.auto.main": "Auto-pick",
-  "menu.play.auto.hint": "let the platform pick",
+  // U8a: honest labels. This row picks a game LOCALLY at random out of the
+  // games you enabled — it is not a request for the platform to choose (that
+  // needs a server primitive the manual path does not have yet).
+  "menu.play.auto.main": "Random pick",
+  "menu.play.auto.hint": "one of your enabled games",
   "menu.play.count_q": "How many matches? (1-{{max}})",
   "menu.play.count_invalid": "Count must be a whole number between 1 and {{max}}.",
   "menu.rename.prompt": "New public display name",
@@ -36,6 +39,12 @@ export const en = {
   "game.texas_holdem": "Texas Hold'em",
   "game.liars_dice": "Liar's Dice",
   "game.coup": "Coup",
+
+  // ── Durations (formatMinutes() in i18n.ts) ───────────────────────────
+  // The CLI's one "how long" vocabulary. Minutes are the smallest unit any
+  // human-facing line shows; zh says 小时/分 instead of carrying h/m through.
+  "duration.hm": "{{h}}h {{m}}m",
+  "duration.m": "{{m}}m",
 
   // ── Profile submenu (V3 ④) ───────────────────────────────────────────
   "profile.title": "Profile Manage",
@@ -90,6 +99,47 @@ export const en = {
   "challenge.menu.back.hint": "return to the main menu",
   "challenge.invite.header": "Invite message (copy & send to a friend):",
   "challenge.invite.game_multi": "{{game}} ({{count}}-player table)",
+  // The `aifight challenge` / `challenge list` output bodies (P7, 批 U8b).
+  // They used to be a flat `Label: value` wall with the raw game id in it.
+  "challenge.created.title": "Friendly challenge created",
+  "challenge.created.game": "Game",
+  "challenge.created.players": "Table size",
+  "challenge.created.players.value": "{{count}} players · starts when every seat is taken",
+  "challenge.created.rating": "Rating",
+  "challenge.created.rating.value": "no impact · does not use your daily automatic matches",
+  "challenge.created.accepts": "Accepts",
+  "challenge.created.accepts.seats": "{{count}} · one per open seat",
+  "challenge.created.accepts.one": "1 · the link works once",
+  "challenge.created.share": "Send this link to whoever you want at the table:",
+  "challenge.created.note.texas": "Texas Hold'em challenges start as a direct two-player friendly table; normal matchmaking still starts at four players.",
+  "challenge.created.note.online": "Keep aifight.service running until the other side accepts. For a quick test, run `aifight run` in another terminal.",
+  "challenge.list.title": "Friendly challenges",
+  "challenge.list.intro": "Duels you host or accept — no rating impact, and every link expires 24 hours after it is created.",
+  "challenge.list.empty": "No friendly challenges yet.",
+  "challenge.list.empty.hint": "Create one with `aifight challenge <game> [players]`, or accept one with `aifight accept <url>`.",
+  "challenge.list.active": "Active ({{count}})",
+  "challenge.list.none_active": "No active challenges.",
+  "challenge.list.recent": "Recent ({{shown}} of {{total}})",
+  "challenge.list.links_local": "Links are stored on the machine that created the challenge; one created elsewhere expires with its link (24h).",
+  // D3: the `challenge list` ROW vocabulary — who the row is against, what the
+  // server's state means in user words, and how long the link has left. These
+  // were the last hardcoded English in the command (a zh screen showed
+  // "playing now" between two translated segments); the en strings here are
+  // byte-identical to the literals they replaced.
+  "challenge.row.vs": "vs {{name}}",
+  "challenge.row.hosted_by_you": "hosted by you",
+  "challenge.row.accepted_by_you": "accepted by you",
+  "challenge.row.expires": "expires in {{duration}}",
+  "challenge.status.seats": "{{seated}} of {{max}} seats taken",
+  "challenge.status.pending.hosted": "waiting for an opponent to accept",
+  "challenge.status.pending": "waiting",
+  "challenge.status.accepted.full": "table full — starting when everyone is online",
+  "challenge.status.accepted": "accepted — starting",
+  "challenge.status.waiting_online": "waiting for both sides to be online",
+  "challenge.status.in_match": "playing now",
+  "challenge.status.finished": "finished",
+  "challenge.status.expired": "expired",
+  "challenge.status.cancelled": "cancelled",
   "challenge.invite.text": "I've set up a {{game}} friendly challenge on AIFight — come play me! 🎮\nPaste this link into the \"Accept a challenge\" box in your AIFight app or CLI to take a seat (friendly match, no rating impact):\n{{url}}\nNew to AIFight? https://aifight.ai gets your own LLM playing in about a minute. The link is valid for 24 hours.",
   "menu.item.llm.main": "LLM",
   "menu.item.llm.hint": "model, key, routing",
@@ -126,6 +176,17 @@ export const en = {
   "menu.service.act.stop": "Stop",
   "menu.service.act.restart": "Restart",
   "menu.service.act.uninstall": "Uninstall",
+  // `aifight service status` (P7, 批 U8b) — it used to be two bare
+  // `label: value` lines with nothing saying what the service is FOR.
+  "service.status.title": "Background service",
+  "service.status.label.state": "State",
+  "service.status.label.detail": "Detail",
+  "service.status.label.unit": "Unit file",
+  "service.status.running": "running",
+  "service.status.stopped": "stopped",
+  "service.status.not_installed": "not installed",
+  "service.status.note": "aifight.service keeps your agent online in the background and brings it back after a reboot.",
+  "service.status.note.install": "Install it from the Service item, or run: aifight service install",
   "menu.item.help.main": "Help",
   "menu.item.help.hint": "full command list",
   "menu.item.quit": "Quit",
@@ -406,6 +467,10 @@ export const en = {
   "banner.match.paused": "matching: ⏸ paused (resume: aifight resume)",
   "banner.match.unclaimed": "matching: ⚠ claim your agent first (Claim item)",
   "banner.match.queued": "matching: ⚔ queued · {{games}}",
+  // U8a: online and declared to the platform, waiting for it to assign a game.
+  // The default bridge lives here — it no longer queues itself into a game the
+  // user never chose, so this row used to read (wrongly) as "queued · <random>".
+  "banner.match.standby": "matching: standing by · platform assigns the game",
   "banner.match.idle": "matching: idle · {{daily}}",
   "banner.match.unknown": "matching: bridge running · queue unknown",
   "banner.match.not_running": "matching: bridge not running · {{daily}}",
@@ -476,6 +541,23 @@ export const en = {
   "prompt.daily.confirm.warn": "{{limit}} automatic matches per day means a lot of model calls on your key — token costs add up fast.",
   "prompt.daily.confirm.ask": "Allow up to {{limit}} automatic matches per day?",
   "prompt.rename.too_long": "  Names are limited to {{max}} characters — try a shorter one.",
+  // What the bracket says at the daily-cap prompt ("[keep 5]"). Distinct from
+  // prompt.keep, which is the sentence printed AFTER a bare Enter.
+  "prompt.daily.keep": "keep {{value}}",
+  // The platform's real display-name rules, stated BEFORE the question (P7,
+  // 批 U8b). Summarized from internal/agentname — a rejection that only lands
+  // after the PATCH reads as a bug.
+  "prompt.rename.rules": "Display names are 2-{{max}} characters: ASCII letters, numbers, spaces and . _ - only, with no leading, trailing or doubled spaces.",
+  "prompt.rename.rules.reserved": "Brand and model names (openai, claude, gemini, …) and offensive words are refused by the platform.",
+
+  // ── The daily automatic-match budget (config.ts, menu Daily cap item) ──
+  // 批 U8b: this whole flow was hardcoded English, and the number arrived with
+  // no statement of what it does or does not cover.
+  "daily.title": "Daily automatic matches",
+  "daily.no_agent": "No agent on this machine yet. Run `aifight setup` first, then set a daily cap.",
+  "daily.value.server_default": "server default",
+  "daily.intro.scope": "This is the budget for matches the bridge joins BY ITSELF. Matches you request yourself and friendly challenges never count against it.",
+  "daily.intro.window": "The platform counts over a rolling 24 hours from your first automatic match, not from midnight. 0 turns automatic matching off; {{max}} is the ceiling.",
 
   // ── Confirmations outside the menu (批 U4, 统一交互规范 P4/P6) ────────
   // Every one of these goes through promptYesNo, which appends the
@@ -531,6 +613,14 @@ export const en = {
   "set.game.hint.texas_holdem": "poker · 4-max table",
   "set.game.hint.liars_dice": "bluffing dice · 2-4 players",
   "set.game.hint.coup": "hidden roles · 3-4 players",
+  // `aifight start` — the menu's Play item lands here (P7, 批 U8b: it used to
+  // answer a Chinese panel in English, with the game as a hardcoded label).
+  "start.requested.one": "Requested 1 manual ranked {{game}} match for {{agent}}.",
+  "start.requested.many": "Requested {{count}} manual ranked {{game}} matches for {{agent}}.",
+  "start.note": "The running bridge handles it as soon as AIFight pairs you. Manual matches do not use your daily automatic budget.",
+  // The result line of `aifight set game` (and menu item 8). U8d: display
+  // names, never the raw ids — the ids stay in --json, which is unchanged.
+  "set.game.ok": "Automatic match games set to: {{games}}",
   "set.apply.edge": "saved — a running bridge picks it up on its next (re)connect, no restart needed.",
   "set.apply.next_start": "saved — applies on next bridge start.",
 
@@ -541,9 +631,14 @@ export const en = {
   "note.desktop_seat": "The desktop app currently runs this agent on this machine and keeps its own pause switch — set it in the app (Play view) too.",
   "note.not_running": "No bridge is running on this machine — the change is saved and applies the next time one starts.",
   "resume.not_paused": "Automatic matching is not paused.",
+  // U8d: the default resume no longer picks a game — the bridge stands by and
+  // the platform assigns one. resume.ok.joined survives for the explicit
+  // `standbyFallbackJoinMinutes` escape hatch, which still self-joins.
+  "resume.ok.standby": "Automatic matching resumed — standing by; the platform picks the game.",
   "resume.ok.joined": "Automatic matching resumed — re-joined the {{game}} queue.",
   "resume.ok": "Automatic matching resumed.",
-  "resume.warn.join_failed": "Automatic matching resumed (saved), but the running bridge did not accept the re-join — it picks the setting up on its next reconnect.",
+  "resume.note.pending": "The bridge goes back on standby the next time it connects (or within 5 minutes, whichever comes first).",
+  "resume.warn.failed": "Automatic matching resumed (saved), but the running bridge did not accept the request.",
   "resume.warn.cap_off": "The daily cap is 0 (manual only), so the agent still will not queue by itself — set one with `aifight set daily <N>`.",
   "update.ok": "AIFight CLI package updated.",
   "update.warn.inspect": "warning: could not inspect aifight.service: {{error}}",
@@ -555,6 +650,11 @@ export const en = {
   // ── aifight record (V4 styled) ───────────────────────────────────────
   "record.title": "AIFight record",
   "record.model": "Model",
+  // P7 (批 U8b): what this screen IS, and the replay links the payload has
+  // always carried but the CLI never printed.
+  "record.intro": "Your public record on AIFight — the same page anyone else can open:",
+  "record.recent.replay": "Open a replay link above to watch the whole match.",
+  "record.note.prefix": "Note: ",
   "record.empty": "No ranked matches yet — play a few, then check back.",
   "record.next": "Next: run `aifight setup` to create your agent, then play a few matches.",
   "record.section.overall": "Overall",
@@ -589,6 +689,9 @@ export const en = {
 
   // ── aifight strategy (V4 styled) ─────────────────────────────────────
   "strategy.section": "Strategy files",
+  // P7 (批 U8b): the paths used to arrive with no answer to "what IS this?".
+  "strategy.intro": "A strategy file is free-form Markdown — whatever you write in it is injected into your agent's prompt every match.",
+  "strategy.intro.guide": "How to write one (templates and worked examples):",
   "strategy.root": "Root",
   "strategy.global": "Global",
   "strategy.gamesdir": "Games dir",

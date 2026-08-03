@@ -44,6 +44,12 @@ export interface MatchDetail extends MatchSummary {
   watch_token?: string;
   replay_url?: string;
   delay_seconds?: number;
+  /**
+   * True when this completed replay is served in god view (folded/dealt cards
+   * revealed by the admin toggle). The replay UI shows the god-view badge.
+   * Never set on live matches.
+   */
+  god_view?: boolean;
 }
 
 export interface MatchPlayer {
@@ -239,6 +245,13 @@ export interface AgentRecentMatch {
    * unrated players count at the 1500 baseline). Absent when unknown.
    */
   avg_player_rating?: number;
+  /**
+   * Social badges this agent earned in the match (bluffs, comebacks, exposed
+   * claims — GOD_REPLAY_AND_MATCH_HIGHLIGHTS_SPEC §5.2), aggregated by kind.
+   * Present only while the admin display toggle is on and the match earned
+   * any; render nothing otherwise.
+   */
+  highlights?: { kind: string; count: number }[];
 }
 
 export interface AgentRatingHistory {

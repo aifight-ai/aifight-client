@@ -4,6 +4,7 @@ import { readBridgeConfig, writeBridgeConfig, type BridgeConfig } from "../../br
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError } from "../shared";
 import { createAnsi } from "../ansi";
+import { createOutput } from "../output";
 import { resolveLocale, t } from "../i18n";
 import { applyPendingBridgeRestart, bridgeRestartPending } from "./apply-settings";
 import { promptDefault } from "./onboard-io";
@@ -93,6 +94,13 @@ async function promptPublicName(
 ): Promise<string | undefined> {
   const loc = env.locale?.() ?? resolveLocale();
   const config = readRenameBridgeConfig();
+  // P7 (U8b): the platform's real rules BEFORE the question — a rejection that
+  // only arrives after the PATCH ("name is reserved") reads as a bug. Summarized
+  // from internal/agentname: 2–50 chars, a small ASCII set, no leading/trailing
+  // or doubled spaces, and brand/reserved/profane names refused.
+  const out = createOutput();
+  env.stdout(`${out.note(t(loc, "prompt.rename.rules", { max: RENAME_MAX_CHARS }))}\n`);
+  env.stdout(`${out.note(t(loc, "prompt.rename.rules.reserved"))}\n`);
   for (;;) {
     const answer = await promptDefault(env, t(loc, "prompt.rename.question"), config.agentName, readLine);
     if (answer.kind === "cancel") {

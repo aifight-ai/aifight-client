@@ -348,7 +348,7 @@ describe("applyPendingBridgeRestart", () => {
     );
 
     expect(rc).toBe(0);
-    expect(out.join("")).toContain("Automatic match games set to: texas_holdem");
+    expect(out.join("")).toContain("Automatic match games set to: Texas Hold'em");
     // No bridge seat in this test home → the "next start" variant of the truth.
     expect(out.join("")).toContain("applies on next bridge start");
     expect(out.join("")).not.toContain("service restart");

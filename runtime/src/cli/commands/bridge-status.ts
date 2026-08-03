@@ -5,7 +5,7 @@ import { declaredModelOriginLabel, resolveEffectiveDeclaredModel } from "../../b
 import { checkBridgeUpdate } from "../../bridge/update-check";
 import { RUNTIME_VERSION } from "../../index";
 import { ControlClientError } from "../control-client";
-import { resolveLocale, t, type Locale } from "../i18n";
+import { joinGameLabels, resolveLocale, t, type Locale } from "../i18n";
 import { createOutput } from "../output";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { expectArity, makeClient } from "../shared";
@@ -110,7 +110,10 @@ export async function runBridgeStatus(
   if (config.matchingPaused === true) {
     env.stdout(`${out.ansi.yellow(t(loc, "status.paused"))}\n`);
   }
-  env.stdout(`${out.kv(t(loc, "status.label.games"), redacted.autoGames?.join(", ") ?? "texas_holdem, liars_dice, coup")}\n`);
+  // Copy Rules: game ids never surface raw in a human screen — the same
+  // vocabulary the panel, the pickers and the Telegram companion use.
+  // (--json above keeps the raw ids, untouched.)
+  env.stdout(`${out.kv(t(loc, "status.label.games"), joinGameLabels(loc, redacted.autoGames ?? ["texas_holdem", "liars_dice", "coup"]))}\n`);
   env.stdout(`${out.kv(t(loc, "status.label.ws"), redacted.wsUrl)}\n`);
   env.stdout(`${out.note(t(loc, "status.secrets"))}\n`);
   return 0;

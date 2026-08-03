@@ -16,7 +16,7 @@ import { readBridgeConfig, writeBridgeConfig, getBridgeConfigPath } from "../src
 import { createAnsi } from "../src/cli/ansi";
 import { en, type I18nKey } from "../src/cli/i18n-en";
 import { zh } from "../src/cli/i18n-zh";
-import { parseLocale, resolveLocale, t } from "../src/cli/i18n";
+import { formatMinutes, parseLocale, resolveLocale, t } from "../src/cli/i18n";
 import { renderGlobalHelp } from "../src/cli/help";
 import { run } from "../src/cli/main";
 import { runInteractiveMenu, type MenuDeps } from "../src/cli/commands/menu";
@@ -91,6 +91,21 @@ describe("dictionaries", () => {
     for (const key of Object.keys(en) as I18nKey[]) {
       expect(paramsOf(zh[key]), key).toEqual(paramsOf(en[key]));
     }
+  });
+
+  // D3: the CLI's one duration vocabulary — the challenge list's "expires in"
+  // used to hardcode the English h/m even on a Chinese screen.
+  it("formatMinutes speaks each locale's duration words", () => {
+    expect(formatMinutes("en", 90)).toBe("1h 30m");
+    expect(formatMinutes("zh", 90)).toBe("1 小时 30 分");
+    expect(formatMinutes("en", 41)).toBe("41m");
+    expect(formatMinutes("zh", 41)).toBe("41 分");
+    // A whole number of hours still names the zero minutes (h 分 reads as a
+    // pair); fractions floor, and a past/negative span reads as zero.
+    expect(formatMinutes("zh", 120)).toBe("2 小时 0 分");
+    expect(formatMinutes("en", 90.9)).toBe("1h 30m");
+    expect(formatMinutes("en", -5)).toBe("0m");
+    expect(formatMinutes("zh", Number.NaN)).toBe("0 分");
   });
 
   it("a key that exists only in en would fall back at runtime; a bogus key throws", () => {
@@ -428,6 +443,32 @@ describe("default-bracket prompts in zh", () => {
     expect(asked[0]).toContain("每日自动对局上限（0-100，0 = 关闭） [4]: ");
     expect(out.join("")).toContain("保持 4。");
   });
+
+  // U8d: `set game`'s receipt used to print raw ids in a hardcoded English
+  // sentence — the one line in that flow the picker above had already
+  // translated. --json keeps the ids (checked in the en half below).
+  it("set game confirms with translated names in zh", async () => {
+    seedBridge({ locale: "zh" });
+    const out: string[] = [];
+    const code = await run(["set", "game", "texas_holdem,liars_dice"], {
+      stdout: (s: string) => out.push(s),
+      stderr: (s: string) => out.push(s),
+    });
+    expect(code).toBe(0);
+    expect(out.join("")).toContain("参赛游戏已设为：德州扑克、骗子骰");
+    expect(out.join("")).not.toContain("texas_holdem");
+  });
+
+  it("set game --json keeps the raw ids in both locales", async () => {
+    seedBridge({ locale: "zh" });
+    const out: string[] = [];
+    const code = await run(["set", "game", "coup", "--json"], {
+      stdout: (s: string) => out.push(s),
+      stderr: (s: string) => out.push(s),
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(out.join("").trim())).toEqual({ status: "ok", autoGames: ["coup"] });
+  });
 });
 
 describe("aifight status in zh", () => {
@@ -473,7 +514,10 @@ describe("aifight status in zh", () => {
     expect(text).toMatch(/桥\s+已配置/);
     expect(text).toMatch(/自动排位对局\s+每日 5 场/);
     expect(text).toContain("匹配：已暂停（aifight resume 恢复）");
-    expect(text).toMatch(/游戏\s+texas_holdem, coup/);
+    // U8b: game ids never surface raw in a human screen — same vocabulary as
+    // the panel, the pickers and the Telegram companion (`aifight status
+    // --json` below keeps the raw ids).
+    expect(text).toMatch(/游戏\s+德州扑克、政变/);
     expect(text).toContain("此处不显示任何密钥。");
     // And the --json twin is unaffected (covered by cli-pause-resume, but
     // the locale must not leak into it either).
@@ -484,5 +528,127 @@ describe("aifight status in zh", () => {
       fetchImpl: statusFetch(),
     });
     expect(json.join("")).not.toContain("状态");
+  });
+});
+
+// ── challenge list rows in zh (D3) ───────────────────────────────────
+// U8b translated the titles and notes but left the ROW vocabulary in English,
+// so a Chinese screen read "政变 · hosted by you · 2 of 4 seats taken". Every
+// inline word now comes from the dictionaries.
+
+describe("challenge list rows in zh", () => {
+  const ME = "00000000-0000-4000-8000-000000000001";
+
+  /** Every row shape the list can render, one of each. Fractional offsets
+   *  (90.5 / 41.5 min) keep the floor-to-minutes render stable regardless of
+   *  the milliseconds between fixture build and render. */
+  function listFetch(duels: readonly Record<string, unknown>[]): typeof fetch {
+    return (async (url: unknown) => {
+      if (String(url).endsWith("/api/agents/me/challenges")) {
+        return new Response(JSON.stringify({ count: duels.length, duels }), { status: 200 });
+      }
+      return new Response("unexpected", { status: 500 });
+    }) as unknown as typeof fetch;
+  }
+
+  async function listInZh(duels: readonly Record<string, unknown>[]): Promise<string> {
+    seedBridge({ locale: "zh" });
+    const out: string[] = [];
+    const code = await run(["challenge", "list"], {
+      stdout: (s) => out.push(s),
+      stderr: (s) => out.push(s),
+      fetchImpl: listFetch(duels),
+    });
+    expect(code).toBe(0);
+    return out.join("");
+  }
+
+  const inNinetyMinutes = (): string => new Date(Date.now() + 90.5 * 60_000).toISOString();
+  const inFortyMinutes = (): string => new Date(Date.now() + 41.5 * 60_000).toISOString();
+
+  const ALL_ROWS: readonly Record<string, unknown>[] = [
+    // Active: one row per status branch.
+    { id: "a1", game: "coup", status: "pending", host_agent_id: ME,
+      max_players: 4, seated_count: 2, expires_at: inNinetyMinutes() },
+    { id: "a2", game: "texas_holdem", status: "pending", host_agent_id: ME,
+      max_players: 2, expires_at: inFortyMinutes() },
+    { id: "a3", game: "liars_dice", status: "pending", host_agent_id: "agent-9", max_players: 2 },
+    { id: "a4", game: "coup", status: "accepted", host_agent_id: ME, max_players: 3, seated_count: 3 },
+    { id: "a5", game: "texas_holdem", status: "accepted", host_agent_id: "agent-9",
+      host_agent_name: "Rival", max_players: 2 },
+    { id: "a6", game: "liars_dice", status: "waiting_online", host_agent_id: ME,
+      guest_agent_name: "Nova", max_players: 2 },
+    { id: "a7", game: "texas_holdem", status: "in_match", host_agent_id: "agent-9",
+      host_agent_name: "Rival", max_players: 2, match_id: "m-7" },
+    // History (HISTORY_SHOWN caps at 5 — three keeps every row visible).
+    { id: "h1", game: "liars_dice", status: "finished", host_agent_id: ME, max_players: 2 },
+    { id: "h2", game: "coup", status: "expired", host_agent_id: ME, max_players: 2 },
+    { id: "h3", game: "texas_holdem", status: "cancelled", host_agent_id: "agent-9",
+      host_agent_name: "Rival", max_players: 2 },
+  ];
+
+  it("renders every status, opponent and expiry word in Chinese", async () => {
+    const text = await listInZh(ALL_ROWS);
+    for (const line of [
+      "政变 · 你发起的 · 已入座 2/4 · 1 小时 30 分后过期",
+      "德州扑克 · 你发起的 · 等人应战 · 41 分后过期",
+      "骗子骰 · 你接受的 · 等待中",
+      "政变 · 你发起的 · 满座 — 等所有人上线就开局",
+      "德州扑克 · 对阵 Rival · 已应战 — 即将开局",
+      "骗子骰 · 对阵 Nova · 等双方都上线",
+      "德州扑克 · 对阵 Rival · 对局进行中",
+      "骗子骰 · 你发起的 · 已结束",
+      "政变 · 你发起的 · 已过期",
+      "德州扑克 · 对阵 Rival · 已取消",
+    ]) {
+      expect(text, line).toContain(line);
+    }
+    expect(text).toContain("进行中（7）");
+    expect(text).toContain("最近（3 场里的 3 场）");
+  });
+
+  it("leaves no English status word behind on a Chinese screen", async () => {
+    const text = await listInZh(ALL_ROWS);
+    for (const english of [
+      "playing now", "expires", "hosted by you", "accepted by you", "seats taken",
+      "waiting", "table full", "starting", "finished", "expired", "cancelled", "vs ",
+    ]) {
+      expect(text, english).not.toContain(english);
+    }
+  });
+
+  it("a match in progress hides the countdown, and no expiry hides it too", async () => {
+    const text = await listInZh([
+      { id: "a1", game: "coup", status: "in_match", host_agent_id: "agent-9",
+        host_agent_name: "Rival", max_players: 2, expires_at: inNinetyMinutes() },
+      { id: "a2", game: "coup", status: "pending", host_agent_id: ME, max_players: 2 },
+    ]);
+    expect(text).toContain("政变 · 对阵 Rival · 对局进行中");
+    expect(text).not.toContain("后过期");
+  });
+
+  it("an unknown server status prints raw rather than blanking the row", async () => {
+    const text = await listInZh([
+      { id: "h1", game: "coup", status: "abandoned", host_agent_id: ME, max_players: 2 },
+    ]);
+    expect(text).toContain("政变 · 你发起的 · abandoned");
+  });
+
+  it("--json is byte-identical in zh (rows never touch the dictionaries)", async () => {
+    const raw = { count: 1, duels: [ALL_ROWS[0]] };
+    const capture = async (locale: string): Promise<string> => {
+      seedBridge({ locale });
+      const out: string[] = [];
+      const code = await run(["challenge", "list", "--json"], {
+        stdout: (s) => out.push(s),
+        stderr: () => undefined,
+        fetchImpl: listFetch(raw.duels as Record<string, unknown>[]),
+      });
+      expect(code).toBe(0);
+      return out.join("");
+    };
+    const zhJson = await capture("zh");
+    expect(zhJson).toBe(await capture("en"));
+    expect(JSON.parse(zhJson)).toEqual(raw);
   });
 });

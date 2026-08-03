@@ -79,10 +79,22 @@ export interface BridgeConfig {
    * without a restart). Manual matches and challenges are unaffected.
    */
   readonly matchingPaused?: boolean;
-  /** Minutes the bridge waits after declaring standby before it falls back to
-   *  the legacy self-join (random enabled game). Default 5. 0 = self-join
-   *  immediately at the connect edge (the pre-R2 behavior, kept as an escape
-   *  hatch). */
+  /**
+   * The legacy self-join escape hatch (U8a, owner ruling 2026-08-03). What
+   * matters is whether this field is SET, not how big it is:
+   *   - UNSET (the default, and what nearly every install has): the bridge
+   *     declares its standby set and lets the platform assign a game. It
+   *     NEVER picks a game by itself; it just re-declares every few minutes
+   *     while it waits.
+   *   - 0: skip standby entirely and self-join a random enabled game right at
+   *     the connect edge (the full pre-R2 behavior).
+   *   - N > 0: declare first, then self-join a random enabled game after N
+   *     quiet minutes.
+   * A stored value outside 0-120 fails this config's shape check (the file is
+   * then unreadable, not silently reinterpreted); the runner additionally
+   * treats any non-finite/negative in-memory value as unset rather than
+   * picking a game for the user.
+   */
   readonly standbyFallbackJoinMinutes?: number;
   /**
    * CLI display language ("en" default, "zh" 中文). Display-only: the bridge

@@ -89,29 +89,30 @@ describe("composeMenuStatusLines", () => {
       data(),
       data({ claimed: false }),
       data({ paused: true }),
-      data({ updateVersion: "0.2.0-beta.11" }),
+      data({ updateVersion: "0.2.0-beta.12" }),
       data({ dailyCap: undefined }),
       data({ matching: { state: "not_running" } }),
       data({ matching: { state: "unknown" } }),
       data({ matching: { state: "queued", games: ["coup"] } }),
+      data({ matching: { state: "standby", games: ["coup", "liars_dice"] } }),
     ]) {
       expect(composeMenuStatusLines(d)).toHaveLength(3);
     }
   });
 
   it("styles: name bold, ✓ green, ● green when online, update hint yellow", () => {
-    const lines = composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.11" }));
+    const lines = composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.12" }));
     const styleOf = (text: string): string | undefined =>
       lines.flat().find((s) => s.text === text)?.style;
     expect(styleOf("Phantom Maverick")).toBe("bold");
     expect(styleOf("✓ claimed")).toBe("green");
     expect(styleOf("● online")).toBe("green");
-    expect(styleOf("↑ 0.2.0-beta.11")).toBe("yellow");
+    expect(styleOf("↑ 0.2.0-beta.12")).toBe("yellow");
   });
 
   it("puts the update hint before the games list, so truncation never eats the version", () => {
-    const [, , l3] = plain(composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.11" })));
-    expect(l3).toBe("claude-opus-4-6 · ↑ 0.2.0-beta.11 · games: Texas Hold'em, Coup");
+    const [, , l3] = plain(composeMenuStatusLines(data({ updateVersion: "0.2.0-beta.12" })));
+    expect(l3).toBe("claude-opus-4-6 · ↑ 0.2.0-beta.12 · games: Texas Hold'em, Coup");
   });
 
   it("unclaimed warns in yellow on line 1", () => {
@@ -184,6 +185,32 @@ describe("matching line state machine", () => {
     expect(lines[1]).toEqual([
       { text: "matching: ⚔ queued · Texas Hold'em, Coup", style: "cyan" },
     ]);
+  });
+
+  // U8a: the state a DEFAULT bridge sits in all day — declared to the
+  // platform, waiting to be assigned. Cyan like queued (something can happen
+  // any moment), and deliberately game-free: the platform picks, so naming a
+  // game here would be the old lie in new words.
+  it("standing by reads as an active state in cyan, with no game named", () => {
+    const lines = composeMenuStatusLines(
+      data({ matching: { state: "standby", games: ["texas_holdem", "coup"] } }),
+    );
+    expect(lines[1]).toEqual([
+      { text: "matching: standing by · platform assigns the game", style: "cyan" },
+    ]);
+    expect(plain(composeMenuStatusLines(
+      data({ matching: { state: "standby", games: ["coup"] } }),
+      "zh",
+    ))[1]).toBe("匹配：待命 · 游戏由平台安排");
+  });
+
+  it("paused and unclaimed still beat standing by", () => {
+    expect(plain(composeMenuStatusLines(
+      data({ paused: true, matching: { state: "standby", games: ["coup"] } }),
+    ))[1]).toContain("matching: ⏸ paused");
+    expect(plain(composeMenuStatusLines(
+      data({ claimed: false, matching: { state: "standby", games: ["coup"] } }),
+    ))[1]).toContain("claim your agent first");
   });
 
   it("idle (bridge up, nothing queued) says so with the cap, dim", () => {
@@ -283,7 +310,7 @@ describe("createMenuStatusBox", () => {
   it("enriches with the remote answers: server name, claim state, update hint", async () => {
     seedBridge();
     const box = createMenuStatusBox({
-      fetchImpl: remoteFetch({ claimed: true, name: "Server Name", npmLatest: "0.2.0-beta.11" }),
+      fetchImpl: remoteFetch({ claimed: true, name: "Server Name", npmLatest: "0.2.0-beta.12" }),
       seatHolderPid: () => undefined, // no local bridge process
     })!;
     const refresh = box.refreshed();
@@ -294,9 +321,9 @@ describe("createMenuStatusBox", () => {
     expect(l1).toContain("✓ claimed");
     expect(l1).toContain("○ offline");
     expect(l2).toBe("matching: bridge not running · auto 2/day");
-    expect(l3).toContain("↑ 0.2.0-beta.11");
+    expect(l3).toContain("↑ 0.2.0-beta.12");
     // The menu's Update item reads the same fact.
-    expect(box.updateVersion?.()).toBe("0.2.0-beta.11");
+    expect(box.updateVersion?.()).toBe("0.2.0-beta.12");
     // Settled: no second repaint hook.
     expect(box.refreshed()).toBeUndefined();
   });
@@ -476,6 +503,56 @@ describe("default queue probe (control API)", () => {
     const box = createMenuStatusBox({ fetchImpl, seatHolderPid: () => 4242 })!;
     await box.refreshed();
     expect(plain(box.lines())[1]).toBe("matching: ⚔ queued · Coup");
+  });
+
+  // U8a: the same read now also carries `state.standby.games`. A queue entry
+  // is a concrete commitment and wins; standby alone is the default bridge's
+  // resting state; neither present is plain idle.
+  it("reads state.standby.games when nothing is queued", async () => {
+    seedBridge();
+    seedDaemonFiles(tmpDir!);
+    const agentsBody = (agents: unknown): typeof fetch => (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/v1/agents")) {
+        return new Response(JSON.stringify({ agents }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const standby = createMenuStatusBox({
+      fetchImpl: agentsBody([
+        { name: "a", state: { phase: "idle", standby: { games: ["texas_holdem", "coup"] } } },
+      ]),
+      seatHolderPid: () => 4242,
+    })!;
+    await standby.refreshed();
+    expect(plain(standby.lines())[1]).toBe("matching: standing by · platform assigns the game");
+
+    // A queue entry alongside a standby declaration (the legacy self-join
+    // posture) still reports the concrete queue.
+    const both = createMenuStatusBox({
+      fetchImpl: agentsBody([
+        {
+          name: "a",
+          state: {
+            phase: "queued",
+            queue: { game: "coup", mode: "ranked" },
+            standby: { games: ["texas_holdem", "coup"] },
+          },
+        },
+      ]),
+      seatHolderPid: () => 4242,
+    })!;
+    await both.refreshed();
+    expect(plain(both.lines())[1]).toBe("matching: ⚔ queued · Coup");
+
+    // An older bridge (no standby field at all) is plain idle, as before.
+    const legacy = createMenuStatusBox({
+      fetchImpl: agentsBody([{ name: "a", state: { phase: "idle" } }]),
+      seatHolderPid: () => 4242,
+    })!;
+    await legacy.refreshed();
+    expect(plain(legacy.lines())[1]).toBe("matching: idle · auto 2/day");
   });
 
   it("an unreachable control API degrades to config truth", async () => {

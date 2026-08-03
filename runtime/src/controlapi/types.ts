@@ -30,6 +30,14 @@ export interface ControlJoinQueueOptions {
   readonly count?: number;
 }
 
+/** U8d: what a resume-matching command actually did. Mirrors the runner's
+ *  ResumeMatchingResult, widened to plain strings because this layer never
+ *  imports the bridge's game union. */
+export type ControlResumeMatchingResult =
+  | { readonly mode: "standby"; readonly games: readonly string[] }
+  | { readonly mode: "joined"; readonly game: string }
+  | { readonly mode: "cap_off" };
+
 export interface ControlRouterTarget {
   listAgents(): readonly AgentInstanceSnapshot[];
   /** Throws RouterAgentNotFoundError when no agent matches. Handler
@@ -37,6 +45,12 @@ export interface ControlRouterTarget {
    *  no instanceof) and maps to HTTP 404. Other RouterError kinds map
    *  to 500 internal_error. */
   getAgent(selector: { readonly name: string }): ControlAgentHandle;
+  /** U8a: which games this agent is standing by for, i.e. the pool the
+   *  platform's supply sweep may assign it. OPTIONAL — a router without the
+   *  notion (or an agent that is not standing by) returns undefined/null and
+   *  the read endpoints simply omit `state.standby`. Never throws for a
+   *  missing agent; unknown is null. */
+  standbyGames?(selector: { readonly name: string }): readonly string[] | null | undefined;
   joinQueue(
     selector: { readonly name: string },
     game: string,
@@ -44,6 +58,13 @@ export interface ControlRouterTarget {
     opts?: ControlJoinQueueOptions,
   ): void;
   leaveQueue(selector: { readonly name: string }): void;
+  /** U8d: resume automatic matching by POSTURE — the bridge re-declares
+   *  standby (default) or self-joins (legacy escape hatch); it never picks a
+   *  game on the caller's behalf. OPTIONAL, like standbyGames: a router
+   *  without it makes the endpoint answer 501 not_implemented, which the CLI
+   *  degrades exactly like the 404 an older host's missing route produces.
+   *  Throws RouterAgentNotFoundError for an unknown agent (→ 404). */
+  resumeMatching?(selector: { readonly name: string }): ControlResumeMatchingResult;
 }
 
 // ─── Logging ──────────────────────────────────────────────────────────────

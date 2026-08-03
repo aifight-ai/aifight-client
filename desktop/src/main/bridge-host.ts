@@ -51,7 +51,7 @@ import path from "node:path";
 // file). bridge/update-check itself is import-free, so it joins the safe
 // static surface (config.ts / runtime-files-write) without the native trap.
 import desktopPkg from "../../package.json";
-import type { BridgeRunner as BridgeRunnerInstance } from "@aifight/aifight/bridge/runner";
+import type { BridgeRunner as BridgeRunnerInstance, ResumeMatchingResult } from "@aifight/aifight/bridge/runner";
 import type { BridgeDecisionTrace } from "@aifight/aifight/bridge/provider";
 import type { ServerMessageEnvelope } from "@aifight/aifight/wsclient/frame-handler";
 import type { AgentInstanceSnapshot } from "@aifight/aifight/agents/agent";
@@ -957,6 +957,19 @@ export class BridgeHost {
         onLog: (event) => {
           this.#noteActivity();
           if (event.code === "agent.version_mismatch") this.#closeCauseVersion = true;
+          // U8a/D2: the standby declaration is fire-and-forget — standbyGames()
+          // only flips when the platform answers, well after the connected-edge
+          // status emit. These three codes are the runner's own "the answer
+          // landed" signals (accepted, re-declared, refused), so re-project the
+          // status on each: without this the 待命 row appears only at the next
+          // unrelated emit, or never.
+          if (
+            event.code === "bridge.standby_declared" ||
+            event.code === "bridge.standby_redeclared" ||
+            event.code === "bridge.standby_declare_failed"
+          ) {
+            this.#reemitStatus();
+          }
           // Phase/counter narration is GONE (重连重设计 2026-07-25 P4): the pill
           // used to flip to "starting" on attempt events and only flip back on a
           // welcome frame that — as the redesign audit proved — never reaches
@@ -1287,33 +1300,72 @@ export class BridgeHost {
   }
 
   /**
-   * Enter automatic matchmaking: a single non-one-shot queue join. The server then
-   * auto-requeues + matches us up to the daily cap at its own pace (the FIRST join
-   * must come from us — internal/matchmaking/requeue.go). Gated on the SERVER's
-   * current policy (the source of truth, reflecting Dashboard edits): join only
-   * when a FETCHED daily cap is > 0 — a failed policy read (null) skips this
-   * round rather than enrolling blind (审查 #5; the next connected edge retries).
-   * No-op when offline. Never throws.
+   * The games this bridge is standing by for, straight from the runner (U8a) —
+   * an availability DECLARATION the platform accepted, not a queue entry. Read
+   * live on every status emit rather than mirrored into a field, so the host
+   * can never disagree with the runner about it; null whenever no runner exists
+   * (stopped, seat refused, still importing the engine).
    */
-  async joinAutoMatch(): Promise<void> {
-    if (this.#runner === null) return;
-    const policy = await this.getAgentPolicy();
-    // The daily cap is the token-burn safety valve; enrolling on a failed read
-    // could blow straight past a cap the user set to 0.
-    if (policy === null) {
-      this.#callbacks.onLog?.({
-        level: "warning",
-        code: "desktop.automatch_policy_unknown",
-        message: "Auto-match skipped this round: the agent policy could not be read from the server; the next connect retries.",
-      });
+  #standbyNow(): readonly string[] | null {
+    return this.#runner?.standbyGames() ?? null;
+  }
+
+  /**
+   * Resume automatic matchmaking by restoring the POSTURE (D1 — U8d, owner
+   * ruling 2026-08-03). This used to be joinAutoMatch(): read the server cap,
+   * pick a game locally (pickAutoGame) and queue for it — the last place a
+   * client still chose a game on the user's behalf, which the matchmaking
+   * ruling forbids. The runner owns the decision now, identically for the CLI,
+   * Telegram and this button:
+   *   - default posture → re-declare standby + re-arm the timer, queue nothing;
+   *   - legacy posture (`standbyFallbackJoinMinutes` set) → the old self-join;
+   *   - daily cap 0 → nothing to resume.
+   * Every outcome gets its own desktop log line (the runner's own
+   * bridge.matching_resumed is not shown in this app) and a status re-emit:
+   * "standby" only DECLARED a pool, so standbyGames() flips a moment later
+   * when the platform answers — the standby log codes in start() re-emit
+   * again then. Never throws.
+   */
+  #resumeMatching(): void {
+    const runner = this.#runner;
+    if (runner === null) return;
+    let result: ResumeMatchingResult;
+    try {
+      result = runner.resumeMatching();
+    } catch (cause) {
+      // The runner exists but has no connected agent (start still in flight, or
+      // a teardown raced us). The pause flag is already cleared, so the next
+      // connect edge declares standby on its own.
+      this.#callbacks.onLog?.({ level: "warning", code: "desktop.resume_failed", message: describeError(cause) });
       return;
     }
-    if (policy.maxGamesPerDay <= 0) return; // auto-match disabled server-side
-    try {
-      this.#runner.joinQueue(pickAutoGame(this.#status.config?.autoGames, this.liveGamesSync()) as Game, "ranked");
-    } catch (cause) {
-      this.#callbacks.onLog?.({ level: "warning", code: "desktop.automatch_failed", message: describeError(cause) });
+    switch (result.mode) {
+      case "standby":
+        this.#callbacks.onLog?.({
+          level: "info",
+          code: "desktop.matching_resumed",
+          message: `Matching resumed — standing by for ${result.games.join(", ")}; the platform assigns the game (no self-join).`,
+        });
+        break;
+      case "joined":
+        this.#callbacks.onLog?.({
+          level: "info",
+          code: "desktop.matching_resumed",
+          message: `Matching resumed — re-joined the ${result.game} queue (legacy self-join posture).`,
+        });
+        break;
+      case "cap_off":
+        this.#callbacks.onLog?.({
+          level: "info",
+          code: "desktop.matching_resumed",
+          message: "Matching resumed, but the daily cap is 0 — nothing automatic to re-enter until the cap is raised.",
+        });
+        break;
     }
+    // Re-emit whatever the runner now believes: a declared pool lights the
+    // standby row, and "joined"/"cap_off" clear anything the pre-pause
+    // declaration left behind.
+    this.#reemitStatus();
   }
   /** P4 projection applier — THE single writer of phase/uptime/counter while a
    *  runner is alive. Snapshots are seq-guarded so a stale/reordered one can
@@ -1345,11 +1397,15 @@ export class BridgeHost {
         this.#connectedAt = snap.connectedAt ?? Date.now();
         this.#setStatus({ phase: "running", config: this.#status.config, message: undefined });
         // Enrollment moved into the shared runner (R2, 2026-07-31): every
-        // connected edge now DECLARES standby games and arms the self-join
-        // fallback there, so the platform can assign the game. The desktop's
-        // own join here would double-enroll (the old two-path first-connect
-        // bug); it survives only behind the explicit resume button
-        // (setMatchingPaused(false) → joinAutoMatch).
+        // connected edge now DECLARES standby games there, so the platform can
+        // assign the game. U8a (2026-08-03) made that declaration the whole
+        // story in the default posture — the runner's standby timer only
+        // RE-declares, and self-joins a game only when the user set
+        // `standbyFallbackJoinMinutes` explicitly. The desktop's own join here
+        // would double-enroll (the old two-path first-connect bug), and as of
+        // D1 it is gone entirely: the resume button goes through the SAME
+        // runner posture (setMatchingPaused(false) → #resumeMatching), so this
+        // host no longer joins a queue on any automatic path.
         break;
       }
       case "connecting":
@@ -1409,8 +1465,9 @@ export class BridgeHost {
 
   /**
    * Pause/resume automatic matchmaking WITHOUT going offline. Pause = leave the
-   * queue (the server stops auto-requeuing us); resume = re-enter the pool (gated
-   * on the server cap). Manual matches + challenges are unaffected.
+   * queue (the server stops auto-requeuing us); resume = go back to STANDING BY
+   * (D1 — the runner's posture decides; this host never picks a game). Manual
+   * matches + challenges are unaffected.
    *
    * PERSISTED across launches (owner ruling, 连接审计 #13): pausing is a spend
    * decision, so it must survive a relaunch. The truth lives HERE, in the main
@@ -1439,7 +1496,19 @@ export class BridgeHost {
       this.#callbacks.onLog?.({ level: "warning", code: "desktop.pause_persist_failed", message: describeError(cause) });
     }
     this.#reemitStatus();
-    if (this.#runner === null) return;
+    if (this.#runner === null) {
+      // No bridge to talk to: the flag alone IS the resume (D1). The next
+      // connect edge reads matchingPaused fresh from bridge.json and declares
+      // standby there — nothing to re-join, and nothing to apologise for.
+      if (!paused) {
+        this.#callbacks.onLog?.({
+          level: "info",
+          code: "desktop.resume_pending",
+          message: "Matching resumed — the bridge stands by the next time it connects.",
+        });
+      }
+      return;
+    }
     if (paused) {
       // A reconnect while paused must NOT sneak the agent back into the pool —
       // the connected-edge enrollment honours this flag.
@@ -1449,7 +1518,8 @@ export class BridgeHost {
         this.#callbacks.onLog?.({ level: "warning", code: "desktop.pause_failed", message: describeError(cause) });
       }
     } else {
-      await this.joinAutoMatch();
+      // D1: restore the POSTURE through the runner — never pick a game here.
+      this.#resumeMatching();
     }
   }
 
@@ -1605,10 +1675,10 @@ export class BridgeHost {
    * platform (R2 orchestration) so the running declaration catches up NOW
    * rather than at the next reconnect; a PATCH failure is logged, never
    * surfaced — the local write already succeeded and the next connect edge
-   * re-declares anyway. Desktop's own pickAutoGame reads the fresh list via
-   * the readConfigSummary() push. Empty selection is rejected here too (the
-   * renderer guards first): "no games at all" is what pause / daily-cap-0 are
-   * for, mirroring the CLI picker's rule.
+   * re-declares anyway. Nothing on this side picks a game from the list any
+   * more (D1) — it is purely the standby pool. Empty selection is rejected
+   * here too (the renderer guards first): "no games at all" is what pause /
+   * daily-cap-0 are for, mirroring the CLI picker's rule.
    */
   async setAutoGames(games: unknown): Promise<{ ok: boolean; error?: string }> {
     const live = this.liveGamesSync();
@@ -1864,9 +1934,9 @@ export class BridgeHost {
     // unless the patch re-supplies them: an inherited code would relabel a later,
     // unrelated failure with the wrong translated text (every other call site
     // clears `message` explicitly but knows nothing about codes).
-    // `queued`/`conn`/`matchingPaused` are NEVER patched by callers — they mirror
-    // the host's own fields on every emit, so no call site can carry a stale copy
-    // forward.
+    // `queued`/`conn`/`matchingPaused`/`standby` are NEVER patched by callers —
+    // they mirror the host's own fields (and, for standby, the runner's live
+    // belief) on every emit, so no call site can carry a stale copy forward.
     this.#status = {
       ...this.#status,
       code: undefined,
@@ -1875,6 +1945,7 @@ export class BridgeHost {
       queued: this.#queued,
       conn: this.#connInfo,
       matchingPaused: this.#matchingPaused,
+      standby: this.#standbyNow(),
     };
     this.#callbacks.onStatus?.(this.#status);
   }
@@ -1921,21 +1992,13 @@ function describeError(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-/**
- * Pick which game to enter automatic matchmaking for: the agent's configured
- * autoGames filtered to the platform's CURRENT live list, else any live game,
- * chosen at random. The live list follows the backend (welcome frame /
- * /api/games via the host cache) — never a hardcoded copy. The server's
- * auto-requeue keeps re-joining this game after each match. Exported for tests.
- */
-export function pickAutoGame(
-  autoGames: readonly string[] | undefined,
-  liveGames: readonly string[],
-): string {
-  const configured = (autoGames ?? []).filter((g) => liveGames.includes(g));
-  const pool = configured.length > 0 ? configured : liveGames.length > 0 ? liveGames : FALLBACK_LIVE_GAMES;
-  return pool[Math.floor(Math.random() * pool.length)]!;
-}
+// pickAutoGame is GONE (D1 — U8d, owner ruling 2026-08-03). It existed for one
+// caller, joinAutoMatch(), and its whole job was choosing a game on the user's
+// behalf when they pressed 恢复匹配 — the last client-side game pick left after
+// U8a cleared the connect edge. Resuming now restores the POSTURE through
+// BridgeRunner.resumeMatching() (see #resumeMatching): the platform assigns the
+// game. Do not reintroduce a local picker for an automatic path; the manual
+// "play one now" flow always names its game explicitly and is unaffected.
 
 function toInt(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : 0;

@@ -440,36 +440,49 @@ function printActionError(e: unknown, env: HandlerEnv): void {
 }
 
 export async function configureDailyInteractive(io: PromptOnlyIO, env: HandlerEnv): Promise<void> {
+  const loc = env.locale?.() ?? resolveLocale();
+  const out = createOutput();
   let current: number | undefined;
   try {
     current = readBridgeConfig().autoDailyLimit;
   } catch {
-    env.stdout("  No agent on this machine yet. Run `aifight setup` first, then set a daily cap.\n");
+    env.stdout(`  ${t(loc, "daily.no_agent")}\n`);
     return;
   }
-  const shown = current === undefined ? "server default" : String(current);
+  const shown = current === undefined ? t(loc, "daily.value.server_default") : String(current);
+  // P7 (U8b): the question used to arrive naked — an English-only bracket in
+  // front of a number whose meaning ("per day" from WHEN? does a manual match
+  // spend it?) was nowhere on screen. The three facts, verified against the
+  // code that enforces them:
+  //   * only the bridge's OWN automatic joins are charged — `aifight start`
+  //     sends one_shot:true, which skips the play-rate gate and is exempt from
+  //     the counter (hub/policy.go shouldMatchIncrementCounter / CheckPlayRateLimit),
+  //     and friendly challenges are exempt by mode;
+  //   * the platform's window is a ROLLING 24 hours from the first charged
+  //     match, not midnight (internal/auth `INTERVAL '24 hours'`);
+  //   * 0 turns automatic matching off entirely.
+  env.stdout(`${out.section(t(loc, "daily.title"))}\n`);
+  env.stdout(`${out.note(t(loc, "daily.intro.scope"))}\n`);
+  env.stdout(`${out.note(t(loc, "daily.intro.window", { max: SETUP_WIZARD_CAP_MAX }))}\n`);
   // Fool-proof (V3): an invalid answer is explained and the prompt RE-ASKS —
   // the current value stays in the bracket; Enter keeps it, q/Esc cancels.
   // U2 (统一交互规范 P3): that hand-rolled loop is now the shared helper.
-  // The bracket content is passed AS the default so the rendered line stays
-  // byte-for-byte what it has always been —
-  // `  Automatic ranked matches per day [keep 5, 0-100, 0 = off]: `.
   const answer = await promptValidatedDefault(
     env,
-    "  Automatic ranked matches per day",
-    `keep ${shown}, 0-${SETUP_WIZARD_CAP_MAX}, 0 = off`,
+    `  ${t(loc, "prompt.daily.question", { max: SETUP_WIZARD_CAP_MAX })}`,
+    t(loc, "prompt.daily.keep", { value: shown }),
     (value) =>
       /^\d+$/.test(value) && Number.parseInt(value, 10) <= SETUP_WIZARD_CAP_MAX
         ? null
-        : createAnsi().yellow(`  Enter a whole number between 0 and ${SETUP_WIZARD_CAP_MAX}.`),
+        : createAnsi().yellow(t(loc, "prompt.daily.invalid", { max: SETUP_WIZARD_CAP_MAX })),
     (_env, question) => io.promptLine(question),
   );
   if (answer.kind === "keep") {
-    env.stdout(`  Kept ${shown}.\n`);
+    env.stdout(`  ${t(loc, "prompt.keep", { value: shown })}\n`);
     return;
   }
   if (answer.kind === "cancel") {
-    env.stdout("  No changes made.\n");
+    env.stdout(`  ${t(loc, "prompt.cancel")}\n`);
     return;
   }
   // Delegate to `set daily`: it owns the >10 confirmation and the platform sync.
@@ -494,31 +507,6 @@ export async function configureGamesInteractive(io: PromptOnlyIO, env: HandlerEn
   }
   // Delegate to `set game`: it owns validation and the platform sync.
   await runBridgeSet({ positional: ["game", raw], flags: {}, jsonMode: false }, env);
-}
-
-function showClaim(env: HandlerEnv): void {
-  let config: ReturnType<typeof readBridgeConfig>;
-  try {
-    config = readBridgeConfig();
-  } catch {
-    env.stdout("  No agent on this machine yet. Run `aifight setup` first, then come back to claim it.\n");
-    return;
-  }
-  if (!config.claimUrl) {
-    env.stdout("  No claim URL on file (this agent may already be claimed). Manage it in the Dashboard.\n");
-    return;
-  }
-  env.stdout("\n  Open this link to claim your agent — claiming unlocks play; rename any time with `aifight rename`:\n");
-  env.stdout(`  ${config.claimUrl}\n`);
-}
-
-function showStyle(_slug: string, env: HandlerEnv): void {
-  env.stdout("\n  Your agent's strategy lives in local Markdown files you can edit:\n");
-  env.stdout("    `aifight strategy init`  creates strategy/global.md (+ per-game files) you can fill in,\n");
-  env.stdout("    `aifight strategy path`  prints exactly where each file lives.\n");
-  env.stdout("  Write plain guidance there — how your agent reasons, weighs risk, and reads opponents.\n");
-  env.stdout("  global.md applies to every game; strategy/games/<game>.md layers tactics on top.\n");
-  env.stdout("  Templates & how it works: https://aifight.ai/how-to-win#strategy\n");
 }
 
 /** One row in the interactive profile manager's list. */

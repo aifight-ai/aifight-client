@@ -103,4 +103,29 @@ describe("StyleHexagon render contract (§6.0)", () => {
     expect(html.match(/<polygon/g)?.length).toBe(5); // grid only
     expect(html).not.toContain('font-weight="600"'); // no vertex numbers in the dark
   });
+
+  it("softens calibrating axes (v2 §4.4): hollow vertex dot, 70% value opacity, calibrating hover copy", () => {
+    // Hexagon v2 first-match shape: every axis scored, most still calibrating.
+    const calibrating: HexagonData = {
+      enabled: true,
+      board: "community",
+      dimensions: { bluff: 52, aggression: 61, execution: 55, survival: 52, insight: 50, versatility: 31 },
+      samples: { bluff: 8, aggression: 56, execution: 3, survival: 3, insight: 8, versatility: 3 },
+      calibrating: { bluff: true, aggression: false, execution: true, survival: true, insight: true, versatility: true },
+      rates: { bluff: 0.62, aggression: 0.27, insight: 0.62 },
+    };
+    const html = renderToStaticMarkup(createElement(StyleHexagon, { data: calibrating, t }));
+    // Five calibrating vertices go hollow (background fill + orange ring);
+    // the one settled axis (aggression) keeps its solid orange dot.
+    expect(html.match(/fill="var\(--bg, #ffffff\)"/g)?.length).toBe(5);
+    expect(html.match(/stroke-width="1.4"/g)?.length).toBe(5);
+    // Calibrating vertex numbers render at 70% opacity; the settled one at full.
+    expect(html.match(/opacity="0.7"/g)?.length).toBe(5);
+    // Hover copy switches to the calibrating line, keeping the sample count.
+    expect(html).toContain("radar.calibrating");
+    // A settled axis still uses the plain sample line.
+    expect(html).toContain("radar.sample");
+    // All six axes are lit — no dashed axis lines anywhere.
+    expect(html).not.toContain("stroke-dasharray");
+  });
 });

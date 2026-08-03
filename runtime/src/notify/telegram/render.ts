@@ -195,6 +195,12 @@ const STRINGS = {
   // placeholder would be a claim of its own.
   status_match_queued: { zh: "匹配：⚔ 排队中 · {game}", en: "matching: ⚔ queued · {game}" },
   status_match_idle: { zh: "匹配：空闲", en: "matching: idle" },
+  // U8a: online, declared to the platform, waiting for it to assign a game —
+  // the state between "queued" and "idle" that used to read as plain idle.
+  status_match_standby: {
+    zh: "匹配：待命 · 游戏由平台安排",
+    en: "matching: standing by · platform assigns the game",
+  },
   status_match_paused: { zh: "匹配：⏸ 已暂停", en: "matching: ⏸ paused" },
   status_model: { zh: "公开模型：{model}", en: "Public model: {model}" },
   status_games: { zh: "参赛游戏：{games}", en: "Games: {games}" },
@@ -248,7 +254,13 @@ const STRINGS = {
   },
   play_started: { zh: "已排队：{game}。", en: "Queued: {game}." },
   play_paused: { zh: "已退出匹配队列。", en: "Left the matchmaking queue." },
-  play_resumed: { zh: "已重新加入匹配队列。", en: "Back in the matchmaking queue." },
+  // U8d: resuming no longer picks a game here — the bridge stands by and the
+  // platform assigns one. The other three cover the legacy self-join escape
+  // hatch, a cap of 0, and "no bridge answered, the flag alone will do it".
+  play_resumed: { zh: "已恢复自动匹配——待命中，游戏由平台安排。", en: "Automatic matching resumed — standing by; the platform picks the game." },
+  play_resumed_joined: { zh: "已恢复自动匹配——重新加入 {game} 队列。", en: "Automatic matching resumed — back in the {game} queue." },
+  play_resumed_cap_off: { zh: "已恢复自动匹配，但每日上限是 0（只手动开局）——去设置改上限。", en: "Automatic matching resumed, but the daily cap is 0 (manual only) — raise it in Settings." },
+  play_resumed_pending: { zh: "已恢复自动匹配——桥会在下次连接时重新待命。", en: "Automatic matching resumed — the bridge goes back on standby the next time it connects." },
 
   notify_title: { zh: "通知", en: "Notifications" },
   notify_results: { zh: "战果推送：{value}", en: "Match results: {value}" },

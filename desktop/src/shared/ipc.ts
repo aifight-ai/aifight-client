@@ -78,6 +78,16 @@ export interface BridgeStatus {
    */
   readonly queued?: { readonly game: string; readonly mode: string; readonly oneShot?: boolean } | null;
   /**
+   * U8a/D2: the games this bridge is currently STANDING BY for — the pool the
+   * platform's supply sweep may assign it, as accepted by the platform (mirrors
+   * BridgeRunner.standbyGames()). Standby is an availability DECLARATION, not a
+   * queue entry: `queued` is a concrete commitment and wins whenever both are
+   * set (same priority the CLI status box uses). Null/absent = not standing by
+   * — never declared, declaration refused, paused, daily cap 0, the legacy
+   * self-join posture, or no bridge running.
+   */
+  readonly standby?: readonly string[] | null;
+  /**
    * Live reconnect progress projected from the facade snapshot (连接审计 #8),
    * so the UI can say「重连中 · 第 N 次 · Xs 后」instead of a frozen 连接中.
    */
@@ -753,10 +763,14 @@ export interface HexagonData {
   readonly enabled: boolean;
   readonly board?: string;
   readonly game?: string;
-  /** 0-100 per axis; null below the sample gate ("still dark"). */
+  /** 0-100 per axis. Hexagon v2: every axis scores from the first match
+   *  (shrunk toward the 50 prior); null only on zero-match placeholders and
+   *  versatility in single-game views. */
   readonly dimensions?: Readonly<Record<string, number | null>>;
-  /** Per-axis sample denominators (powers the "N more to light up" copy). */
+  /** Per-axis sample denominators (powers the calibrating / unlock copy). */
   readonly samples?: Readonly<Record<string, number>>;
+  /** Axes still below their calibration floor: scored but visually softened. */
+  readonly calibrating?: Readonly<Record<string, boolean>>;
   /** Lit rate-axes' core rates (bluff success / pressure share / call-out hit). */
   readonly rates?: Readonly<Record<string, number>>;
 }

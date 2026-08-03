@@ -11,7 +11,8 @@ import {
   rememberCreatedChallenge,
 } from "../../bridge/challenge-record";
 import { readBridgeConfig, type BridgeConfig } from "../../bridge/config";
-import { resolveLocale, t } from "../i18n";
+import { formatMinutes, gameLabel, resolveLocale, t, type Locale } from "../i18n";
+import { createOutput } from "../output";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, UsageError, expectArity } from "../shared";
 
@@ -93,37 +94,51 @@ export async function runBridgeChallenge(
     env.stdout(JSON.stringify(created.raw) + "\n");
     return 0;
   }
-  env.stdout("Friendly challenge created.\n\n");
-  env.stdout(`Game: ${game}\n`);
-  if (playerCount !== undefined && playerCount > 2) {
-    env.stdout(`Table size: ${playerCount} players (starts automatically when every seat is claimed)\n`);
+  // P7 (U8b): the confirmation used to be a flat `Label: value` wall with the
+  // raw game id in it. Same facts, styled kv block + the link on its own
+  // unstyled line.
+  const loc = env.locale?.() ?? resolveLocale();
+  const out = createOutput();
+  // The EFFECTIVE table size, not just the one that was typed: omitting the
+  // count on coup still opens a 3-seat table (the invite text and the local
+  // record have always used this number). The block used to branch on the
+  // typed count alone, so a default coup challenge claimed "Accepts: 1
+  // (accepted once)" for a table that needs two people to sit down.
+  const seats = playerCount ?? (game === "coup" ? 3 : 2);
+  const multi = seats > 2;
+  env.stdout(`${out.section(t(loc, "challenge.created.title"))}\n`);
+  for (const line of out.kvRows([
+    [t(loc, "challenge.created.game"), gameLabel(loc, game), "cyan"],
+    ...(multi
+      ? [[t(loc, "challenge.created.players"), t(loc, "challenge.created.players.value", { count: seats })] as const]
+      : []),
+    [t(loc, "challenge.created.rating"), t(loc, "challenge.created.rating.value"), "green"],
+    [
+      t(loc, "challenge.created.accepts"),
+      multi
+        ? t(loc, "challenge.created.accepts.seats", { count: seats - 1 })
+        : t(loc, "challenge.created.accepts.one"),
+    ],
+  ])) {
+    env.stdout(`${line}\n`);
   }
-  env.stdout("Rating impact: none\n");
-  if (playerCount !== undefined && playerCount > 2) {
-    env.stdout(`Accepts: ${playerCount - 1} (one per open seat)\n\n`);
-  } else {
-    env.stdout("Accepts: 1 (accepted once)\n\n");
-  }
-  env.stdout("Share this URL:\n");
-  env.stdout(`${created.joinUrl}\n\n`);
+  env.stdout(`${out.note(t(loc, "challenge.created.share"))}\n`);
+  env.stdout(`  ${created.joinUrl}\n\n`);
   {
     // A ready-to-forward invite (owner ask 2026-08-01), in the CLI's display
     // language — this is content the USER sends onward, not CLI chrome.
-    const loc = resolveLocale();
-    const count = playerCount ?? (game === "coup" ? 3 : 2);
-    const label = count > 2
-      ? t(loc, "challenge.invite.game_multi", { game: gameLabel(game), count })
-      : gameLabel(game);
+    const label = seats > 2
+      ? t(loc, "challenge.invite.game_multi", { game: gameLabel(loc, game), count: seats })
+      : gameLabel(loc, game);
     env.stdout(`${t(loc, "challenge.invite.header")}\n`);
     env.stdout("──\n");
     env.stdout(`${t(loc, "challenge.invite.text", { game: label, url: created.joinUrl })}\n`);
     env.stdout("──\n\n");
   }
-  env.stdout("This does not affect ratings or daily auto-play.\n");
   if (game === "texas_holdem" && (playerCount === undefined || playerCount === 2)) {
-    env.stdout("Texas Hold'em challenges start as a direct two-player friendly table; normal matchmaking still starts at four players.\n");
+    env.stdout(`${out.note(t(loc, "challenge.created.note.texas"))}\n`);
   }
-  env.stdout("Keep aifight.service running before the other side accepts. For temporary testing, run `aifight run` in another terminal.\n");
+  env.stdout(`${out.note(t(loc, "challenge.created.note.online"))}\n`);
   return 0;
 }
 
@@ -132,56 +147,48 @@ export async function runBridgeChallenge(
 const ACTIVE_STATUSES = new Set(["pending", "accepted", "waiting_online", "in_match"]);
 const HISTORY_SHOWN = 5;
 
-function gameLabel(game: string): string {
-  switch (game) {
-    case "texas_holdem": return "Texas Hold'em";
-    case "liars_dice": return "Liar's Dice";
-    case "coup": return "Coup";
-  }
-  return game;
-}
-
 /** One human line of status. The server's states, in user words. */
-function statusLabel(c: MyChallenge): string {
+function statusLabel(c: MyChallenge, loc: Locale): string {
   switch (c.status) {
     case "pending":
       if (c.maxPlayers > 2) {
-        return `${c.seatedCount ?? 1} of ${c.maxPlayers} seats taken`;
+        return t(loc, "challenge.status.seats", { seated: c.seatedCount ?? 1, max: c.maxPlayers });
       }
-      return c.hosted ? "waiting for an opponent to accept" : "waiting";
+      return t(loc, c.hosted ? "challenge.status.pending.hosted" : "challenge.status.pending");
     case "accepted":
-      return c.maxPlayers > 2 ? "table full — starting when everyone is online" : "accepted — starting";
+      return t(loc, c.maxPlayers > 2 ? "challenge.status.accepted.full" : "challenge.status.accepted");
     case "waiting_online":
-      return "waiting for both sides to be online";
+      return t(loc, "challenge.status.waiting_online");
     case "in_match":
-      return "playing now";
+      return t(loc, "challenge.status.in_match");
     case "finished":
-      return "finished";
+      return t(loc, "challenge.status.finished");
     case "expired":
-      return "expired";
+      return t(loc, "challenge.status.expired");
     case "cancelled":
-      return "cancelled";
+      return t(loc, "challenge.status.cancelled");
   }
+  // A state this client has never heard of prints raw — same rule as
+  // gameLabel: a new server-side status must never blank the row.
   return c.status;
 }
 
-/** "23h 58m" / "41m" until expiry; empty for past/invalid. */
-function expiresIn(c: MyChallenge, now: Date): string {
+/** "expires in 23h 58m" / "41 分后过期"; empty for past/invalid. */
+function expiresIn(c: MyChallenge, now: Date, loc: Locale): string {
   if (c.expiresAt === undefined) return "";
   const ms = Date.parse(c.expiresAt) - now.getTime();
   if (!Number.isFinite(ms) || ms <= 0) return "";
-  const mins = Math.floor(ms / 60_000);
-  const h = Math.floor(mins / 60);
-  return h > 0 ? `expires in ${h}h ${mins % 60}m` : `expires in ${mins}m`;
+  return t(loc, "challenge.row.expires", { duration: formatMinutes(loc, ms / 60_000) });
 }
 
-function challengeLine(c: MyChallenge, now: Date): string {
-  const who = c.hosted
-    ? (c.guestAgentName !== undefined ? `vs ${c.guestAgentName}` : "hosted by you")
-    : (c.hostAgentName !== undefined ? `vs ${c.hostAgentName}` : "accepted by you");
-  const parts = [gameLabel(c.game), who, statusLabel(c)];
+function challengeLine(c: MyChallenge, now: Date, loc: Locale): string {
+  const opponent = c.hosted ? c.guestAgentName : c.hostAgentName;
+  const who = opponent !== undefined
+    ? t(loc, "challenge.row.vs", { name: opponent })
+    : t(loc, c.hosted ? "challenge.row.hosted_by_you" : "challenge.row.accepted_by_you");
+  const parts = [gameLabel(loc, c.game), who, statusLabel(c, loc)];
   if (ACTIVE_STATUSES.has(c.status)) {
-    const left = expiresIn(c, now);
+    const left = expiresIn(c, now, loc);
     if (left !== "" && c.status !== "in_match") parts.push(left);
   }
   return parts.join(" · ");
@@ -212,16 +219,23 @@ async function runChallengeList(args: HandlerArgs, env: HandlerEnv): Promise<num
   const local = loadCreatedChallenges();
   forgetEndedChallenges(history.map((c) => c.id).filter((id) => local[id] !== undefined));
 
+  // P7 (U8b): section headers + a line that says what a friendly challenge IS;
+  // the rows themselves keep their wording.
+  const loc = env.locale?.() ?? resolveLocale();
+  const out = createOutput();
+  env.stdout(`${out.section(t(loc, "challenge.list.title"))}\n`);
+  env.stdout(`${out.note(t(loc, "challenge.list.intro"))}\n`);
+
   if (active.length === 0 && history.length === 0) {
-    env.stdout("No friendly challenges yet.\n");
-    env.stdout("Create one with `aifight challenge <game> [players]`, or accept one with `aifight accept <url>`.\n");
+    env.stdout(`${out.note(t(loc, "challenge.list.empty"))}\n`);
+    env.stdout(`${out.note(t(loc, "challenge.list.empty.hint"))}\n`);
     return 0;
   }
 
   if (active.length > 0) {
-    env.stdout(`Active challenges (${active.length}):\n`);
+    env.stdout(`\n${out.section(t(loc, "challenge.list.active", { count: active.length }))}\n`);
     for (const c of active) {
-      env.stdout(`  ${challengeLine(c, now)}\n`);
+      env.stdout(`  ${challengeLine(c, now, loc)}\n`);
       const rec = c.hosted ? local[c.id] : undefined;
       if (rec !== undefined && c.status !== "in_match") {
         env.stdout(`      ${rec.url}\n`);
@@ -230,15 +244,15 @@ async function runChallengeList(args: HandlerArgs, env: HandlerEnv): Promise<num
     // Hosted rows created on ANOTHER machine have no local record — for those
     // the URL truly lives only in the create response.
     if (active.some((c) => c.hosted && c.status === "pending" && local[c.id] === undefined)) {
-      env.stdout("Links are stored on the machine that created the challenge; one created elsewhere expires with its link (24h).\n");
+      env.stdout(`${out.note(t(loc, "challenge.list.links_local"))}\n`);
     }
   } else {
-    env.stdout("No active challenges.\n");
+    env.stdout(`${out.note(t(loc, "challenge.list.none_active"))}\n`);
   }
 
   if (history.length > 0) {
-    env.stdout(`\nRecent (${Math.min(history.length, HISTORY_SHOWN)} of ${history.length}):\n`);
-    for (const c of history.slice(0, HISTORY_SHOWN)) env.stdout(`  ${challengeLine(c, now)}\n`);
+    env.stdout(`\n${out.section(t(loc, "challenge.list.recent", { shown: Math.min(history.length, HISTORY_SHOWN), total: history.length }))}\n`);
+    for (const c of history.slice(0, HISTORY_SHOWN)) env.stdout(`  ${challengeLine(c, now, loc)}\n`);
   }
   return 0;
 }

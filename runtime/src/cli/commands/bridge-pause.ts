@@ -14,18 +14,23 @@
 //     bridge honors the pause without a restart (its config snapshot alone is
 //     frozen at startup; only the flag is re-read).
 //
+// U8d (2026-08-03): resuming is no longer "pick a game and queue for it". It
+// asks the running bridge to restore its posture over the control API
+// (POST /v1/agents/:name/resume-matching) — by default that means standing by
+// and letting the platform assign a game; only the explicit
+// `standbyFallbackJoinMinutes` escape hatch still self-joins.
+//
 // Because the running bridge picks the flag up by itself and the control API
 // syncs the live queue immediately, neither command needs a bridge restart —
 // that is why they never print a restart hint. The daily cap and game list
 // learned the same connect-edge re-read in V3 (runner #autoJoinDecision), so
 // `aifight set daily` / `aifight set game` no longer need one either.
 
-import { pickAutomaticGame } from "../../bridge/auto-join";
 import { readBridgeConfig, writeBridgeConfig, type BridgeConfig } from "../../bridge/config";
 import { fetchNoFollow } from "../../net/guarded-fetch";
 import { createStatusIcons } from "../ansi";
 import { ControlClientError } from "../control-client";
-import { resolveLocale, t, type Locale } from "../i18n";
+import { gameLabel, resolveLocale, t, type Locale } from "../i18n";
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, expectArity, makeClient } from "../shared";
 import { agentSeatHolderPid } from "./bridge-start";
@@ -107,49 +112,63 @@ export async function runBridgeResume(
     return 0;
   }
 
-  // Clear the flag first so the pause is lifted even when the re-join below
+  // Clear the flag first so the pause is lifted even when the command below
   // cannot be delivered (bridge down, control hiccup) — the flag is the
-  // persistent state; the join is best-effort on top of it.
+  // persistent state; reaching the bridge is best-effort on top of it.
   // preserveMtime (V3 重启精确化): the running bridge re-reads the flag at
   // every connect edge, so this is live already — no restart pending.
   const { matchingPaused: _dropped, ...rest } = config;
   const cleared: BridgeConfig = { ...rest, updatedAt: new Date().toISOString() };
   writeBridgeConfig(cleared, { preserveMtime: true });
 
-  // Mirror the startup auto-join (automaticJoinOptions): a random pick from
-  // the configured games, ranked, NOT one-shot. A daily cap of 0 means
-  // "manual only", so there is nothing automatic to re-join.
-  let outcome: "joined" | "not_running" | "join_failed" | "cap_off" = "cap_off";
-  let game: ReturnType<typeof pickAutomaticGame> | undefined;
-  if ((cleared.autoDailyLimit ?? 0) > 0) {
-    game = pickAutomaticGame(cleared.autoGames);
-    outcome = await joinViaControlApi(cleared, env, game);
-  }
+  // U8d (owner ruling 2026-08-03): resume no longer means "pick a game and
+  // queue for it". It asks the running bridge to restore its POSTURE — by
+  // default that is "stand by and let the platform assign a game"; only the
+  // explicit `standbyFallbackJoinMinutes` escape hatch still self-joins. The
+  // cap-0 case is answered locally: with automatic matching off there is
+  // nothing to ask the bridge for, and this stays true with no bridge running.
+  const outcome: ResumeOutcome = (cleared.autoDailyLimit ?? 0) > 0
+    ? await resumeViaControlApi(cleared, env)
+    : { kind: "cap_off" };
 
   if (args.jsonMode) {
     env.stdout(JSON.stringify({
       status: "resumed",
       matchingPaused: false,
-      rejoined: outcome === "joined",
-      ...(game !== undefined ? { game } : {}),
+      matching: outcome.kind === "not_running" || outcome.kind === "unsupported"
+        ? "pending"
+        : outcome.kind,
+      ...(outcome.kind === "standby" ? { games: outcome.games } : {}),
+      ...(outcome.kind === "joined" ? { game: outcome.game } : {}),
+      ...(outcome.kind === "not_running" ? { bridge: "not_running" } : {}),
+      ...(outcome.kind === "unsupported" ? { bridge: "unsupported" } : {}),
     }) + "\n");
     return 0;
   }
   const icons = env.statusIcons ?? createStatusIcons();
-  switch (outcome) {
+  switch (outcome.kind) {
+    case "standby":
+      env.stdout(`${icons.ok} ${t(loc, "resume.ok.standby")}\n`);
+      break;
     case "joined":
-      env.stdout(`${icons.ok} ${t(loc, "resume.ok.joined", { game: game ?? "" })}\n`);
-      break;
-    case "not_running":
-      env.stdout(`${icons.ok} ${t(loc, "resume.ok")}\n`);
-      env.stdout(`${icons.warn} ${notRunningNote(loc)}\n`);
-      break;
-    case "join_failed":
-      env.stdout(`${icons.warn} ${t(loc, "resume.warn.join_failed")}\n`);
+      env.stdout(`${icons.ok} ${t(loc, "resume.ok.joined", { game: gameLabel(loc, outcome.game) })}\n`);
       break;
     case "cap_off":
       env.stdout(`${icons.ok} ${t(loc, "resume.ok")}\n`);
       env.stdout(`${icons.warn} ${t(loc, "resume.warn.cap_off")}\n`);
+      break;
+    case "not_running":
+      env.stdout(`${icons.ok} ${t(loc, "resume.ok")}\n`);
+      env.stdout(`${icons.warn} ${notRunningNote(loc)}\n`);
+      env.stdout(`${t(loc, "resume.note.pending")}\n`);
+      break;
+    case "unsupported":
+      env.stdout(`${icons.ok} ${t(loc, "resume.ok")}\n`);
+      env.stdout(`${t(loc, "resume.note.pending")}\n`);
+      break;
+    case "failed":
+      env.stdout(`${icons.warn} ${t(loc, "resume.warn.failed")}\n`);
+      env.stdout(`${t(loc, "resume.note.pending")}\n`);
       break;
   }
   return 0;
@@ -229,26 +248,64 @@ async function leaveViaPlatform(config: BridgeConfig, env: HandlerEnv): Promise<
   }
 }
 
-/** Re-join through the running bridge, the same way startup auto-join does
- *  (non-one-shot ranked). "not_running" covers an absent CLI bridge AND the
- *  desktop seat (no control API) — the caller's note tells those apart. Any
- *  other failure leaves the cleared flag in place, so it is not fatal. */
-async function joinViaControlApi(
+/** What the resume actually accomplished, from this command's point of view.
+ *  "standby" / "joined" / "cap_off" are the bridge's own answer; the rest are
+ *  delivery outcomes that leave the cleared flag doing the work. */
+type ResumeOutcome =
+  | { readonly kind: "standby"; readonly games: readonly string[] }
+  | { readonly kind: "joined"; readonly game: string }
+  | { readonly kind: "cap_off" }
+  | { readonly kind: "not_running" }
+  | { readonly kind: "unsupported" }
+  | { readonly kind: "failed" };
+
+/** Ask the running bridge to resume matching by POSTURE (U8d) — it re-declares
+ *  standby by default and only self-joins behind the explicit escape hatch.
+ *  "not_running" covers an absent CLI bridge AND the desktop seat (no control
+ *  API); "unsupported" is a bridge from before this endpoint existed (404 for
+ *  the unregistered path, 501 for a router that cannot do it). Both mean the
+ *  same thing to the user: the cleared flag alone gets there, just later. */
+async function resumeViaControlApi(
   config: BridgeConfig,
   env: HandlerEnv,
-  game: "texas_holdem" | "liars_dice" | "coup",
-): Promise<"joined" | "not_running" | "join_failed"> {
+): Promise<ResumeOutcome> {
+  let body: unknown;
   try {
-    await makeClient(env).post(`/v1/agents/${encodeURIComponent(config.agentName)}/join`, {
-      game,
-      mode: "ranked",
-      one_shot: false,
-    });
-    return "joined";
+    body = await makeClient(env).post(
+      `/v1/agents/${encodeURIComponent(config.agentName)}/resume-matching`,
+    );
   } catch (cause) {
-    if (cause instanceof ControlClientError && cause.kind === "daemon_unreachable") {
-      return "not_running";
+    if (cause instanceof ControlClientError) {
+      if (cause.kind === "daemon_unreachable") return { kind: "not_running" };
+      if (
+        cause.kind === "server_error" &&
+        (cause.serverCode === "not_found" || cause.serverCode === "not_implemented")
+      ) {
+        // Careful: a real "agent not found" is also 404 here. It means the same
+        // thing in practice — this bridge will not act on the request — and the
+        // honest "it lands on the next connect" note covers both.
+        return { kind: "unsupported" };
+      }
     }
-    return "join_failed";
+    return { kind: "failed" };
   }
+  const resume = (body as { resume?: unknown } | null)?.resume;
+  if (typeof resume !== "object" || resume === null) return { kind: "failed" };
+  const mode = (resume as { mode?: unknown }).mode;
+  if (mode === "joined") {
+    const game = (resume as { game?: unknown }).game;
+    return { kind: "joined", game: typeof game === "string" ? game : "" };
+  }
+  if (mode === "cap_off") return { kind: "cap_off" };
+  if (mode === "standby") {
+    const games = (resume as { games?: unknown }).games;
+    return {
+      kind: "standby",
+      games: Array.isArray(games) ? games.filter((g): g is string => typeof g === "string") : [],
+    };
+  }
+  // A newer bridge answering with a mode this build does not know: the resume
+  // DID happen, so do not cry failure — say the honest "it is in the bridge's
+  // hands now" line.
+  return { kind: "unsupported" };
 }

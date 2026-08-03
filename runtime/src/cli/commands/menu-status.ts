@@ -46,6 +46,11 @@ import type { MenuStatusLine, MenuStatusSegment } from "./menu-frame.js";
 export type MenuQueueState =
   /** The running bridge reports at least one queued entry (control API). */
   | { readonly state: "queued"; readonly games: readonly string[] }
+  /** U8a: nothing queued, but the bridge is declared to the platform and
+   *  waiting for it to assign a game — the state between queued and idle
+   *  (this is what a default bridge does all day; it no longer queues itself
+   *  into a random game). */
+  | { readonly state: "standby"; readonly games: readonly string[] }
   /** The control API answered and nothing is queued. */
   | { readonly state: "idle" }
   /** A bridge seat exists but the control API did not answer — config truth
@@ -127,6 +132,10 @@ function composeMatchingLine(data: MenuStatusData, loc: Locale): MenuStatusLine 
   switch (data.matching.state) {
     case "queued":
       return [{ text: t(loc, "banner.match.queued", { games: joinGameLabels(loc, data.matching.games) }), style: "cyan" }];
+    case "standby":
+      // Cyan like queued: standing by is an ACTIVE state (the platform can
+      // assign a match any moment), not the dim "nothing is happening" of idle.
+      return [{ text: t(loc, "banner.match.standby"), style: "cyan" }];
     case "idle":
       return [{ text: t(loc, "banner.match.idle", { daily }), style: "dim" }];
     case "unknown":
@@ -188,11 +197,13 @@ export interface CreateMenuStatusBoxOptions {
 const QUEUE_PROBE_TIMEOUT_MS = 1500;
 
 /**
- * Ask the running bridge's control API what it is queued for (GET
- * /v1/agents → state.queue.game, the same shape `aifight update`'s
- * match guard reads). Any failure — no daemon files, a desktop seat (no
- * control API), a timeout — maps to "unknown": the banner then shows config
- * truth only and never invents a queue state.
+ * Ask the running bridge's control API what it is queued for, or standing by
+ * for (GET /v1/agents → state.queue.game / state.standby.games — the same
+ * shape `aifight update`'s match guard reads). A real queue entry wins: it is
+ * a concrete commitment, standby is an availability declaration, and an agent
+ * can hold both (the legacy self-join posture). Any failure — no daemon files,
+ * a desktop seat (no control API), a timeout — maps to "unknown": the banner
+ * then shows config truth only and never invents a matching state.
  */
 async function probeQueueState(fetchImpl: typeof fetch | undefined): Promise<MenuQueueState> {
   try {
@@ -204,15 +215,27 @@ async function probeQueueState(fetchImpl: typeof fetch | undefined): Promise<Men
     });
     const body = await client.get<{
       readonly agents?: ReadonlyArray<{
-        readonly state?: { readonly queue?: { readonly game?: unknown } | null } | null;
+        readonly state?: {
+          readonly queue?: { readonly game?: unknown } | null;
+          readonly standby?: { readonly games?: unknown } | null;
+        } | null;
       }>;
     }>("/v1/agents");
     const games: string[] = [];
+    const standby: string[] = [];
     for (const agent of body.agents ?? []) {
       const game = agent?.state?.queue?.game;
       if (typeof game === "string" && game !== "" && !games.includes(game)) games.push(game);
+      const declared = agent?.state?.standby?.games;
+      if (Array.isArray(declared)) {
+        for (const g of declared) {
+          if (typeof g === "string" && g !== "" && !standby.includes(g)) standby.push(g);
+        }
+      }
     }
-    return games.length > 0 ? { state: "queued", games } : { state: "idle" };
+    if (games.length > 0) return { state: "queued", games };
+    if (standby.length > 0) return { state: "standby", games: standby };
+    return { state: "idle" };
   } catch {
     return { state: "unknown" };
   }

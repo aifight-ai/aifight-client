@@ -212,30 +212,32 @@ describe("interactive menu", () => {
     expect(h.dispatched).toEqual([{ cmd: "rename", positional: ["Dark Knight"] }]);
   });
 
-  // U2 (统一交互规范 P1): the game is PICKED from a frame — row 1 is
-  // Auto-pick, rows 2-4 are the platform's games in SUPPORTED_GAMES order.
+  // U2 (统一交互规范 P1): the game is PICKED from a frame — row 1 is the
+  // random pick, rows 2-4 are the platform's games in SUPPORTED_GAMES order.
   it("play picks the game from a frame → start [game] [N]", async () => {
     const h = harness(["1", "2", "2", "q"]); // Play → row 2 (Texas) → 2 matches
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "start", positional: ["texas_holdem", "2"] }]);
   });
 
-  it("play's game frame offers Auto-pick first, then every game by display name", async () => {
+  it("play's game frame offers the random pick first, then every game by display name", async () => {
     const h = harness(["1", "q", "q"]); // open the picker, back out of it
     await runInteractiveMenu(h.deps);
     // frames[0] is the panel; frames[1] is the game picker.
     const picker = h.frames[1]!;
     expect(picker.title).toBe("Request a match — which game?");
     expect(picker.choices.map((c) => c.main)).toEqual([
-      "Auto-pick", "Texas Hold'em", "Liar's Dice", "Coup", "← Back",
+      "Random pick", "Texas Hold'em", "Liar's Dice", "Coup", "← Back",
     ]);
-    expect(picker.choices[0]!.hint).toBe("let the platform pick");
+    // U8a: honest label — this row picks locally out of the enabled games; it
+    // is NOT a request for the platform to choose (no such manual primitive).
+    expect(picker.choices[0]!.hint).toBe("one of your enabled games");
     expect(picker.choices[1]!.hint).toBe("poker · 4-max table");
     expect(h.dispatched).toEqual([]); // backing out of the picker dispatches nothing
   });
 
-  it("play with Auto-pick + a kept count → start [N] (no game argument)", async () => {
-    const h = harness(["1", "1", "", "q"]); // Auto-pick, Enter keeps the [1] default
+  it("play with the random pick + a kept count → start [N] (no game argument)", async () => {
+    const h = harness(["1", "1", "", "q"]); // random pick, Enter keeps the [1] default
     await runInteractiveMenu(h.deps);
     expect(h.dispatched).toEqual([{ cmd: "start", positional: ["1"] }]);
   });
@@ -580,7 +582,7 @@ describe("one menu, two doors", () => {
     const h = harness(["8", "texas_holdem", "q"]);
     await runInteractiveMenu(h.deps);
 
-    expect(h.out()).toContain("Automatic match games set to: texas_holdem");
+    expect(h.out()).toContain("Automatic match games set to: Texas Hold'em");
     const offers = h.out().match(/service restart|next time it starts/g) ?? [];
     expect(offers.length).toBe(0);
   });

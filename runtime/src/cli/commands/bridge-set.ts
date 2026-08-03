@@ -15,7 +15,7 @@ import {
 import type { HandlerArgs, HandlerEnv } from "../shared";
 import { CommandError, SUPPORTED_GAMES, UsageError, expectArity, isSupportedGame } from "../shared";
 import { createAnsi, createStatusIcons } from "../ansi";
-import { gameLabel, parseLocale, resolveLocale, t, type I18nKey } from "../i18n";
+import { gameLabel, joinGameLabels, parseLocale, resolveLocale, t, type I18nKey } from "../i18n";
 import { agentSeatHolderPid } from "./bridge-start";
 import { createOutput } from "../output";
 import { createOnboardIO, promptDefault, promptValidatedDefault } from "./onboard-io";
@@ -367,7 +367,10 @@ async function setGames(raw: string, args: HandlerArgs, env: HandlerEnv): Promis
     env.stdout(JSON.stringify({ status: "ok", autoGames: unique }) + "\n");
     return 0;
   }
-  env.stdout(`Automatic match games set to: ${unique.join(", ")}\n`);
+  // U8d: the human receipt speaks display names (the picker one line above
+  // already did) — raw ids belong to --json, which keeps its exact shape.
+  const loc = env.locale?.() ?? resolveLocale();
+  env.stdout(`${t(loc, "set.game.ok", { games: joinGameLabels(loc, unique) })}\n`);
   sayApplied(env);
   return 0;
 }

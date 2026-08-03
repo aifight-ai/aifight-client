@@ -89,3 +89,20 @@ export function gameLabel(locale: Locale, id: string): string {
 export function joinGameLabels(locale: Locale, ids: readonly string[]): string {
   return ids.map((id) => gameLabel(locale, id)).join(locale === "zh" ? "、" : ", ");
 }
+
+// ── Durations ──────────────────────────────────────────────────────────
+// One "how long" vocabulary for every CLI surface, so a translated line never
+// has to carry the English h/m through (the Telegram companion has its own
+// twin in notify/telegram — different dictionary, different locale type).
+
+/**
+ * Whole minutes as a short duration in `locale`: 90 → "1h 30m" / "1 小时 30
+ * 分", 41 → "41m" / "41 分". Fractional inputs floor to the minute and
+ * anything negative or non-finite reads as zero (a caller computing a
+ * remaining time must never print "-3m").
+ */
+export function formatMinutes(locale: Locale, totalMinutes: number): string {
+  const mins = Number.isFinite(totalMinutes) ? Math.max(0, Math.floor(totalMinutes)) : 0;
+  const h = Math.floor(mins / 60);
+  return h > 0 ? t(locale, "duration.hm", { h, m: mins % 60 }) : t(locale, "duration.m", { m: mins });
+}

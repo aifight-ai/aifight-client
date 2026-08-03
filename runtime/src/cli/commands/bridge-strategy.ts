@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { readBridgeConfig } from "../../bridge/config";
@@ -72,7 +73,14 @@ function printStrategyPaths(
     return 0;
   }
 
+  // P7 (U8b): the paths used to arrive with no answer to "what IS this file?".
+  // Two lines of plain explanation, then the official guide on its own
+  // unstyled line, then the paths.
+  const base = config.baseUrl.replace(/\/+$/, "") || "https://aifight.ai";
   env.stdout(`${out.section(t(loc, "strategy.section"))}\n`);
+  env.stdout(`${out.note(t(loc, "strategy.intro"))}\n`);
+  env.stdout(`${out.note(t(loc, "strategy.intro.guide"))}\n`);
+  env.stdout(`  ${base}/how-to-win\n\n`);
   for (const line of out.kvRows([
     [t(loc, "strategy.root"), shortenHome(paths.root), "dim"],
     [t(loc, "strategy.global"), shortenHome(paths.global), "dim"],
@@ -247,13 +255,17 @@ function labelFor(file: StrategyFile): string {
   return file.scope === "global" ? "global" : `game:${file.game}`;
 }
 
-/** Display a path under the runtime home as "~/…" (V4 — the owner's
- *  screenshot was a wall of raw /root/.aifight/runtime/... absolute paths).
- *  --json keeps the full paths; this is display-only. */
-function shortenHome(filePath: string): string {
-  const home = getRuntimeHome();
-  if (filePath === home) return "~";
-  const prefix = `${home}${path.sep}`;
+/** Display-only path shortening (V4 — the owner's screenshot was a wall of
+ *  raw /root/.aifight/runtime/... absolute paths). U8: abbreviate against the
+ *  OS home so the result is a REAL path (`~/.aifight/runtime/…`) — the old
+ *  version swallowed the `.aifight/runtime` segment and printed `~/agents/…`,
+ *  a directory that does not exist. Paths outside the OS home (a service
+ *  install, a test temp dir) stay absolute. --json keeps the full paths.
+ *  Exported for tests (osHome injectable). */
+export function shortenHome(filePath: string, osHome: string = os.homedir()): string {
+  if (osHome.length === 0) return filePath;
+  if (filePath === osHome) return "~";
+  const prefix = `${osHome}${path.sep}`;
   return filePath.startsWith(prefix) ? `~${path.sep}${filePath.slice(prefix.length)}` : filePath;
 }
 

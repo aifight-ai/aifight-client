@@ -53,6 +53,7 @@ import type {
   ControlErrorBody,
   ControlErrorCode,
   ControlLogEvent,
+  ControlResumeMatchingResult,
   ControlRouterTarget,
   ControlServer,
   ControlServerAddress,
@@ -67,7 +68,7 @@ import { ControlServerError } from "./types";
 // internal-only and avoiding the back-reference keeps the module graph
 // one-directional (index.ts may eventually re-export controlapi; the
 // reverse import would create a cycle once that lands).
-const CONTROL_API_VERSION = "0.2.0-beta.10";
+const CONTROL_API_VERSION = "0.2.0-beta.11";
 
 const SERVER_HEADER = `aifight-runtime/${CONTROL_API_VERSION}`;
 const DEFAULT_HOST = "127.0.0.1";
@@ -379,10 +380,17 @@ interface SanitizedAgentState {
     readonly startedAt: number;
   }>>;
   readonly activeMatchCount?: number;
+  /** U8a: the games this agent declared standby for — the pool the platform's
+   *  supply sweep may assign it. Additive and OMITTED whenever the router
+   *  cannot say (an older host, an agent that self-joins instead, paused,
+   *  stopped): absent means "no standby claim", never "standing by for
+   *  nothing". */
+  readonly standby?: { readonly games: readonly string[] };
 }
 
 function sanitizeAgentSnapshot(
   snap: AgentInstanceSnapshot,
+  standbyGames?: readonly string[] | null,
 ): SanitizedAgentSnapshot {
   if (snap.state === null) {
     return {
@@ -406,6 +414,9 @@ function sanitizeAgentSnapshot(
     ...(s.queue !== undefined ? { queue: s.queue } : {}),
     ...(s.activeMatch !== undefined ? { activeMatch: s.activeMatch } : {}),
     ...(activeMatches !== undefined ? { activeMatches, activeMatchCount: Object.keys(activeMatches).length } : {}),
+    ...(standbyGames !== undefined && standbyGames !== null && standbyGames.length > 0
+      ? { standby: { games: [...standbyGames] } }
+      : {}),
   };
   return {
     name: snap.name,
@@ -529,6 +540,14 @@ export function createControlServer(
       method: "POST",
       pattern: compilePattern("/v1/agents/:name/leave"),
       handler: handleLeaveQueue,
+    },
+    // U8d — additive: resume automatic matching by posture. An older host
+    // never registered this path, so its dispatch answers 404 not_found and
+    // the CLI degrades to "the bridge picks the pause up on its own".
+    {
+      method: "POST",
+      pattern: compilePattern("/v1/agents/:name/resume-matching"),
+      handler: handleResumeMatching,
     },
     // Tier A — schedule (Step 3, rev3 fix #1+#2 locked)
     {
@@ -763,7 +782,12 @@ export function createControlServer(
   // snapshot before sending; we do not sort or rearrange (M1-16.md
   // Risks #9 — handler must not assume the array is mutable).
   function handleListAgents(ctx: HandlerContext): void {
-    const agents = opts.router.listAgents().map(sanitizeAgentSnapshot);
+    // The standby set is a ROUTER fact (the bridge runner owns it), not part
+    // of the agent's protocol snapshot — a router that does not answer simply
+    // leaves `state.standby` out.
+    const agents = opts.router
+      .listAgents()
+      .map((snap) => sanitizeAgentSnapshot(snap, safeStandbyGames(snap.name)));
     writeJson(ctx.res, 200, { agents });
   }
 
@@ -782,7 +806,18 @@ export function createControlServer(
       throw err;
     }
     const snap = handle.snapshot();
-    writeJson(ctx.res, 200, { agent: sanitizeAgentSnapshot(snap) });
+    writeJson(ctx.res, 200, { agent: sanitizeAgentSnapshot(snap, safeStandbyGames(snap.name)) });
+  }
+
+  /** Ask the router for an agent's standby set. Optional on the interface and
+   *  best-effort here: a throwing/absent implementation must degrade to "no
+   *  standby claim", never to a 500 on a read endpoint. */
+  function safeStandbyGames(name: string): readonly string[] | null {
+    try {
+      return opts.router.standbyGames?.({ name }) ?? null;
+    } catch {
+      return null;
+    }
   }
 
   // ── Tier A: queue commands ──────────────────────────────────────────
@@ -878,6 +913,33 @@ export function createControlServer(
       throw err;
     }
     writeNoContent(ctx.res);
+  }
+
+  // U8d — resume automatic matching. Body-free like /leave (the posture, not
+  // the caller, decides what resuming means), and it answers with WHAT it did
+  // so the CLI can print the truth instead of naming a game nobody chose.
+  // A router without the method is a real answer, not a crash: 501, which the
+  // CLI degrades exactly like the 404 an older host's missing route gives.
+  function handleResumeMatching(ctx: HandlerContext): void {
+    const name = ctx.params.name!;
+    const resume = opts.router.resumeMatching;
+    if (resume === undefined) {
+      throw new HttpError(
+        501,
+        "not_implemented",
+        "this bridge cannot resume matching over the control API",
+      );
+    }
+    let result: ControlResumeMatchingResult;
+    try {
+      result = resume.call(opts.router, { name });
+    } catch (err) {
+      if (isRouterAgentNotFound(err)) {
+        throw new HttpError(404, "not_found", `agent '${name}' not found`);
+      }
+      throw err;
+    }
+    writeJson(ctx.res, 200, { resume: result });
   }
 
   // ── Tier A: schedule endpoints (rev3 fix #1+#2) ─────────────────────

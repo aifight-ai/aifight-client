@@ -598,6 +598,37 @@ describe("M1-16 controlapi-server / Group 4 agents read", () => {
     expect(obj.agents.map((a) => a.name).sort()).toEqual(["alpha", "beta"]);
   });
 
+  // U8a: `state.standby` is ADDITIVE — present only when the router can say
+  // this agent declared a standby set, absent otherwise, so an older consumer
+  // (and an older router, which has no standbyGames at all) is unaffected.
+  it("case 17b (U8a): GET /v1/agents carries state.standby only when the router answers", async () => {
+    const snapshots = new Map<string, AgentInstanceSnapshot>([
+      ["alpha", makeFakeAgentSnapshot("alpha")],
+      ["beta", makeFakeAgentSnapshot("beta")],
+    ]);
+    const { router } = makeFakeRouter({ snapshots });
+    const standbyRouter: ControlRouterTarget = {
+      ...router,
+      standbyGames: (selector) => (selector.name === "alpha" ? ["coup", "liars_dice"] : null),
+    };
+    const { port } = await startServer({ router: standbyRouter });
+    const { status, body } = await fetchJson(port, "/v1/agents", { headers: authHeaders() });
+    expect(status).toBe(200);
+    const agents = (body as {
+      agents: ReadonlyArray<{ name: string; state: { standby?: { games: string[] } } | null }>;
+    }).agents;
+    const byName = new Map(agents.map((a) => [a.name, a]));
+    expect(byName.get("alpha")!.state!.standby).toEqual({ games: ["coup", "liars_dice"] });
+    expect(byName.get("beta")!.state!.standby).toBeUndefined();
+
+    // A router without the optional method leaves the field out entirely.
+    const { port: bare } = await startServer({ router });
+    const plain = await fetchJson(bare, "/v1/agents", { headers: authHeaders() });
+    for (const agent of (plain.body as { agents: ReadonlyArray<{ state: Record<string, unknown> }> }).agents) {
+      expect(agent.state.standby).toBeUndefined();
+    }
+  });
+
   it("case 18: GET /v1/agents/missing/status -> RouterAgentNotFoundError -> 404", async () => {
     // Empty snapshots map; getAgent default impl throws
     // RouterAgentNotFoundError; handler must catch via duck-typed
@@ -792,6 +823,61 @@ describe("M1-16 controlapi-server / Group 5 join + leave queue", () => {
     });
     expect(status).toBe(204);
     expect(calls.leaveQueue).toEqual([{ name: "alpha" }]);
+  });
+
+  // U8d: resume-matching is body-free like /leave, and answers WITH what the
+  // bridge did — the CLI prints that instead of naming a game it picked.
+  it("case 25b (U8d): POST /resume-matching -> 200 + the posture's own answer", async () => {
+    const snapshots = new Map([["alpha", makeFakeAgentSnapshot("alpha")]]);
+    const { router } = makeFakeRouter({ snapshots });
+    const seen: string[] = [];
+    const resumeRouter: ControlRouterTarget = {
+      ...router,
+      resumeMatching: (selector) => {
+        seen.push(selector.name);
+        return { mode: "standby", games: ["texas_holdem", "coup"] };
+      },
+    };
+    const { port } = await startServer({ router: resumeRouter });
+    const { status, body } = await fetchJson(port, "/v1/agents/alpha/resume-matching", {
+      method: "POST",
+      headers: { ...authHeaders(), "content-type": "application/json" },
+      body: JSON.stringify({ ignored: "this body must be ignored" }),
+    });
+    expect(status).toBe(200);
+    expect(body).toEqual({ resume: { mode: "standby", games: ["texas_holdem", "coup"] } });
+    expect(seen).toEqual(["alpha"]);
+  });
+
+  it("case 25c (U8d): POST /resume-matching for an unknown agent -> 404", async () => {
+    const { router } = makeFakeRouter();
+    const resumeRouter: ControlRouterTarget = {
+      ...router,
+      resumeMatching: (selector) => {
+        throw new RouterAgentNotFoundError({ name: selector.name });
+      },
+    };
+    const { port } = await startServer({ router: resumeRouter });
+    const { status, body } = await fetchJson(port, "/v1/agents/missing/resume-matching", {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    expect(status).toBe(404);
+    expect(body).toMatchObject({ error: { code: "not_found" } });
+  });
+
+  // A router without the optional method is a real answer, not a 500 — the CLI
+  // degrades it exactly like the 404 an older host's missing route gives.
+  it("case 25d (U8d): POST /resume-matching on a router without it -> 501", async () => {
+    const snapshots = new Map([["alpha", makeFakeAgentSnapshot("alpha")]]);
+    const { router } = makeFakeRouter({ snapshots });
+    const { port } = await startServer({ router });
+    const { status, body } = await fetchJson(port, "/v1/agents/alpha/resume-matching", {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    expect(status).toBe(501);
+    expect(body).toMatchObject({ error: { code: "not_implemented" } });
   });
 });
 

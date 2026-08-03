@@ -32,7 +32,7 @@ import { checkBridgeUpdate, type BridgeUpdateCheck } from "../../bridge/update-c
 import { ensureRuntimeHome, getRuntimeHome } from "../../store/paths";
 import { findChallengeTokenInText } from "../../bridge/challenge-link";
 import type { BridgeConfig, BridgeTelegramConfig } from "../../bridge/config";
-import { pickAutomaticGame, standbyGamePool, type SupportedGame } from "../../bridge/auto-join";
+import { standbyGamePool, type SupportedGame } from "../../bridge/auto-join";
 import { isSelfReviewAutoMode, type SelfReviewAutoMode } from "../../review/auto-mode";
 import {
   DAILY_CAP_CONFIRM_THRESHOLD,
@@ -79,6 +79,18 @@ const NAME_MIN_CHARS = 2;
 const NAME_MAX_CHARS = 50;
 
 const STATUS_TIMEOUT_MS = 4_000;
+
+/** The ratings row rides along on the menu card now (U8c), so the leaderboard
+ *  read gets a shorter leash than the status read it travels with: it is the
+ *  least important row on the card and must never be what holds it back. */
+const RATINGS_TIMEOUT_MS = 3_000;
+
+/** How long the menu card may reuse what it just learned (U8c). The card is by
+ *  far the most-opened panel — every /start, every Home tap, every message the
+ *  bot does not recognise — and it now costs the same three remote reads
+ *  /status does. A minute of staleness on "today: 4/5" is invisible; three
+ *  network calls per tap would not be. */
+const PANEL_FACTS_TTL_MS = 60_000;
 
 /** Where the detached updater's output goes, under the runtime home (never a
  *  hand-built $HOME path — tests and services both relocate that root). */
@@ -147,11 +159,34 @@ export interface PanelRunner {
     readonly state: {
       readonly phase?: string;
       readonly queue?: { readonly game?: string } | null;
+      /** U8a: the games the platform accepted this bridge as standing by for —
+       *  the same `state.standby` the control API exposes to the CLI status
+       *  box, so both surfaces say "standing by" off one fact. Absent when the
+       *  host does not orchestrate standby or the agent is not standing by. */
+      readonly standby?: { readonly games: readonly string[] } | null;
     } | null;
   } | null;
   connectionSnapshot(): { readonly state: string; readonly connectedAt: number | null } | null;
   joinQueue(game: SupportedGame, mode?: string, opts?: { readonly oneShot?: boolean; readonly count?: number }): void;
   leaveQueue(): void;
+  /** U8d: resume automatic matching by POSTURE — the bridge re-declares
+   *  standby (the default; the platform picks the game) or self-joins (the
+   *  explicit `standbyFallbackJoinMinutes` escape hatch). The panel never
+   *  picks a game for the user again.
+   *
+   *  OPTIONAL so a host that does not orchestrate matching still compiles:
+   *  the panel then treats a resume as "the flag is cleared, the bridge will
+   *  act on it" rather than falling back to the self-join this replaced. */
+  resumeMatching?(): PanelResumeOutcome;
+}
+
+/** What PanelRunner.resumeMatching reports back (the runner's
+ *  ResumeMatchingResult, widened to strings — this layer never imports the
+ *  bridge's game union). */
+export interface PanelResumeOutcome {
+  readonly mode: "standby" | "joined" | "cap_off";
+  readonly game?: string;
+  readonly games?: readonly string[];
 }
 
 export interface PanelDeps {
@@ -296,7 +331,7 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     switch (command) {
       case "start":
       case "menu":
-        await sendPanel(chatId, homePanel());
+        await sendPanel(chatId, await homePanel());
         return;
       case "status":
         await sendPanel(chatId, await statusPanel());
@@ -347,7 +382,7 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
           ));
           return;
         }
-        await sendPanel(chatId, homePanel());
+        await sendPanel(chatId, await homePanel());
       }
     }
   }
@@ -387,7 +422,7 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     switch (`${data.panel}:${data.action}`) {
       // ── navigation ──
       case "home:open":
-        return show(homePanel());
+        return show(await homePanel());
       case "status:open":
       case "status:refresh":
         return show(await statusPanel());
@@ -477,19 +512,30 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
           return show(playPanel());
         }
         // Mirror `aifight resume`: clear the flag FIRST — the pause is lifted
-        // even when the re-join below cannot be delivered — then re-join the
-        // way startup would.
+        // even when the command below cannot be delivered.
         const saved = deps.updateConfig({
           ...deps.config(),
           matchingPaused: false,
           updatedAt: new Date().toISOString(),
         });
-        const game = pickAutomaticGame(deps.config().autoGames);
+        // U8d (owner ruling 2026-08-03): resuming hands the decision to the
+        // bridge's posture instead of picking a game here. By default that is
+        // "stand by and let the platform assign one"; only the explicit
+        // `standbyFallbackJoinMinutes` escape hatch still self-joins.
+        // (A one-element sink rather than a captured `let`: the compiler
+        // cannot see the assignment through the callback.)
+        const reported: PanelResumeOutcome[] = [];
         const failure = tryRunner(() => {
-          deps.runner?.joinQueue(game, "ranked");
+          const runner = deps.runner;
+          // No runner method (a host that does not orchestrate matching):
+          // the cleared flag is the whole answer — never fall back to the
+          // self-join this replaced.
+          if (runner === null || runner.resumeMatching === undefined) return;
+          reported.push(runner.resumeMatching());
         });
         await answer();
-        const notice = failure ?? `${t(l, "play_resumed")}${saved ? "" : ` ${t(l, "settings_unsaved")}`}`;
+        const body = failure ?? resumeNotice(l, reported.at(0));
+        const notice = failure === null && !saved ? `${body} ${t(l, "settings_unsaved")}` : body;
         return show(playPanel(notice));
       }
 
@@ -762,6 +808,10 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     const limit = outcome.effectiveLimit;
     const previous = config.autoDailyLimit ?? 0;
     const saved = deps.updateConfig({ ...config, autoDailyLimit: limit, updatedAt: new Date().toISOString() });
+    // The platform now reports a different max_games_per_day, and the menu card
+    // is one tap away: a cap the user just changed must not be quoted back to
+    // them from a copy taken before the change (U8c).
+    forgetRemoteFacts();
 
     // Crossing 0 ↔ positive changes whether the bridge queues on its own, and
     // that is decided once, when the process starts. Say so plainly instead of
@@ -783,13 +833,121 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     readonly keyboard: TelegramInlineKeyboard;
   }
 
-  function homePanel(): Panel {
+  // ── the body the menu card and /status share (U8c) ──────────────────
+
+  /** The three remote facts the shared body is built from. Each is allowed to
+   *  be missing: a read that fails drops its row rather than filling it with a
+   *  placeholder that would read as a claim of its own. */
+  interface RemoteFacts {
+    readonly status: { readonly gamesToday: number; readonly maxGamesPerDay: number } | null;
+    readonly ratings: ReadonlyArray<{ readonly game: string; readonly rating: number }>;
+    readonly update: BridgeUpdateCheck | null;
+  }
+
+  /** Session-scoped, one entry, cleared by nothing but time. */
+  let factsCache: { at: number; value: RemoteFacts } | null = null;
+
+  /**
+   * Three reads, one wait — and, for the menu card, at most one round of them
+   * per PANEL_FACTS_TTL_MS. `fresh` skips the cache: /status is the panel with
+   * a Refresh button, so that button has to actually re-ask. Failures are
+   * cached too, deliberately — a platform that is down should cost the card one
+   * timeout a minute, not one per tap.
+   */
+  async function remoteFacts(opts: { fresh?: boolean } = {}): Promise<RemoteFacts> {
+    const cached = factsCache;
+    if (opts.fresh !== true && cached !== null && now() - cached.at < PANEL_FACTS_TTL_MS) return cached.value;
+    const [status, ratings, update] = await Promise.all([fetchAgentStatus(), fetchRatings(), runUpdateCheck()]);
+    const value: RemoteFacts = { status, ratings, update };
+    factsCache = { at: now(), value };
+    return value;
+  }
+
+  /** Drop the cache after this panel changes something the platform reports
+   *  back to it — otherwise the next card would quote the state from before. */
+  function forgetRemoteFacts(): void {
+    factsCache = null;
+  }
+
+  /**
+   * The rows both cards carry, in the order owner drew them (2026-08-03):
+   * matching, today's count, public model, games, CLI version, and last the
+   * per-game ratings. `phase` adds the runner's own phase line under matching —
+   * /status carries it, the menu card does not.
+   *
+   * One builder rather than two copies: the menu card and /status said the same
+   * things badly out of sync for exactly as long as they were written twice.
+   */
+  function statusRows(l: NotifyLocale, facts: RemoteFacts, opts: { phase?: boolean } = {}): string[] {
+    const config = deps.config();
+    const lines: string[] = [];
+
+    // Matching: the same states, in the same words, the CLI banner uses.
+    // Paused wins — a paused bridge can be connected yet is not matching.
+    // Then a real queue entry, then U8a's standing-by (declared to the
+    // platform, waiting for it to assign a game), then idle.
+    const queued = safe(() => deps.runner?.snapshot()?.state?.queue?.game, undefined);
+    const standingBy = safe(() => (deps.runner?.snapshot()?.state?.standby?.games ?? []).length > 0, false);
+    lines.push(
+      isPaused()
+        ? t(l, "status_match_paused")
+        : typeof queued === "string" && queued !== ""
+          ? t(l, "status_match_queued", { game: gameName(l, queued) })
+          : standingBy
+            ? t(l, "status_match_standby")
+            : t(l, "status_match_idle"),
+    );
+    if (opts.phase === true) lines.push(t(l, "status_phase", { phase: escapeHtml(phaseLabel(l)) }));
+
+    if (facts.status === null) {
+      lines.push(t(l, "status_unavailable"));
+    } else {
+      // A local cap of 0 is stored server-side as auto_requeue:false and leaves
+      // max_games_per_day untouched, so the platform still reports the old
+      // number. Trusting it here would have this panel and the settings panel
+      // quote two different caps.
+      const off = (config.autoDailyLimit ?? 0) === 0 || facts.status.maxGamesPerDay === 0;
+      lines.push(t(l, "status_today", {
+        played: facts.status.gamesToday,
+        cap: off ? t(l, "status_cap_off") : String(facts.status.maxGamesPerDay),
+      }));
+    }
+
+    const model = safe(() => deps.declaredModel?.(), undefined);
+    if (model !== undefined && model.trim() !== "") {
+      lines.push(t(l, "status_model", { model: escapeHtml(model.trim()) }));
+    }
+    lines.push(t(l, "status_games", {
+      games: standbyGamePool(config.autoGames).map((g) => gameName(l, g)).join(l === "zh" ? "、" : ", "),
+    }));
+    const updateTo = updateTarget(facts.update);
+    lines.push(
+      updateTo === null
+        ? t(l, "status_version", { version: RUNTIME_VERSION })
+        : t(l, "status_version_update", { version: RUNTIME_VERSION, latest: escapeHtml(updateTo) }),
+    );
+
+    // The ratings, unlabelled — the numbers speak for themselves, and a label
+    // would cost a line on a card that already has seven. An agent that has not
+    // finished a match anywhere has no row at all (gameName escapes any game id
+    // the platform might one day add).
+    if (facts.ratings.length > 0) {
+      lines.push(facts.ratings.map((r) => `${gameName(l, r.game)} ${Math.round(r.rating)}`).join(" · "));
+    }
+
+    return lines;
+  }
+
+  /** The menu card. U8c widened it from two lines to the whole body above:
+   *  everything owner wants to see on opening the bot, without a tap. */
+  async function homePanel(): Promise<Panel> {
     const l = locale();
     const config = deps.config();
     return {
       text: [
         `🏟 <b>AIFight · ${escapeHtml(config.agentName)}</b>`,
         connectionLine(l),
+        ...statusRows(l, await remoteFacts()),
       ].join("\n"),
       keyboard: [
         [button(t(l, "btn_status"), { panel: "status", action: "open" }), button(t(l, "btn_play"), { panel: "play", action: "open" })],
@@ -802,65 +960,23 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
 
   /**
    * The panel the CLI's status box has and this one used to lack (U5/T1):
-   * matching state, public model, games, today's count, CLI version. Every
-   * row states a fact this process can actually check — a row whose fact is
-   * missing is left OUT, never filled with a placeholder that would read as
-   * "known to be nothing".
+   * matching state, public model, games, today's count, CLI version, ratings —
+   * the shared body above, plus the phase line and the update button that are
+   * this panel's alone. Always asks again rather than reusing the menu card's
+   * reads: Refresh has to mean refresh.
    */
   async function statusPanel(): Promise<Panel> {
     const l = locale();
     const config = deps.config();
-    // Three reads, one wait: the version check (U6/T3) rides alongside the two
-    // that were already here and, like them, says nothing when it fails.
-    const [status, ratings, update] = await Promise.all([fetchAgentStatus(), fetchRatings(), runUpdateCheck()]);
-    const updateTo = updateTarget(update);
-    const lines = [`📊 <b>${escapeHtml(config.agentName)}</b>`, connectionLine(l)];
-
-    // Matching: the same three states, in the same words, the CLI banner uses.
-    // Paused wins — a paused bridge can be connected yet is not matching.
-    const queued = safe(() => deps.runner?.snapshot()?.state?.queue?.game, undefined);
-    lines.push(
-      isPaused()
-        ? t(l, "status_match_paused")
-        : typeof queued === "string" && queued !== ""
-          ? t(l, "status_match_queued", { game: gameName(l, queued) })
-          : t(l, "status_match_idle"),
-    );
-    lines.push(t(l, "status_phase", { phase: escapeHtml(phaseLabel(l)) }));
-
-    if (status === null) {
-      lines.push(t(l, "status_unavailable"));
-    } else {
-      // A local cap of 0 is stored server-side as auto_requeue:false and leaves
-      // max_games_per_day untouched, so the platform still reports the old
-      // number. Trusting it here would have this panel and the settings panel
-      // quote two different caps.
-      const off = (config.autoDailyLimit ?? 0) === 0 || status.maxGamesPerDay === 0;
-      lines.push(t(l, "status_today", {
-        played: status.gamesToday,
-        cap: off ? t(l, "status_cap_off") : String(status.maxGamesPerDay),
-      }));
-    }
-
-    const model = safe(() => deps.declaredModel?.(), undefined);
-    if (model !== undefined && model.trim() !== "") {
-      lines.push(t(l, "status_model", { model: escapeHtml(model.trim()) }));
-    }
-    lines.push(t(l, "status_games", {
-      games: standbyGamePool(config.autoGames).map((g) => gameName(l, g)).join(l === "zh" ? "、" : ", "),
-    }));
-    lines.push(
-      updateTo === null
-        ? t(l, "status_version", { version: RUNTIME_VERSION })
-        : t(l, "status_version_update", { version: RUNTIME_VERSION, latest: escapeHtml(updateTo) }),
-    );
-
-    if (ratings.length > 0) {
-      lines.push(ratings.map((r) => `${gameName(l, r.game)} ${Math.round(r.rating)}`).join(" · "));
-    }
+    const facts = await remoteFacts({ fresh: true });
+    const updateTo = updateTarget(facts.update);
 
     return {
-      text: lines.join("\n"),
+      text: [
+        `📊 <b>${escapeHtml(config.agentName)}</b>`,
+        connectionLine(l),
+        ...statusRows(l, facts, { phase: true }),
+      ].join("\n"),
       keyboard: [
         // Only when there is something to update TO. The button carries no
         // version and no argument at all: the flow re-checks for itself, so a
@@ -1131,6 +1247,22 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
   }
 
   /** Run a runner action, translating its refusals into words for the chat. */
+  /** The Resume button's receipt, in the bridge's own words (U8d). Undefined
+   *  = the runner had nothing to report (a host without the method): the flag
+   *  is cleared and the bridge acts on it at its next connect, which is what
+   *  play_resumed_pending says. */
+  function resumeNotice(l: NotifyLocale, outcome: PanelResumeOutcome | undefined): string {
+    if (outcome === undefined) return t(l, "play_resumed_pending");
+    switch (outcome.mode) {
+      case "joined":
+        return t(l, "play_resumed_joined", { game: gameName(l, outcome.game) });
+      case "cap_off":
+        return t(l, "play_resumed_cap_off");
+      default:
+        return t(l, "play_resumed");
+    }
+  }
+
   function tryRunner(action: () => void): string | null {
     const l = locale();
     if (deps.runner === null) return t(l, "runner_unavailable");
@@ -1378,12 +1510,17 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
     };
   }
 
+  /** The per-game ratings row, off the same unauthenticated profile the website
+   *  reads. Anything that goes wrong — unreachable, slow, 404, a body that is
+   *  not what we expect — returns an empty list, and an empty list is a row
+   *  that simply is not there. The card never says "ratings unavailable": the
+   *  row is a bonus, not a fact the user asked for. */
   async function fetchRatings(): Promise<Array<{ game: string; rating: number }>> {
     const config = deps.config();
     try {
       const res = await fetchNoFollow(
         `${config.baseUrl.replace(/\/+$/, "")}/api/agents/${encodeURIComponent(config.agentId)}/profile`,
-        { method: "GET", signal: AbortSignal.timeout(STATUS_TIMEOUT_MS) },
+        { method: "GET", signal: AbortSignal.timeout(RATINGS_TIMEOUT_MS) },
         { fetchImpl: deps.fetchImpl },
       );
       if (!res.ok) return [];
@@ -1391,13 +1528,19 @@ export function createPanelHandler(deps: PanelDeps): PanelHandler {
       if (!Array.isArray(body.ratings)) return [];
       return body.ratings
         .map((entry) => entry as Record<string, unknown>)
-        .filter((r) => typeof r.game === "string" && typeof r.rating === "number" && (r.games_played as number) > 0)
+        // A game nobody has played yet has a rating on paper (the Glicko
+        // starting point) that means nothing — listing it would read as a
+        // result. games_played > 0 is the same bar the record panel uses.
+        .filter((r) => typeof r.game === "string" && (r.games_played as number) > 0)
         // display_rating is what the website, the desktop app and `aifight
         // record` show; the raw Glicko rating sits 2×RD above it.
         .map((r) => ({
           game: r.game as string,
-          rating: (typeof r.display_rating === "number" ? r.display_rating : r.rating) as number,
-        }));
+          rating: typeof r.display_rating === "number"
+            ? r.display_rating
+            : typeof r.rating === "number" ? r.rating : Number.NaN,
+        }))
+        .filter((r) => Number.isFinite(r.rating));
     } catch {
       return [];
     }

@@ -106,7 +106,7 @@ export function divisionOf(rating: number | null, totalGames: number): string {
 }
 
 /** Derived agent activity for the hero status pill. */
-type Activity = "offline" | "in_match" | "paused" | "resting" | "idle" | "matching";
+export type Activity = "offline" | "in_match" | "paused" | "resting" | "idle" | "matching";
 
 /** Activity → v3-dv-pill tone(v3:实时/橘,在线/绿,警示/琥珀,错误/红,其余中性)。 */
 const ACTIVITY_TONE: Record<Activity, string> = {
@@ -1359,7 +1359,12 @@ function Dashboard({ status, refresh, onNavigate }: { status: BridgeStatus; refr
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <ActivityPill activity={activity} connecting={connecting} queued={status?.queued ?? null} />
+            <ActivityPill
+              activity={activity}
+              connecting={connecting}
+              queued={status?.queued ?? null}
+              standby={status?.standby ?? null}
+            />
             {!connected && !connecting && (
               <button
                 onClick={retry}
@@ -1960,15 +1965,19 @@ function UsageMini({
   );
 }
 
-function ActivityPill({
+export function ActivityPill({
   activity,
   connecting,
   queued,
+  standby,
 }: {
   activity: Activity;
   connecting: boolean;
   /** SERVER-confirmed queue membership from BridgeStatus.queued (审计 #3/#12). */
   queued?: { readonly game: string; readonly oneShot?: boolean } | null;
+  /** BridgeStatus.standby (U8a/D2): the games the platform accepted this bridge
+   *  as standing by for. An availability declaration, not a queue entry. */
+  standby?: readonly string[] | null;
 }) {
   const { t } = useTranslation();
   if (connecting) {
@@ -1990,6 +1999,19 @@ function ActivityPill({
       <span className="v3-dv-pill" data-tone={ACTIVITY_TONE.matching}>
         <i className="dot pulse" />
         {t("play.activity.matchingGame", { game: gameLabel(queued.game) })}
+      </span>
+    );
+  }
+  // U8a/D2: standing by — declared to the platform, waiting for it to assign a
+  // game. Sits between queued and "Online · ready": an actual queue entry is a
+  // concrete commitment and wins whenever both are set (the CLI status box's
+  // priority), and only the plain "matching" activity is vague enough to
+  // replace — 已暂停 / 休息中 / 仅手动 / 对局中 all say something this does not.
+  if (activity === "matching" && (queued ?? null) === null && (standby?.length ?? 0) > 0) {
+    return (
+      <span className="v3-dv-pill" data-tone={ACTIVITY_TONE.matching}>
+        <i className="dot pulse" />
+        {t("play.activity.standby")}
       </span>
     );
   }
