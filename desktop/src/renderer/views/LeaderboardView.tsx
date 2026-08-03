@@ -8,7 +8,7 @@
 // pin a "you" row with its real global rank — or, if it has no rank yet, show an
 // honest "not ranked yet" note. Clicking any agent deep-links to its web profile.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { RotateCw, ExternalLink, ChevronLeft, ChevronRight } from "lucide-react";
 
@@ -29,22 +29,71 @@ type LoadState =
   | { kind: "error" }
   | { kind: "ready"; rows: LeaderboardRow[] };
 
-/** Rank cell — v3 .rk:色条(#1 橘 / #2 墨 / #3 灰)+ mono tabular(设计 v3-leaderboard .rb)。 */
-function RankCell({ rank }: { rank: number }) {
+/** Rank cell — v3 .rk:色条(#1 橘 / #2 墨 / #3 灰)+ mono tabular(设计 v3-leaderboard .rb)。
+ *  Landmark house rows take no rank number (website rule): "≈" placeholder. */
+function RankCell({ rank, landmark, landmarkTitle }: { rank: number; landmark: boolean; landmarkTitle: string }) {
+  if (landmark) {
+    return (
+      <span className="v3-dv-rk opacity-50" title={landmarkTitle}>
+        <i className="v3-dv-rb" aria-hidden="true" />
+        ≈
+      </span>
+    );
+  }
   return (
-    <span className={"v3-dv-rk" + (rank <= 3 ? ` v3-dv-rk--${rank}` : "")}>
+    <span className={"v3-dv-rk" + (rank >= 1 && rank <= 3 ? ` v3-dv-rk--${rank}` : "")}>
       <i className="v3-dv-rb" aria-hidden="true" />
       {rank}
     </span>
   );
 }
 
+/** Recent-form strip, the website's FormDots: REAL results only, never derived
+ *  from aggregate stats. API order is newest-first; the strip reads
+ *  left-to-right chronologically. win = filled accent, loss = hollow ring,
+ *  draw = muted fill, anything else = dotted outline. */
+function FormDots({ form }: { form: readonly string[] | null }) {
+  if (form === null || form.length === 0) {
+    return <span className="text-[var(--text-faint)]">—</span>;
+  }
+  const chronological = [...form].reverse();
+  const style = (r: string): CSSProperties =>
+    r === "win"
+      ? { background: "var(--accent)" }
+      : r === "loss"
+        ? { border: "1.5px solid var(--text-faint)", opacity: 0.55 }
+        : r === "draw"
+          ? { background: "var(--text-faint)", opacity: 0.55 }
+          : { border: "1.5px dotted var(--text-faint)", opacity: 0.4 };
+  const letter = (r: string) => (r === "win" ? "W" : r === "loss" ? "L" : r === "draw" ? "D" : "?");
+  const title = chronological.map(letter).join(" ");
+  return (
+    <span className="inline-flex items-center justify-end gap-[5px]" title={title} aria-label={title}>
+      {chronological.map((r, i) => (
+        <i key={i} className="inline-block h-2 w-2 rounded-full" style={style(r)} />
+      ))}
+    </span>
+  );
+}
+
 /** One leaderboard row. `mine` highlights it; `agentHref` (when set) makes the name a web deep-link. */
-function Row({ r, mine, agentHref, youLabel }: { r: LeaderboardRow; mine: boolean; agentHref: string | null; youLabel: string }) {
+function Row({
+  r,
+  mine,
+  agentHref,
+  youLabel,
+  landmarkLabel,
+}: {
+  r: LeaderboardRow;
+  mine: boolean;
+  agentHref: string | null;
+  youLabel: string;
+  landmarkLabel: string;
+}) {
   return (
     <tr className={mine ? "v3-dv-mine" : undefined}>
       <td className="text-left">
-        <RankCell rank={r.rank} />
+        <RankCell rank={r.rank} landmark={r.isLandmark} landmarkTitle={landmarkLabel} />
       </td>
       <td>
         <div className="flex items-center gap-2.5">
@@ -70,17 +119,26 @@ function Row({ r, mine, agentHref, youLabel }: { r: LeaderboardRow; mine: boolea
                   {youLabel}
                 </span>
               )}
+              {r.isLandmark && <span className="v3-dv-chip">{landmarkLabel}</span>}
             </div>
             {r.model !== null && r.model !== "" && <div className="mt-0.5 font-mono text-[11px] text-[var(--text-faint)]">{r.model}</div>}
           </div>
         </div>
       </td>
-      <td className="v3-dv-num font-semibold text-[var(--text)]">{r.rating}</td>
+      <td className="v3-dv-num font-semibold text-[var(--text)]">
+        {r.rating}
+        {r.rd !== null && (
+          <span className="ml-1 font-normal text-[11px] text-[var(--text-faint)]">±{Math.round(2 * r.rd)}</span>
+        )}
+      </td>
       <td className="v3-dv-num text-[var(--text-muted)]">{r.games}</td>
       <td className="v3-dv-num text-[var(--text-muted)]">
         {r.wins}-{r.losses}-{r.draws}
       </td>
       <td className="v3-dv-num text-[var(--text-muted)]">{(r.winRate * 100).toFixed(0)}%</td>
+      <td className="v3-dv-num">
+        <FormDots form={r.recentForm} />
+      </td>
     </tr>
   );
 }
@@ -194,16 +252,18 @@ export function LeaderboardView() {
               <th className="v3-dv-num">{t("leaderboard.games")}</th>
               <th className="v3-dv-num">{t("leaderboard.record")}</th>
               <th className="v3-dv-num">{t("leaderboard.winRate")}</th>
+              <th className="v3-dv-num">{t("leaderboard.form")}</th>
             </tr>
           </thead>
           <tbody>
-            {visible.map((r) => (
+            {visible.map((r, i) => (
               <Row
-                key={r.agentId || String(r.rank)}
+                key={r.agentId || `row-${safePage * PAGE_SIZE + i}`}
                 r={r}
                 mine={ownId !== null && r.agentId === ownId}
                 agentHref={agentHref(r.agentId)}
                 youLabel={t("leaderboard.you")}
+                landmarkLabel={t("leaderboard.landmark")}
               />
             ))}
             {showSelfRow && stats !== null && (
@@ -219,10 +279,14 @@ export function LeaderboardView() {
                   losses: stats.losses,
                   draws: stats.draws,
                   winRate: stats.winRate,
+                  rd: null,
+                  recentForm: null,
+                  isLandmark: false,
                 }}
                 mine
                 agentHref={agentHref(ownId as string)}
                 youLabel={t("leaderboard.you")}
+                landmarkLabel={t("leaderboard.landmark")}
               />
             )}
           </tbody>

@@ -337,6 +337,15 @@ export interface LeaderboardRow {
   readonly draws: number;
   /** 0..1 fraction. */
   readonly winRate: number;
+  /** Glicko-2 rating deviation — the website board prints it as "±2·RD" beside
+   *  the rating. Per-game boards only; null on the cross-game aggregate. */
+  readonly rd: number | null;
+  /** Most recent results, NEWEST FIRST ("win"/"loss"/"draw"), exactly as the
+   *  platform sends recent_form. Null when the server doesn't provide it. */
+  readonly recentForm: readonly string[] | null;
+  /** Platform-operated house agent shown on the community board as a reference
+   *  landmark: positioned by score, takes no rank number (rank = 0). */
+  readonly isLandmark: boolean;
 }
 
 export interface LeaderboardData {
