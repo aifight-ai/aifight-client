@@ -34,7 +34,7 @@ import { webOrigin } from "../webOrigin";
 import { useLiveStore } from "../liveStore";
 import { useLiveGames } from "../liveGames";
 import { setWatchReplayIntent } from "../watchIntent";
-import { isStaleLiveSession } from "../staleSession";
+import { isStaleLiveSession } from "../../shared/staleSession";
 import { gameLabel } from "../../shared/games";
 import { RatingChart, PerGameCards, AchievementShelf } from "./AgentProfileViz";
 import { StyleRadarCard } from "./StyleRadarCard";

@@ -29,3 +29,18 @@ export function consumeWatchReplayIntent(): WatchReplayIntent | null {
   pending = null;
   return v;
 }
+
+/**
+ * True when a replay intent targets the CURRENTLY LIVE, unfinished session —
+ * the one case where parking a static replay is wrong (owner report
+ * 2026-08-03): the stored frames freeze at load time while the match keeps
+ * playing, so the click should fall through to the live cockpit instead.
+ * A finished session keeps the replay path: the stored frames plus the public
+ * tail ARE the match at that point.
+ */
+export function replayIntentSupersededByLive(
+  intentSessionId: string,
+  live: { readonly sessionId: string | null; readonly finished: boolean },
+): boolean {
+  return live.sessionId !== null && live.sessionId === intentSessionId && !live.finished;
+}

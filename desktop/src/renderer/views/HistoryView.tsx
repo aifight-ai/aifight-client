@@ -16,7 +16,7 @@ import { ChevronLeft, ExternalLink, RotateCw } from "lucide-react";
 import { runCli } from "../useBridge";
 import { buildReplayFromExport, replayPathOf, type SessionReplay } from "../sessionReplay";
 import { appendFinalEvents } from "../liveMatch";
-import { isStaleLiveSession } from "../staleSession";
+import { isStaleLiveSession } from "../../shared/staleSession";
 import { Chip, PageHeader } from "../components/ui";
 import { gameLabel } from "../../shared/games";
 import { CockpitPanel } from "./CockpitPanel";
@@ -179,8 +179,27 @@ export function HistoryView() {
     }
   };
 
-  // Lazy: load ONLY the list (metadata) on mount.
-  useEffect(loadList, []);
+  // Interrupted-row reconciliation (main/session-reconcile.ts): rows stuck
+  // "active" past the staleness cutoff ask the server for their real outcome.
+  // Fire-and-forget AFTER the instant list paint; only a run that actually
+  // repaired rows re-reads the list, so the common case costs one render.
+  const reconcileThenReload = () => {
+    const api = window.aifight;
+    if (typeof api?.reconcileSessions !== "function") return;
+    void api
+      .reconcileSessions()
+      .then((r) => {
+        if (r !== null && typeof r === "object" && r.updated > 0) loadList();
+      })
+      .catch(() => {}); // best-effort: offline / old main keeps today's behavior
+  };
+  const refresh = () => {
+    loadList();
+    reconcileThenReload();
+  };
+
+  // Lazy: load ONLY the list (metadata) on mount; reconciliation rides along.
+  useEffect(refresh, []);
 
   const openSession = (item: SessionListItem) => {
     setOpening(item.session_id);
@@ -222,7 +241,7 @@ export function HistoryView() {
   }
 
   const refreshBtn = (
-    <button onClick={loadList} title={t("history.refresh")} className="v3-dv-btn v3-dv-btn--ghost v3-dv-btn--sm">
+    <button onClick={refresh} title={t("history.refresh")} className="v3-dv-btn v3-dv-btn--ghost v3-dv-btn--sm">
       <RotateCw size={13} />
       {t("history.refresh")}
     </button>

@@ -22,6 +22,7 @@ import { authorizeIpcSender } from "./ipc-guard";
 import { runCliOp } from "./cli-host";
 import { getAutoUpdate, setAutoUpdate } from "./updater";
 import { readStrategy, writeStrategy } from "./strategy-host";
+import { reconcileInterruptedSessions } from "./session-reconcile";
 import { getUsageOverview } from "./usage-host";
 import {
   clearKey,
@@ -76,6 +77,12 @@ export function registerBridgeIpc(host: BridgeHost): void {
   // The platform's CURRENT live games (backend = single source, cached in the
   // host from the welcome frame / GET /api/games; local fallback while offline).
   handle(IPC.gamesGet, () => host.getLiveGames());
+  handle(IPC.liveSnapshot, () => host.getLiveMatchSnapshot());
+
+  // Server reconciliation for interrupted local session rows (History opens /
+  // refresh). Reads the shared config itself; bounded, in-flight-deduped, and
+  // a no-op while unconfigured — see session-reconcile.ts.
+  handle(IPC.sessionsReconcile, () => reconcileInterruptedSessions());
 
   // Live connection-health for the diagnostics panel (in-memory; no disk/network).
   handle(IPC.getConnection, () => host.getConnectionHealth());

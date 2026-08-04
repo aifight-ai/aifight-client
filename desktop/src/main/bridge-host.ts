@@ -259,9 +259,27 @@ export class BridgeHost {
   // network tick; the renderer folds the push frames through the same
   // seq-dedupe merge either way, so nothing is lost when the poll goes quiet.
   #lastMatchFeed: { readonly sessionId: string; readonly at: number } | null = null;
+  /**
+   * The live match's opening game_start frame, cached for renderer-reload
+   * resync (owner report 2026-08-03): the renderer's board reducer ignores
+   * every frame until it has seen a game_start, so a reload mid-match used to
+   * lose the live view for good — 观战 fell back to demo while the match kept
+   * running. Non-null exactly while a match is live on this bridge session.
+   */
+  #lastGameStart: ServerMessageEnvelope | null = null;
 
   constructor(callbacks: BridgeHostCallbacks = {}) {
     this.#callbacks = callbacks;
+  }
+
+  /**
+   * The cached game_start of the currently live match, or null when none —
+   * the renderer-reload resync source (IPC.liveSnapshot, owner report
+   * 2026-08-03). Raw protocol frame; the renderer folds it through the same
+   * reducer the live stream uses, so information hiding is inherited.
+   */
+  getLiveMatchSnapshot(): ServerMessageEnvelope | null {
+    return this.#lastGameStart;
   }
 
   getStatus(): BridgeStatus {
@@ -913,6 +931,7 @@ export class BridgeHost {
     this.#connInfo = null;
     this.#closeCauseVersion = false;
     this.#lastMatchFeed = null;
+    this.#lastGameStart = null;
     // 审查 #4: a LOUD start (launch / Retry button) announces "starting" right
     // away; the quiet seat-retry must not — it fires every 5s while the seat
     // is held, and broadcasting "starting" here is exactly what made the pill
@@ -1033,11 +1052,16 @@ export class BridgeHost {
           // game_start (its match_id IS the per-player session id), disarmed by
           // the terminal frames. The bridge plays at most one match at a time.
           if (message.type === "game_start") {
+            // Cache the opening frame for renderer-reload resync
+            // (IPC.liveSnapshot): a reloaded renderer replays it into the
+            // board reducer, then the 2.5s feed poll catches the board up.
+            this.#lastGameStart = message;
             const sid = (message.data as { match_id?: unknown } | undefined)?.match_id;
             if (typeof sid === "string" && restOrigin !== null) {
               this.#startMatchEventsPoll(sid, restOrigin, config.apiKey ?? "");
             }
           } else if (message.type === "game_over" || message.type === "match_cancelled") {
+            this.#lastGameStart = null;
             this.#cancelMatchEventsPoll();
           } else if (message.type === "match_feed") {
             // Phase 2: bookkeep the server-pushed feed so the poller can tell a
@@ -1155,6 +1179,7 @@ export class BridgeHost {
     this.#cancelSeatRetry();
     // And a live match-feed poller must not outlive the bridge it mirrors.
     this.#cancelMatchEventsPoll();
+    this.#lastGameStart = null;
     // Let an in-flight start finish first. Without this, a stop landing while
     // start() is awaiting the engine import sees #runner === null, takes the
     // branch below, and hands back a seat the resuming start is about to put a
@@ -2004,8 +2029,9 @@ function toInt(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : 0;
 }
 
-/** The http(s) origin the REST API lives on; the bridge baseUrl may be ws(s). Null when unusable. */
-function httpOriginOf(baseUrl: string | undefined): string | null {
+/** The http(s) origin the REST API lives on; the bridge baseUrl may be ws(s). Null when unusable.
+ *  Exported for session-reconcile.ts, which calls the same REST surface. */
+export function httpOriginOf(baseUrl: string | undefined): string | null {
   if (baseUrl === undefined) return null;
   try {
     const u = new URL(baseUrl);

@@ -16,6 +16,7 @@ import { loadWindowState, persistWindowState } from "./window-state";
 import { getFlag, setFlag } from "./ui-flags";
 import { initUpdater, checkForUpdates, downloadUpdate, quitAndInstall } from "./updater";
 import { createQuitIntent } from "./quit-intent";
+import { reconcileInterruptedSessions } from "./session-reconcile";
 import { IPC } from "../shared/ipc";
 
 // A stable product name for the macOS app menu, About panel, and userData folder.
@@ -121,6 +122,12 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
+// Reconciliation trigger bookkeeping: fire once per idle→running transition,
+// shortly AFTER connect so the server's mailbox replay (parked game_over frames
+// over the fresh WS) gets to land first.
+const RECONCILE_AFTER_CONNECT_MS = 8000;
+let lastBridgePhase = "";
+
 // The single owner of the bridge engine for this process. Constructed here but
 // NOT started: starting opens a WebSocket to the platform and loads native
 // modules, which is a user-driven action (the renderer invokes bridge:start via
@@ -131,6 +138,17 @@ const bridgeHost = new BridgeHost({
     const agent = status.config !== undefined ? ` (${status.config.runtimeType}:${status.config.agentName})` : "";
     console.log(`[bridge] ${status.phase}${agent}${detail}`);
     broadcast(IPC.status, status);
+    // Bridge (re)connected → reconcile interrupted local session rows against
+    // the server, a beat later: the hub's pending-notice mailbox replays any
+    // parked game_over over the fresh WS first (its window is 1h/in-memory —
+    // reconciliation is the durable fallback for everything it missed). The
+    // run is bounded + in-flight-deduped, so repeated reconnects are cheap.
+    if (status.phase === "running" && lastBridgePhase !== "running") {
+      setTimeout(() => {
+        void reconcileInterruptedSessions().catch(() => {});
+      }, RECONCILE_AFTER_CONNECT_MS);
+    }
+    lastBridgePhase = status.phase;
     // App Nap mitigation (above): the blocker follows bridge liveness — while
     // running or reconnecting ("starting") the ping/backoff timers must fire
     // on time, so a hidden window must not let macOS suspend the app.

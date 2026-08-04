@@ -806,6 +806,8 @@ export const IPC = {
   removeLocalIdentity: "bridge:remove-local-identity",
   requestMatches: "bridge:request-matches",
   gamesGet: "games:get",
+  liveSnapshot: "bridge:live-snapshot",
+  sessionsReconcile: "sessions:reconcile",
   getConnection: "bridge:get-connection",
   getProfile: "bridge:get-profile",
   getProfileRaw: "bridge:get-profile-raw",
@@ -995,6 +997,22 @@ export interface AifightBridgeApi {
    * by seq in liveStore. Render-only — this feed NEVER triggers an LLM call.
    */
   onMatchEvents(listener: (payload: MatchEventsPayload) => void): () => void;
+  /**
+   * The cached game_start frame of the CURRENTLY live match, or null when no
+   * match is live on this bridge. A renderer reloaded mid-match replays it
+   * into liveMatch.ts so the feed/poller frames have a session to land on —
+   * without it every post-reload frame is ignored and 观战 falls back to demo
+   * (owner report 2026-08-03). Optional: an older preload degrades quietly.
+   */
+  getLiveMatchSnapshot?(): Promise<ServerMessage | null>;
+  /**
+   * Reconcile interrupted local session rows against the server (see
+   * main/session-reconcile.ts): rows stuck "active" past the staleness cutoff
+   * whose game_over frame was missed get completed with the real outcome.
+   * Resolves with how many rows changed — History reloads its list when > 0.
+   * Optional: an older preload degrades to the pre-reconciliation behavior.
+   */
+  reconcileSessions?(): Promise<{ checked: number; updated: number }>;
   /** Main asks the renderer to switch to a view (from the app menu — e.g. Preferences ⌘,). */
   onNavigate(listener: (view: string) => void): () => void;
   /** Aggregated LOCAL token usage (month + today) from the §7A ledger. Costs come

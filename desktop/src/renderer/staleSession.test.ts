@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { STALE_LIVE_SESSION_MS, isSilentPastCutoff, isStaleLiveSession } from "./staleSession";
+import { STALE_LIVE_SESSION_MS, isSilentPastCutoff, isStaleLiveSession } from "../shared/staleSession";
 
 const NOW = Date.parse("2026-07-29T12:00:00Z");
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();

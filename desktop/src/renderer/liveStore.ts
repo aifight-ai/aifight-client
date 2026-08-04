@@ -143,6 +143,27 @@ export function ensureLiveStoreStarted(api?: AifightBridgeApi): void {
       emit();
     });
   }
+  // Renderer-reload resync (owner report 2026-08-03): this module dies with the
+  // page, but the bridge in the MAIN process keeps playing. The reducer ignores
+  // every frame until it has seen a game_start, so without re-seeding, a reload
+  // mid-match loses the live view for good — 观战 fell back to demo while the
+  // match was still running. Ask main for the cached game_start; the armed feed
+  // poll (full history every ~2.5s) then catches the board up. Live frames win
+  // any race: if a game_start arrived before the snapshot resolved, keep it.
+  // Traces are renderer-lifetime only and are not recoverable. Older preload
+  // (no snapshot API) → same behavior as before this fix.
+  if (typeof bridge.getLiveMatchSnapshot === "function") {
+    void bridge
+      .getLiveMatchSnapshot()
+      .then((snap) => {
+        if (snap === null || state.match.sessionId !== null) return;
+        const match = reduceServerMessage(state.match, snap);
+        if (match === state.match) return; // not a usable game_start — stay empty
+        state = { ...state, match, lastActivityAt: Date.now() };
+        emit();
+      })
+      .catch(() => {}); // resync is best-effort; the next game_start still works
+  }
 }
 
 export function getLiveStoreState(): LiveStoreState {

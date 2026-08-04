@@ -21,11 +21,11 @@ import { ExternalLink, Loader2, X } from "lucide-react";
 import { FIXTURES, FIXTURE_GAMES } from "../fixtures";
 import { synthesizeTraces } from "../demoMatch";
 import { appendFinalEvents, emptyLiveMatch, type MatchOutcome } from "../liveMatch";
-import { useLiveStore } from "../liveStore";
+import { getLiveStoreState, useLiveStore } from "../liveStore";
 import { runCli, useBridgeStatus } from "../useBridge";
 import { buildReplayFromExport, replayPathOf, type SessionReplay } from "../sessionReplay";
-import { isSilentPastCutoff } from "../staleSession";
-import { consumeWatchReplayIntent, type WatchReplayIntent } from "../watchIntent";
+import { isSilentPastCutoff } from "../../shared/staleSession";
+import { consumeWatchReplayIntent, replayIntentSupersededByLive, type WatchReplayIntent } from "../watchIntent";
 import { gameLabel } from "../../shared/games";
 import { CockpitPanel } from "./CockpitPanel";
 
@@ -98,6 +98,12 @@ export function WatchView() {
       }
       return;
     }
+    // A click on the CURRENTLY LIVE, unfinished session must not park a frozen
+    // replay over a match that is still playing (owner report 2026-08-03: the
+    // board showed only the steps loaded at open, never updating) — fall
+    // through to the live cockpit instead. Finished/other sessions keep the
+    // replay path.
+    if (replayIntentSupersededByLive(intent.sessionId, getLiveStoreState().match)) return;
     setReplay({ kind: "loading", intent });
     void runCli({ kind: "sessionsExport", sessionId: intent.sessionId }).then((r) => {
       if (r.exitCode !== 0 || r.error !== undefined || r.json === undefined) {
@@ -160,7 +166,20 @@ export function WatchView() {
     return () => window.clearInterval(id);
   }, [watchingLive]);
 
-  // An explicit click outranks live/demo until the user closes it.
+  // Resync race (renderer reload): the click can land BEFORE the live session
+  // re-seeds (liveStore's snapshot IPC is still in flight), parking a frozen
+  // replay of the very match that is live. Once the live session catches up to
+  // the parked intent, yield to the live cockpit. Hook order: must stay above
+  // the replay early-return below (same rule as the stale-tick pair).
+  useEffect(() => {
+    if (replay !== null && replayIntentSupersededByLive(replay.intent.sessionId, liveMatch)) {
+      setReplay(null);
+    }
+  }, [replay, liveMatch]);
+
+  // An explicit click outranks live/demo until the user closes it — except a
+  // click on the live session itself, which the guards above route to the
+  // live cockpit.
   if (replay !== null) {
     return <ReplayPane replay={replay} onClose={() => setReplay(null)} />;
   }
