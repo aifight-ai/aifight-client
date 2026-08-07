@@ -12,7 +12,7 @@ import { PROCESS_INSTANCE_ID } from "../wsclient/instance";
 import { CLIENT_CAPABILITY_MATCH_FEED } from "../wsclient/capabilities";
 import type { ServerMessageEnvelope } from "../wsclient/frame-handler";
 import { displayGameName } from "./match-narrator";
-import { PROTOCOL_VERSION } from "../index";
+import { PROTOCOL_VERSION, RUNTIME_VERSION } from "../index";
 import type { MsgGameOver } from "../protocol/types";
 import { loadLocalStrategy } from "../strategy/local-strategy";
 import {
@@ -387,6 +387,10 @@ export class BridgeRunner {
       apiKey: this.#opts.config.apiKey,
       deviceId: getDeviceId(),
       clientKind: this.#opts.clientKind,
+      // Operational telemetry (readiness audit 2026-08-06): which build this
+      // is. The presence table has had the column since day one; the header
+      // was simply never sent.
+      bridgeVersion: RUNTIME_VERSION,
       // Opt into the match_feed push unless the host explicitly declines —
       // see BridgeRunnerOptions.matchFeed for the default-true rationale.
       capabilities:

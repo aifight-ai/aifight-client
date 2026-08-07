@@ -151,6 +151,8 @@ export interface ReconnectingWSClientOptions {
   deviceId?: string;
   /** Which program is running this agent — see WSClientOptions.clientKind. */
   clientKind?: string;
+  /** This build's version — see WSClientOptions.bridgeVersion. */
+  bridgeVersion?: string;
   /** Capability tokens for the X-AIFight-Capabilities handshake header —
    *  see WSClientOptions.capabilities. Forwarded verbatim on every dial. */
   capabilities?: readonly string[];
@@ -1047,6 +1049,7 @@ class ReconnectingWSClientImpl implements ReconnectingWSClient {
         apiKey: this.#apiKey,
         deviceId: this.#opts.deviceId,
         clientKind: this.#opts.clientKind,
+        bridgeVersion: this.#opts.bridgeVersion,
         capabilities: this.#opts.capabilities,
         instanceId: this.#opts.instanceId,
         expectedProtocolVersion: this.#opts.expectedProtocolVersion,

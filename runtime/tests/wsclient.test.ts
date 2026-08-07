@@ -330,6 +330,35 @@ describe("createWSClient — happy path", () => {
     }
   });
 
+  // 就绪可见性审计 (2026-08-06): the server has read this header and persisted
+  // it into agent_runtime_presence since day one, but no client ever SENT it —
+  // the whole server-side wiring idled and the platform could not tell which
+  // build any online agent runs. This pins that the header now reaches the
+  // wire (and stays absent when unset, the old behaviour for embedders).
+  it("sends X-AIFight-Bridge-Version when bridgeVersion is provided", async () => {
+    server = await startTestServer({
+      onConnection: (ws) => ws.send(validWelcomeFrame("1.0.0")),
+    });
+    const client = await createWSClient(defaultOpts({ bridgeVersion: "0.2.0-beta.15" }));
+    try {
+      expect(server.lastHeaders()["x-aifight-bridge-version"]).toBe("0.2.0-beta.15");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("omits X-AIFight-Bridge-Version when bridgeVersion is absent", async () => {
+    server = await startTestServer({
+      onConnection: (ws) => ws.send(validWelcomeFrame("1.0.0")),
+    });
+    const client = await createWSClient(defaultOpts());
+    try {
+      expect(server.lastHeaders()["x-aifight-bridge-version"]).toBeUndefined();
+    } finally {
+      await client.close();
+    }
+  });
+
   // X-AIFight-Capabilities opts the connection INTO extra server pushes
   // (match_feed, design 2026-07-30 v2). The server gates per-connection, so
   // the header must reach the wire verbatim — and stay absent when undeclared.

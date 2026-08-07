@@ -147,6 +147,13 @@ export interface WSClientOptions {
    *  the match_feed event stream. Omitted/empty means the header is not sent
    *  at all, so a client that says nothing keeps the old wire behaviour. */
   capabilities?: readonly string[];
+  /** This build's own version (RUNTIME_VERSION), sent as
+   *  X-AIFight-Bridge-Version. The server has read this header and persisted it
+   *  into agent_runtime_presence since day one — but no client ever sent it, so
+   *  the platform could never say which build an online agent runs (readiness
+   *  audit 2026-08-06). Purely operational telemetry: nothing gates on it, and
+   *  omitting it keeps the old wire behaviour (column stays empty). */
+  bridgeVersion?: string;
   /** Process connection-instance id sent as X-AIFight-Instance. Defaults to
    *  the module-wide PROCESS_INSTANCE_ID — override only in tests that need
    *  to simulate two distinct processes from one test runner. */
@@ -798,6 +805,10 @@ export async function createWSClient(
       const headers: Record<string, string> = { "X-API-Key": opts.apiKey };
       if (opts.deviceId) headers["X-Device-Id"] = opts.deviceId;
       if (opts.clientKind) headers["X-AIFight-Client-Kind"] = opts.clientKind;
+      // Which build this is (see the option doc): the server-side wiring for
+      // this header predates the header ever being sent — do not remove it
+      // again thinking it is unused.
+      if (opts.bridgeVersion) headers["X-AIFight-Bridge-Version"] = opts.bridgeVersion;
       // Process instance id (reconnect redesign 2026-07-25 P3): lets the
       // server tell an evicted connection whether its replacer is the same
       // process (boolean only — see instance.ts for why never the raw id).
