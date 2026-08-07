@@ -6,6 +6,11 @@
 // the confirmation threshold, and the PATCH body. It lives here rather than in
 // a CLI command module so the bridge process can reach it without dragging in
 // terminal I/O.
+//
+// It also owns the two calls that turn the SERVER half of automatic matching
+// on and off — declareStandbyGames (on) and withdrawFromMatchmaking (off) —
+// for the same reason: the bridge runner, the CLI and the chat panel all need
+// them, and they must not drift apart.
 
 import { fetchNoFollow } from "../net/guarded-fetch";
 import type { BridgeConfig } from "./config";
@@ -62,23 +67,88 @@ export interface DailyPolicyResult {
  * rejects the unknown field, transient network) only means the platform cannot
  * assign a game — the local fallback join covers exactly that case, so errors
  * are the caller's to log, never to retry hot.
+ *
+ * The body ALSO re-opens `auto_requeue` (2026-08-06). Declaring standby is the
+ * server's only signal that the agent is available, but the platform's
+ * candidate query additionally requires `auto_requeue = TRUE` — and pausing
+ * matching turns that flag OFF server-side (ApplyLeaveQueueSideEffects). Resume
+ * used to restore only the LOCAL half, so every user who had ever paused stayed
+ * invisible to the supply sweep forever while their UI said "standing by".
+ * Declaring is only ever reached when matching is NOT paused and the daily cap
+ * is above zero, i.e. exactly when "the platform may assign me a match" is what
+ * the user asked for — so the two belong in one write, and every stuck install
+ * heals at its next connect edge or standby refresh without touching anything.
  */
 export async function declareStandbyGames(
   config: BridgeConfig,
   games: readonly string[],
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<void> {
-  const res = await fetchNoFollow(`${config.baseUrl.replace(/\/+$/, "")}/api/agents/me/policy`, {
+  const res = await patchPolicy(config, { standby_games: games, auto_requeue: true }, fetchImpl);
+  if (res.ok) return;
+  // The server refuses `auto_requeue: true` when the STORED daily cap is 0
+  // ("auto_requeue=true requires max_games_per_day > 0"). A regular agent in
+  // that state is excluded from the candidate query anyway, but an org-scope
+  // agent reads a stored 0 as "unlimited" and is still selectable — dropping
+  // its standby set over a field it never needed would be a regression. So a
+  // 400 falls back to the pre-2026-08-06 body, and only that body's failure is
+  // reported.
+  if (res.status === 400) {
+    const retry = await patchPolicy(config, { standby_games: games }, fetchImpl);
+    if (retry.ok) return;
+    throw new DailyPolicySyncError(
+      await readAPIError(retry, `standby declaration failed with HTTP ${retry.status}`),
+      retry.status,
+    );
+  }
+  throw new DailyPolicySyncError(await readAPIError(res, `standby declaration failed with HTTP ${res.status}`), res.status);
+}
+
+function patchPolicy(
+  config: BridgeConfig,
+  body: Record<string, unknown>,
+  fetchImpl: typeof fetch,
+): Promise<Response> {
+  return fetchNoFollow(`${config.baseUrl.replace(/\/+$/, "")}/api/agents/me/policy`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
       "X-API-Key": config.apiKey,
     },
-    body: JSON.stringify({ standby_games: games }),
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(POLICY_TIMEOUT_MS),
+  }, { fetchImpl });
+}
+
+/**
+ * The SERVER half of "pause matching": POST /api/queue/leave with the agent
+ * key drops every queued entry AND clears `auto_requeue`
+ * (internal/hub/policy.go ApplyLeaveQueueSideEffects), so the platform's supply
+ * sweep stops treating this agent as available. Idempotent — leaving with
+ * nothing queued is a no-op, and it never touches a match already in progress.
+ *
+ * Two callers, one implementation on purpose: `aifight pause` when no bridge is
+ * running to do it over the control plane, and the runner's connect edge when
+ * it comes online already paused. The second exists because the local flag and
+ * the server flag can drift — a desktop pause taken while the bridge was down,
+ * or a leave that failed at the time, used to leave the agent fully selectable
+ * while its owner believed matching was off.
+ *
+ * Throws a DailyPolicySyncError (carrying the status) when the server refuses,
+ * and the raw transport error otherwise; callers decide what that is worth (the
+ * CLI turns both into a CommandError, the runner only logs).
+ */
+export async function withdrawFromMatchmaking(
+  config: BridgeConfig,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<void> {
+  const res = await fetchNoFollow(`${config.baseUrl.replace(/\/+$/, "")}/api/queue/leave`, {
+    method: "POST",
+    headers: { "X-API-Key": config.apiKey },
     signal: AbortSignal.timeout(POLICY_TIMEOUT_MS),
   }, { fetchImpl });
   if (!res.ok) {
-    throw new DailyPolicySyncError(await readAPIError(res, `standby declaration failed with HTTP ${res.status}`), res.status);
+    throw new DailyPolicySyncError(`queue leave failed with HTTP ${res.status}`, res.status);
   }
 }
 

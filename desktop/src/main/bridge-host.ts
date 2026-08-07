@@ -1522,16 +1522,22 @@ export class BridgeHost {
     }
     this.#reemitStatus();
     if (this.#runner === null) {
-      // No bridge to talk to: the flag alone IS the resume (D1). The next
-      // connect edge reads matchingPaused fresh from bridge.json and declares
-      // standby there — nothing to re-join, and nothing to apologise for.
+      // No bridge to talk to. RESUMING needs nothing more: the flag alone is the
+      // resume (D1) — the next connect edge reads matchingPaused fresh from
+      // bridge.json and declares standby there, and that declaration re-opens
+      // auto_requeue server-side.
       if (!paused) {
         this.#callbacks.onLog?.({
           level: "info",
           code: "desktop.resume_pending",
           message: "Matching resumed — the bridge stands by the next time it connects.",
         });
+        return;
       }
+      // PAUSING is the asymmetric half: without a runner nobody would tell the
+      // platform, and the local flag alone does not stop the supply sweep from
+      // enrolling this agent (the CLI has always sent this leave itself).
+      await this.#leaveQueueViaPlatform();
       return;
     }
     if (paused) {
@@ -1541,10 +1547,28 @@ export class BridgeHost {
         this.#runner.leaveQueue();
       } catch (cause) {
         this.#callbacks.onLog?.({ level: "warning", code: "desktop.pause_failed", message: describeError(cause) });
+        // The queue drop never reached the server, so the server half of the
+        // pause is still open — fall back to the same platform call the
+        // no-runner path uses.
+        await this.#leaveQueueViaPlatform();
       }
     } else {
       // D1: restore the POSTURE through the runner — never pick a game here.
       this.#resumeMatching();
+    }
+  }
+
+  /** Best-effort platform-side leave for a pause the runner could not deliver.
+   *  Only logs: the pause is already persisted locally, and the runner re-sends
+   *  the leave at its next connect edge. */
+  async #leaveQueueViaPlatform(): Promise<void> {
+    const result = await leaveQueueViaPlatform();
+    if (result.called && !result.ok) {
+      this.#callbacks.onLog?.({
+        level: "warning",
+        code: "desktop.pause_platform_leave_failed",
+        message: `Matching is paused locally, but AIFight did not confirm it (${result.error ?? "unknown error"}) — the bridge retries the next time it connects.`,
+      });
     }
   }
 
@@ -2027,6 +2051,60 @@ function describeError(cause: unknown): string {
 
 function toInt(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : 0;
+}
+
+/** Minimal shape of the one call below — same injection seam as
+ *  session-reconcile.ts / match-events.ts, so tests never touch the network. */
+type LeaveFetchLike = (
+  url: string,
+  init: { method: string; headers: Record<string, string>; signal?: AbortSignal },
+) => Promise<{ readonly ok: boolean; readonly status: number }>;
+
+const LEAVE_TIMEOUT_MS = 8000;
+
+/** What the platform leave accomplished. `called: false` = there was nothing to
+ *  talk to (unconfigured bridge), which is not a failure worth logging. */
+export interface PlatformLeaveResult {
+  readonly called: boolean;
+  readonly ok: boolean;
+  readonly error?: string;
+}
+
+/**
+ * The SERVER half of 暂停匹配, for the paths where no runner can send it
+ * (2026-08-06): POST /api/queue/leave with the agent key clears the queue and
+ * turns off `auto_requeue`, which is what actually stops the platform's supply
+ * sweep from enrolling this agent.
+ *
+ * The desktop used to skip this entirely when the bridge was not running — it
+ * wrote the local flag and returned — so pausing from a launched-but-stopped
+ * app left the agent fully selectable server-side, and the CLI's `aifight
+ * pause` (which has always had this fallback) and the app disagreed about what
+ * "paused" meant. Best-effort by design: the local flag is already persisted
+ * before this runs, and the runner re-sends the leave at its next connect edge,
+ * so a failure here costs a retry, never the pause itself.
+ */
+export async function leaveQueueViaPlatform(
+  fetchImpl: LeaveFetchLike = globalThis.fetch as unknown as LeaveFetchLike,
+): Promise<PlatformLeaveResult> {
+  let config: BridgeConfig;
+  try {
+    config = readBridgeConfig();
+  } catch {
+    return { called: false, ok: false };
+  }
+  const origin = httpOriginOf(config.baseUrl);
+  if (origin === null || !config.apiKey) return { called: false, ok: false };
+  try {
+    const res = await fetchImpl(`${origin}/api/queue/leave`, {
+      method: "POST",
+      headers: { "X-API-Key": config.apiKey },
+      signal: AbortSignal.timeout(LEAVE_TIMEOUT_MS),
+    });
+    return res.ok ? { called: true, ok: true } : { called: true, ok: false, error: `HTTP ${res.status}` };
+  } catch (cause) {
+    return { called: true, ok: false, error: describeError(cause) };
+  }
 }
 
 /** The http(s) origin the REST API lives on; the bridge baseUrl may be ws(s). Null when unusable.

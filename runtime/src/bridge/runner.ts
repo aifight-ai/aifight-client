@@ -22,7 +22,7 @@ import {
 import type { AgentDecisionProvider } from "../agents/agent";
 import { readBridgeConfig, type BridgeConfig } from "./config";
 import { pickAutomaticGame, standbyGamePool, type SupportedGame } from "./auto-join";
-import { declareStandbyGames } from "./daily-policy";
+import { declareStandbyGames, withdrawFromMatchmaking } from "./daily-policy";
 import {
   buildBridgeDecisionProvider,
   createMockRuntimeProvider,
@@ -507,6 +507,7 @@ export class BridgeRunner {
       const launchedDaily = this.#opts.autoJoinGame !== undefined;
       if (this.#matchingPaused()) {
         this.#clearStandbyState();
+        this.#withdrawFromMatchmaking();
         if (edge !== null || launchedDaily) {
           this.#log(
             "info",
@@ -560,6 +561,7 @@ export class BridgeRunner {
           if (snap.state !== "connected" || prev === null || prev === "connected") return;
           if (this.#matchingPaused()) {
             this.#clearStandbyState();
+            this.#withdrawFromMatchmaking();
             if (this.#autoJoinDecision() !== null || this.#opts.autoJoinGame !== undefined) {
               this.#log(
                 "info",
@@ -1008,6 +1010,35 @@ export class BridgeRunner {
   }
 
   /**
+   * Tell the PLATFORM this agent is out of matchmaking (fire-and-forget), at
+   * every connect edge taken while paused.
+   *
+   * Pausing has two halves — the local flag and the server's `auto_requeue` —
+   * and only the local one is guaranteed. The desktop app used to pause with no
+   * bridge running and never reach the server at all; `aifight pause` can lose
+   * its leave to a network blip. Either way the agent came back ONLINE with
+   * `auto_requeue = TRUE` and a live standby set, which is all the platform's
+   * supply sweep needs to enroll it into a real match — burning the user's
+   * tokens on the matches they just switched off. Re-sending the leave on the
+   * way in closes that, and it is cheap: connect edges are rare (reconnects
+   * carry a backoff) and the server treats a leave with nothing queued as a
+   * no-op.
+   *
+   * Failure is only ever logged. This runs INSIDE the connect path, where an
+   * unhandled rejection would take down a connection that is otherwise fine —
+   * and the local half of the pause already holds regardless.
+   */
+  #withdrawFromMatchmaking(): void {
+    void withdrawFromMatchmaking(this.#opts.config).catch((cause) => {
+      this.#log(
+        "info",
+        "bridge.standby_withdraw_failed",
+        `Could not tell the platform this agent is paused (${cause instanceof Error ? cause.message : String(cause)}) — matching stays paused locally; the next connect retries.`,
+      );
+    });
+  }
+
+  /**
    * Arm (or re-arm) the standby timer. What it does when it fires depends on
    * the posture, re-read from disk at fire time:
    *   - "declare" (the DEFAULT — U8a, owner ruling 2026-08-03): RE-DECLARE the
@@ -1328,8 +1359,17 @@ export class BridgeRunner {
       runtime_name: provider.name,
       checked_at: checkedAt,
     };
-    // Generous cap: catches a stuck pile-up, not normal concurrent play. A local
-    // "is the user accepting matches?" pause toggle can refine this later. Shared
+    // The user's own switch comes first: a paused agent is not ready for a
+    // match, whatever its capacity says. The probe is the LAST gate before the
+    // orchestrator enrolls a named agent, so answering "ready" here while
+    // matching is paused is how a paused user ends up playing (the server's
+    // consumption rule is matchmaking.isExplicitlyNotReady — silence is not
+    // enough, it takes an explicit not-ready). Read fresh from disk, same seam
+    // as every other pause read.
+    if (this.#matchingPaused()) {
+      return { ...base, ready: false, detail: "matching paused by user" };
+    }
+    // Generous cap: catches a stuck pile-up, not normal concurrent play. Shared
     // ONE source of truth with the FSM's game_start admission gate (R13-F02).
     const maxConcurrent = MAX_CONCURRENT_MATCHES;
     const activeMatches = this.#agent?.activeMatchCount ?? 0;

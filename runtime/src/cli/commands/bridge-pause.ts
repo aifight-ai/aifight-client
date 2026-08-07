@@ -27,7 +27,7 @@
 // `aifight set daily` / `aifight set game` no longer need one either.
 
 import { readBridgeConfig, writeBridgeConfig, type BridgeConfig } from "../../bridge/config";
-import { fetchNoFollow } from "../../net/guarded-fetch";
+import { DailyPolicySyncError, withdrawFromMatchmaking } from "../../bridge/daily-policy";
 import { createStatusIcons } from "../ansi";
 import { ControlClientError } from "../control-client";
 import { gameLabel, resolveLocale, t, type Locale } from "../i18n";
@@ -218,32 +218,26 @@ async function leaveViaControlApi(config: BridgeConfig, env: HandlerEnv): Promis
 }
 
 /** POST /api/queue/leave with the agent key: clears every queued entry and
- *  disables server-side auto_requeue, exactly like the WS leave path. */
+ *  disables server-side auto_requeue, exactly like the WS leave path. The call
+ *  itself lives in bridge/daily-policy so the bridge runner fires the SAME
+ *  request when it connects while paused (2026-08-06); this wrapper only adds
+ *  the CLI's error vocabulary — "nothing was paused yet" is the whole reason a
+ *  failure here must abort the command instead of being logged away. */
 async function leaveViaPlatform(config: BridgeConfig, env: HandlerEnv): Promise<void> {
-  const url = `${config.baseUrl.replace(/\/+$/, "")}/api/queue/leave`;
-  let res: Response;
   try {
-    res = await fetchNoFollow(
-      url,
-      {
-        method: "POST",
-        headers: { "X-API-Key": config.apiKey },
-        signal: AbortSignal.timeout(10_000),
-      },
-      { fetchImpl: env.fetchImpl ?? globalThis.fetch },
-    );
+    await withdrawFromMatchmaking(config, env.fetchImpl ?? globalThis.fetch);
   } catch (cause) {
+    if (cause instanceof DailyPolicySyncError) {
+      throw new CommandError(
+        "queue_leave_failed",
+        `AIFight did not accept the queue leave (HTTP ${cause.status}).`,
+        { hint: "Retry in a moment — nothing was paused yet. If this persists, run `aifight doctor`." },
+      );
+    }
     throw new CommandError(
       "queue_leave_failed",
       `Could not reach AIFight to leave the matchmaking queue: ${cause instanceof Error ? cause.message : String(cause)}`,
       { hint: "Check the internet connection and retry — nothing was paused yet." },
-    );
-  }
-  if (!res.ok) {
-    throw new CommandError(
-      "queue_leave_failed",
-      `AIFight did not accept the queue leave (HTTP ${res.status}).`,
-      { hint: "Retry in a moment — nothing was paused yet. If this persists, run `aifight doctor`." },
     );
   }
 }

@@ -37,6 +37,8 @@ interface FakeRunner {
   onLog: (event: BridgeLogEvent) => void;
   joinCalls: Array<{ game: string; mode?: string }>;
   leaveCalls: number;
+  /** Model a leave that never reached the server (socket already dead). */
+  leaveThrows: boolean;
   resumeCalls: number;
   /** What resumeMatching() returns; null makes it throw (no connected agent). */
   resumeAnswer: ResumeAnswer | null;
@@ -53,6 +55,7 @@ vi.mock("@aifight/aifight/bridge/runner", () => ({
         onLog: opts.onLog,
         joinCalls: [],
         leaveCalls: 0,
+        leaveThrows: false,
         resumeCalls: 0,
         resumeAnswer: { mode: "standby", games: ["coup", "liars_dice"] },
         standby: null,
@@ -69,6 +72,7 @@ vi.mock("@aifight/aifight/bridge/runner", () => ({
     }
     leaveQueue(): void {
       this.#self.leaveCalls += 1;
+      if (this.#self.leaveThrows) throw new Error("socket is not connected");
     }
     resumeMatching(): ResumeAnswer {
       this.#self.resumeCalls += 1;
@@ -244,6 +248,45 @@ describe("resume = standby (D1)", () => {
     await expect(host.setMatchingPaused(false)).resolves.toBeUndefined();
 
     expect(logs.some((e) => e.code === "desktop.resume_failed" && e.level === "warning")).toBe(true);
+  });
+});
+
+// 2026-08-06: pausing has a server half (auto_requeue) that only the leave can
+// close. When the runner's own leave cannot be delivered, the platform endpoint
+// is the fallback — otherwise the agent stays selectable by the supply sweep
+// while the app shows 已暂停.
+describe("pause falls back to the platform when the runner's leave fails", () => {
+  it("a throwing leaveQueue() is followed by the platform leave", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      calls.push(String(url));
+      return { ok: true, status: 200 };
+    }));
+    const logs: BridgeLogEvent[] = [];
+    const host = new BridgeHost({ onLog: (e) => logs.push(e) });
+    await host.start();
+    runners[0]!.leaveThrows = true;
+
+    await host.setMatchingPaused(true);
+
+    expect(runners[0]!.leaveCalls).toBe(1);
+    expect(calls).toEqual(["https://aifight.ai/api/queue/leave"]);
+    expect(logs.some((e) => e.code === "desktop.pause_failed" && e.level === "warning")).toBe(true);
+  });
+
+  it("a leave the runner DID deliver needs no platform call", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      calls.push(String(url));
+      return { ok: true, status: 200 };
+    }));
+    const host = new BridgeHost();
+    await host.start();
+
+    await host.setMatchingPaused(true);
+
+    expect(runners[0]!.leaveCalls).toBe(1);
+    expect(calls).toEqual([]);
   });
 });
 

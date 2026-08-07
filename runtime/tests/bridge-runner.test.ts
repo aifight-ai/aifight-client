@@ -154,6 +154,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   if (prevSuiteHome === undefined) delete process.env.AIFIGHT_HOME;
   else process.env.AIFIGHT_HOME = prevSuiteHome;
   if (prevMachineId === undefined) delete process.env.AIFIGHT_MACHINE_ID_OVERRIDE;
@@ -745,6 +746,61 @@ describe("BridgeRunner", () => {
     );
     // And the payload must survive the REAL outbound validation path, not just
     // the fake client (which captures frames before serialization).
+    expect(() =>
+      serializeClientMessage({ type: "runtime_status", data: status!.data }),
+    ).not.toThrow();
+  });
+
+  // 2026-08-06: the readiness probe is the LAST gate before the orchestrator
+  // enrolls a NAMED agent, and the server only skips an agent that says so
+  // explicitly (matchmaking.isExplicitlyNotReady). Answering "ready" while the
+  // user has matching paused is how a paused user still ends up playing.
+  it("answers not_ready while matching is paused", async () => {
+    const client = new FakeReconnectClient();
+    const runner = new BridgeRunner({
+      clientKind: "cli",
+      config: bridgeConfig(),
+      runtimeProvider: createMockRuntimeProvider(),
+      connect: vi.fn(async () => client),
+      sessionStore: false,
+    });
+
+    await runner.start();
+    // Paused AFTER the connect edge, like `aifight pause` against a running
+    // bridge: the reply reads the flag fresh from disk, same seam as the rest.
+    // (No network from here on — the paused connect path is not re-entered.)
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, type: "basic", json: async () => ({}) })));
+    writeBridgeConfig({
+      version: 1,
+      baseUrl: "https://aifight.ai",
+      wsUrl: "wss://aifight.ai/api/ws",
+      agentId: "agent-1",
+      agentName: "alpha",
+      apiKey: "sk-local-agent-key",
+      runtimeType: "mock",
+      runtimeLocalUrl: "mock://local",
+      runtimeModel: "mock",
+      matchingPaused: true,
+      updatedAt: "2026-08-06T00:00:00.000Z",
+    });
+
+    client.emitMessage({
+      type: "readiness_check",
+      data: { request_id: "ready-paused", reason: "competition_finals", timeout_ms: 30_000 },
+    });
+    await flushEffects();
+
+    const status = client.sent.find((msg) => msg.type === "runtime_status");
+    expect(status?.data).toMatchObject({
+      request_id: "ready-paused",
+      ready: false,
+      detail: "matching paused by user",
+    });
+    // Still the closed schema: the pause rides inside `detail`, never as a new
+    // top-level key (that would fail the outbound validation below).
+    expect(Object.keys(status!.data as Record<string, unknown>).sort()).toEqual(
+      ["checked_at", "detail", "ready", "request_id", "runtime_name", "runtime_type"].sort(),
+    );
     expect(() =>
       serializeClientMessage({ type: "runtime_status", data: status!.data }),
     ).not.toThrow();

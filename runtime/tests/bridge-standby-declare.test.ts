@@ -164,28 +164,70 @@ function okResponse(): unknown {
   return { ok: true, status: 200, type: "basic", json: async () => ({}) };
 }
 
-type FetchCall = { url: string; method: string; body: unknown };
+/** A 400 the way the server sends it when it refuses one of the patched fields
+ *  (e.g. "auto_requeue=true requires max_games_per_day > 0"). */
+function badRequestResponse(error: string): unknown {
+  return { ok: false, status: 400, type: "basic", json: async () => ({ error }) };
+}
+
+type FetchCall = { url: string; method: string; headers: Record<string, string>; body: unknown };
 
 /** Stub globalThis.fetch, recording every call. The runner's connect edge
  *  fires two fire-and-forget requests through it: the terms probe (GET
  *  /api/agents/me/status) and the standby declaration (PATCH
- *  /api/agents/me/policy). */
+ *  /api/agents/me/policy). A paused connect edge fires the matchmaking
+ *  withdrawal instead (POST /api/queue/leave). */
 function stubFetch(
   calls: FetchCall[],
-  opts: { failPolicyPatch?: boolean } = {},
+  opts: {
+    failPolicyPatch?: boolean;
+    failQueueLeave?: boolean;
+    /** Refuse `auto_requeue` the way a stored daily cap of 0 makes the server
+     *  refuse it — the declaration must fall back to the bare standby body. */
+    rejectAutoRequeue?: boolean;
+  } = {},
 ): void {
   vi.stubGlobal("fetch", vi.fn(async (url: URL | string, init?: RequestInit) => {
     const call: FetchCall = {
       url: String(url),
       method: init?.method ?? "GET",
+      headers: (init?.headers ?? {}) as Record<string, string>,
       body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
     };
     calls.push(call);
     if (opts.failPolicyPatch && call.method === "PATCH" && call.url.includes("/api/agents/me/policy")) {
       throw new Error("connect ECONNREFUSED");
     }
+    if (opts.failQueueLeave && call.url.includes("/api/queue/leave")) {
+      throw new Error("connect ECONNREFUSED");
+    }
+    if (
+      opts.rejectAutoRequeue &&
+      call.method === "PATCH" &&
+      (call.body as { auto_requeue?: unknown } | null)?.auto_requeue === true
+    ) {
+      return badRequestResponse("auto_requeue=true requires max_games_per_day > 0");
+    }
     return okResponse();
   }));
+}
+
+/** A bridge.json the runner's disk-fresh reads accept (the in-memory fixture's
+ *  wsUrl host deliberately would not pass validation). */
+function writeDiskConfig(over: Partial<BridgeConfig> = {}): void {
+  writeBridgeConfig({
+    version: 1,
+    baseUrl: "https://aifight.ai",
+    wsUrl: "wss://aifight.ai/api/ws",
+    agentId: "agent-1",
+    agentName: "alpha",
+    apiKey: "sk-local-agent-key",
+    runtimeType: "mock",
+    runtimeLocalUrl: "mock://local",
+    runtimeModel: "mock",
+    updatedAt: "2026-08-06T00:00:00.000Z",
+    ...over,
+  });
 }
 
 function tempHome(): string {
@@ -259,6 +301,10 @@ function policyPatches(calls: FetchCall[]): FetchCall[] {
   return calls.filter((c) => c.method === "PATCH" && c.url.includes("/api/agents/me/policy"));
 }
 
+function queueLeaves(calls: FetchCall[]): FetchCall[] {
+  return calls.filter((c) => c.url.includes("/api/queue/leave"));
+}
+
 describe("bridge standby declaration (R2)", () => {
   it("declares the standby set at the connect edge instead of self-joining", async () => {
     const calls: FetchCall[] = [];
@@ -269,9 +315,11 @@ describe("bridge standby declaration (R2)", () => {
     expect(joinFrames(client)).toHaveLength(0);
     const patches = policyPatches(calls);
     expect(patches).toHaveLength(1);
-    // autoGames unset → the full enabled pool is declared.
+    // autoGames unset → the full enabled pool is declared. auto_requeue rides
+    // along (2026-08-06) — see the "server half" block below for why.
     expect(patches[0]!.body).toEqual({
       standby_games: ["texas_holdem", "liars_dice", "coup"],
+      auto_requeue: true,
     });
     const declared = logs.find((e) => e.code === "bridge.standby_declared");
     expect(declared?.message).toContain("the platform assigns the game");
@@ -559,6 +607,149 @@ describe("default standby posture (knob unset)", () => {
     ]);
     expect(policyPatches(calls)).toHaveLength(0);
     expect(runner.standbyGames()).toBeNull();
+
+    await runner.stop();
+  });
+});
+
+// 2026-08-06 — the SERVER half of "am I available?". Pausing turns
+// agents.auto_requeue OFF (ApplyLeaveQueueSideEffects), and the platform's
+// candidate query requires it TRUE; resuming only ever restored the LOCAL half,
+// so a user who paused once became permanently invisible to the supply sweep
+// while their UI happily said 待命. Declaring standby is the client's "I am
+// available" statement — it now carries both halves.
+describe("the declaration re-opens the server half (auto_requeue)", () => {
+  it("every declaration — connect, refresh, resume — carries auto_requeue:true", async () => {
+    const calls: FetchCall[] = [];
+    stubFetch(calls);
+    const { runner } = await startDailyRunner("unset");
+
+    // Connect edge.
+    expect(policyPatches(calls)).toHaveLength(1);
+    // The timer's re-declaration: this is what heals an ALREADY-stuck install
+    // with no user action at all — every running bridge re-declares on its own
+    // cadence, so the flag flips back within one refresh window.
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    // And an explicit resume.
+    runner.resumeMatching();
+    await flush();
+
+    const patches = policyPatches(calls);
+    expect(patches.length).toBeGreaterThanOrEqual(3);
+    for (const patch of patches) {
+      expect(patch.body).toMatchObject({ auto_requeue: true });
+      expect(patch.headers["X-API-Key"]).toBe("sk-local-agent-key");
+    }
+
+    await runner.stop();
+  });
+
+  it("falls back to the bare standby body when the server refuses auto_requeue", async () => {
+    // An org-scope agent reads a stored cap of 0 as "unlimited" and stays
+    // selectable, but the policy endpoint still rejects auto_requeue=true for
+    // it. Losing the standby set over a field it never needed would be a
+    // regression, so the declaration retries without it.
+    const calls: FetchCall[] = [];
+    stubFetch(calls, { rejectAutoRequeue: true });
+    const { runner, logs } = await startDailyRunner("unset");
+
+    const patches = policyPatches(calls);
+    expect(patches).toHaveLength(2);
+    expect(patches[0]!.body).toEqual({
+      standby_games: ["texas_holdem", "liars_dice", "coup"],
+      auto_requeue: true,
+    });
+    expect(patches[1]!.body).toEqual({
+      standby_games: ["texas_holdem", "liars_dice", "coup"],
+    });
+    // The retry succeeded, so this IS a successful declaration — no scary log.
+    expect(runner.standbyGames()).toEqual(["texas_holdem", "liars_dice", "coup"]);
+    expect(logs.some((e) => e.code === "bridge.standby_declare_failed")).toBe(false);
+
+    await runner.stop();
+  });
+});
+
+// 2026-08-06 — the other direction: a bridge that comes online ALREADY paused
+// must not leave the server believing otherwise. The desktop app used to pause
+// with no bridge running (local flag only), and a CLI pause can lose its leave
+// to a network blip; either way the agent reconnects with auto_requeue still
+// TRUE and a live standby set, which is everything the supply sweep needs to
+// enroll it into a real, token-burning match.
+describe("a paused connect edge withdraws from matchmaking", () => {
+  it("sends the platform leave, declares nothing, joins nothing", async () => {
+    writeDiskConfig({ matchingPaused: true });
+    const calls: FetchCall[] = [];
+    stubFetch(calls);
+    const { runner, client, logs } = await startDailyRunner("unset");
+
+    const leaves = queueLeaves(calls);
+    expect(leaves).toHaveLength(1);
+    expect(leaves[0]!.url).toBe("https://aifight.ai/api/queue/leave");
+    expect(leaves[0]!.method).toBe("POST");
+    expect(leaves[0]!.headers["X-API-Key"]).toBe("sk-local-agent-key");
+    // The pause still means what it always meant locally.
+    expect(policyPatches(calls)).toHaveLength(0);
+    expect(joinFrames(client)).toHaveLength(0);
+    expect(runner.standbyGames()).toBeNull();
+    expect(logs.some((e) => e.code === "bridge.auto_join_paused")).toBe(true);
+
+    await runner.stop();
+  });
+
+  it("a reconnect while paused withdraws again", async () => {
+    const calls: FetchCall[] = [];
+    stubFetch(calls);
+    const { runner, client } = await startDailyRunner("unset");
+    expect(queueLeaves(calls)).toHaveLength(0);
+
+    // `aifight pause` (or the desktop switch) lands while the bridge runs, then
+    // the socket flaps — the reconnect edge is the one that used to re-enroll.
+    writeDiskConfig({ matchingPaused: true });
+    const before = policyPatches(calls).length;
+    for (const h of [...client.stateHandlers]) {
+      client.state = "backoff";
+      h(client.snapshot());
+      client.state = "connected";
+      h(client.snapshot());
+    }
+    await flush();
+
+    expect(queueLeaves(calls)).toHaveLength(1);
+    expect(policyPatches(calls)).toHaveLength(before);
+    expect(joinFrames(client)).toHaveLength(0);
+
+    await runner.stop();
+  });
+
+  it("a failed withdrawal is logged, never thrown into the connect flow", async () => {
+    writeDiskConfig({ matchingPaused: true });
+    const calls: FetchCall[] = [];
+    stubFetch(calls, { failQueueLeave: true });
+
+    // start() must still resolve: the local half of the pause holds regardless,
+    // and an unhandled rejection here would take down a healthy connection.
+    const { runner, client, logs } = await startDailyRunner("unset");
+    await flush();
+
+    expect(queueLeaves(calls)).toHaveLength(1);
+    const failed = logs.find((e) => e.code === "bridge.standby_withdraw_failed");
+    expect(failed?.message).toContain("ECONNREFUSED");
+    expect(failed?.message).toContain("paused locally");
+    expect(joinFrames(client)).toHaveLength(0);
+
+    await runner.stop();
+  });
+
+  it("stays quiet at an UNPAUSED connect edge", async () => {
+    const calls: FetchCall[] = [];
+    stubFetch(calls);
+    const { runner } = await startDailyRunner("unset");
+
+    expect(queueLeaves(calls)).toHaveLength(0);
+    // …and the standby timer does not turn into a leave loop either.
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(queueLeaves(calls)).toHaveLength(0);
 
     await runner.stop();
   });

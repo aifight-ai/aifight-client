@@ -173,6 +173,25 @@ describe("aifight pause", () => {
     expect(readBridgeConfig().matchingPaused).toBeUndefined();
   });
 
+  // The leave itself moved into bridge/daily-policy (2026-08-06) so the runner
+  // can send the SAME request at a paused connect edge. This pins that the CLI
+  // still tells the two failure kinds apart: a transport error reads as "could
+  // not reach", an HTTP status as "did not accept" (above).
+  it("reports an unreachable platform distinctly, and pauses nothing", async () => {
+    useTempHome();
+    writeBridgeConfig(testBridgeConfig());
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("connect ECONNREFUSED 127.0.0.1:443");
+    }) as unknown as typeof fetch;
+
+    const r = await runCapture(["pause"], fetchImpl);
+
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("Could not reach AIFight to leave the matchmaking queue");
+    expect(r.stderr).toContain("ECONNREFUSED");
+    expect(readBridgeConfig().matchingPaused).toBeUndefined();
+  });
+
   it("refuses cleanly when the bridge was never configured", async () => {
     useTempHome();
     const { fetchImpl, seen } = recordingFetch([]);

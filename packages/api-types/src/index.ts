@@ -27,10 +27,6 @@ export interface MatchSummary {
    *  finish leaves this unset. (status is still 'completed' for forfeits;
    *  'cancelled' means the whole match was voided.) */
   forfeit_reason?: string;
-  /** True when the match was ANNULLED by the rating cleanup (outcome polluted
-   *  by an LLM-provider failure): still publicly replayable, but excluded from
-   *  ratings/stats — surfaces label it 不计分. Absent = counts normally. */
-  rating_annulled?: boolean;
   /** Whole-table badge aggregate (every player), most frequent first. Present
    *  only when the match earned any and the admin display toggle is on. */
   highlights?: { kind: string; count: number }[];
